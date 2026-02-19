@@ -15,10 +15,11 @@ use warp::{
 };
 
 use self::{
-    client_nf_3::{deposit_request, transfer_request, withdraw_request},
-    commitment::{get_all_commitments, get_commitment, get_commitments_by_token_type, get_max_transferable_amount_by_token_type},
     client_nf_3::{deposit_request, swap_request, transfer_request, withdraw_request},
-    commitment::{get_all_commitments, get_commitment},
+    commitment::{
+        get_all_commitments, get_commitment, get_commitments_by_token_type,
+        get_max_transferable_amount_by_token_type,
+    },
     keys::derive_key_mnemonic,
     request_status::{get_queue_length, get_request_status},
     synchronisation::synchronisation,
