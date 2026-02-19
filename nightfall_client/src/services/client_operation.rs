@@ -444,10 +444,14 @@ pub async fn deposit_operation<T: TokenContract, N: NightfallContract>(
 mod tests {
     use ark_bn254::Fr as Fr254;
     use ark_ff::PrimeField;
+    use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
     use ark_ec::twisted_edwards::Affine as TEAffine;
     use ark_std::UniformRand;
     use ark_std::Zero;
-    use jf_primitives::poseidon::{FieldHasher, Poseidon};
+    use jf_primitives::poseidon::{
+        sponge::{PoseidonSponge, CRHF_RATE},
+        PoseidonPerm,
+    };
     use jf_utils::test_rng;
     use nf_curves::ed_on_bn254::BabyJubjub as BabyJubJub;
 
@@ -463,9 +467,9 @@ mod tests {
         let value_b = Fr254::rand(rng);
         let swap_nonce = Fr254::from(u64::rand(rng));
 
-        let poseidon = Poseidon::<Fr254>::new();
-        let swap_link = poseidon
-            .hash(&[
+        let sponge_perm = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_perm);
+        sponge.absorb(&vec![
             Fr254::from_le_bytes_mod_order(b"SWAP_V1"), 
             party_a_pk.x,
             party_a_pk.y,
@@ -476,15 +480,16 @@ mod tests {
             token_b_id,
             value_b,
             swap_nonce,
-        ])
-            .unwrap();
+        ]);
+        let swap_link = sponge.squeeze_native_field_elements(1)[0];
 
         // Verify swap_link is non-zero (valid swap)
         assert!(!swap_link.is_zero(), "Swap link should be non-zero");
 
         // Verify determinism - same inputs = same output
-        let swap_link_2 = poseidon
-            .hash(&[
+        let sponge_perm_2 = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge_2 = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_perm_2);
+        sponge_2.absorb(&vec![
             Fr254::from_le_bytes_mod_order(b"SWAP_V1"),
             party_a_pk.x,
             party_a_pk.y,
@@ -495,8 +500,8 @@ mod tests {
             token_b_id,
             value_b,
             swap_nonce,
-        ])
-            .unwrap();
+        ]);
+        let swap_link_2 = sponge_2.squeeze_native_field_elements(1)[0];
 
         assert_eq!(swap_link, swap_link_2, "Swap link should be deterministic");
     }

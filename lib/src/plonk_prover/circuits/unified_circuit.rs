@@ -12,6 +12,7 @@ use ark_ec::{twisted_edwards::Affine, AffineRepr};
 use ark_ff::BigInteger256;
 use ark_ff::{One, PrimeField, Zero};
 use jf_plonk::errors::PlonkError;
+use jf_primitives::circuit::poseidon::sponge::{PoseidonStateVar, SpongePoseidonHashGadget};
 use jf_primitives::circuit::poseidon::PoseidonHashGadget;
 use jf_relation::{errors::CircuitError, gadgets::ecc::{Point, PointVariable}, Circuit, PlonkCircuit, Variable};
 use nf_curves::ed_on_bn254::Fr as BJJScalar;
@@ -237,18 +238,23 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // SWAP LOGIC (only enforced if is_swap)
         // 1. Verify swap_link hash
         let swap_domain = self.create_constant_variable(Fr254::from_le_bytes_mod_order(b"SWAP_V1"))?;
-        let computed_swap_link = self.poseidon_hash(&[
-            swap_domain,
-            party_a_public_key.get_x(),
-            party_a_public_key.get_y(),
-            party_b_public_key.get_x(),
-            party_b_public_key.get_y(),
-            nf_token_a_id,
-            value_a,
-            nf_token_b_id,
-            value_b,
-            swap_nonce,
-        ])?;
+        let initial_state = PoseidonStateVar([self.zero(), self.zero(), self.zero(), self.zero()]);
+        let absorbed_state = self.absorb(
+            &initial_state,
+            &[
+                swap_domain,
+                party_a_public_key.get_x(),
+                party_a_public_key.get_y(),
+                party_b_public_key.get_x(),
+                party_b_public_key.get_y(),
+                nf_token_a_id,
+                value_a,
+                nf_token_b_id,
+                value_b,
+                swap_nonce,
+            ],
+        )?;
+        let computed_swap_link = self.squeeze(&absorbed_state, 1)?[0];
      
         // Swap-only input constraints:
         // - party keys must be non-neutral

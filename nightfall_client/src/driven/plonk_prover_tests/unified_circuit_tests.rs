@@ -9,6 +9,7 @@ mod tests {
         sol_types::SolValue,
     };
     use ark_bn254::Bn254;
+    use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
     use ark_ec::{twisted_edwards::Affine, AffineRepr, CurveGroup};
     use ark_ff::{One, PrimeField, Zero};
     use ark_std::{rand::rngs::StdRng, UniformRand};
@@ -19,7 +20,10 @@ mod tests {
     };
     use jf_primitives::{
         pcs::prelude::UnivariateKzgPCS,
-        poseidon::{FieldHasher, Poseidon},
+        poseidon::{
+            sponge::{PoseidonSponge, CRHF_RATE},
+            FieldHasher, Poseidon, PoseidonPerm,
+        },
         trees::{Directions, MembershipProof, PathElement, TreeHasher},
     };
     use jf_relation::{Arithmetization, Circuit};
@@ -954,9 +958,10 @@ mod tests {
         let poseidon = Poseidon::<Fr254>::new();
 
         // Compute expected swap_link
+        let sponge_param = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_param);
         let swap_domain = Fr254::from_le_bytes_mod_order(b"SWAP_V1");
-        let expected_swap_link = poseidon
-            .hash(&[
+        sponge.absorb(&vec![
             swap_domain,
             keys.zkp_public_key.x,
             keys.zkp_public_key.y,
@@ -967,8 +972,8 @@ mod tests {
             nf_token_b_id,
             value_b,
             swap_nonce,
-        ])
-            .unwrap();
+        ]);
+        let expected_swap_link = sponge.squeeze_native_field_elements(1)[0];
 
         // Shared secret with counterparty
         let shared_secret: Affine<BabyJubjub> = (keys_b.zkp_public_key * ephemeral_key).into();
@@ -1242,9 +1247,10 @@ mod tests {
             .build();
 
         let poseidon = Poseidon::<Fr254>::new();
+        let sponge_param = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_param);
         let swap_domain = Fr254::from_le_bytes_mod_order(b"SWAP_V1");
-        let expected_swap_link = poseidon
-            .hash(&[
+        sponge.absorb(&vec![
             swap_domain,
             keys_a.zkp_public_key.x,
             keys_a.zkp_public_key.y,
@@ -1255,8 +1261,8 @@ mod tests {
             nf_token_b_id,
             value_b,
             swap_nonce,
-        ])
-            .unwrap();
+        ]);
+        let expected_swap_link = sponge.squeeze_native_field_elements(1)[0];
 
         let shared_secret: Affine<BabyJubjub> = (keys_a.zkp_public_key * ephemeral_key).into();
         let shared_salt = poseidon
