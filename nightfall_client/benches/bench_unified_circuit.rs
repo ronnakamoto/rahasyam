@@ -266,11 +266,11 @@ fn build_valid_transfer_inputs() -> CircuitTestInfo {
     let private_inputs = PrivateInputs::new()
         .fee_token_id(fee_token_id)
         .nf_address(nf_address_h160)
-        .value(value)
-        .nf_token_id(nf_token_id)
+        .value_a(value)
+        .nf_token_a_id(nf_token_id)
         .nf_slot_id(nf_slot_id)
         .ephemeral_key(ephemeral_key)
-        .recipient_public_key(recipient_public_key)
+        .party_b_public_key(recipient_public_key)
         .nullifiers_values(&[
             nullified_one.get_value(),
             nullified_two.get_value(),

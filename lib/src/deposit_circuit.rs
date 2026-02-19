@@ -220,12 +220,33 @@ impl DepositCircuitGadget<Fr254> for PlonkCircuit<Fr254> {
                 )
             })?;
 
+        // swap_link (constant zero for deposit)
+        let swap_link_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
+        self.set_variable_public(swap_link_len_sep)?;
+        let zero_swap_link = self.create_constant_variable(Fr254::zero())?;
+        self.set_variable_public(zero_swap_link)?;
+
+        // deadline (constant zero for deposit)
+        let deadline_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
+        self.set_variable_public(deadline_len_sep)?;
+        let zero_deadline = self.create_constant_variable(Fr254::zero())?;
+        self.set_variable_public(zero_deadline)?;
+
+        // swap_side (constant zero for deposit)
+        let swap_side_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
+        self.set_variable_public(swap_side_len_sep)?;
+        let zero_swap_side = self.create_constant_variable(Fr254::zero())?;
+        self.set_variable_public(zero_swap_side)?;
+
         Ok(PublicInputs::new()
             .fee(fee)
             .roots(&roots)
             .commitments(&commitments)
             .nullifiers(&nullifiers)
             .compressed_secrets(&compressed_secrets)
+            .swap_link(Fr254::zero())
+            .deadline(Fr254::zero())
+            .swap_side(Fr254::zero())
             .build())
     }
 }

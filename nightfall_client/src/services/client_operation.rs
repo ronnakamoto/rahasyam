@@ -147,8 +147,10 @@ where
             .build(),
         PrivateInputs::new()
             .nf_address(nf_address)
-            .value(new_commitments[0].get_value())
-            .nf_token_id(nf_token_id)
+            .party_a_public_key(spend_commitments[0].get_public_key()) // sender
+            .party_b_public_key(recipient_public_key)
+            .value_a(new_commitments[0].get_value())
+            .nf_token_a_id(nf_token_id)
             .nf_slot_id(nf_slot_id)
             .fee_token_id(fee_token_id)
             .nullifiers_values(&spend_commitments.map(|c| c.get_value()))
@@ -163,7 +165,6 @@ where
                 new_commitments[3].get_salt(),
             ])
             .public_keys(&public_keys)
-            .recipient_public_key(recipient_public_key)
             .root_key(root_key)
             .ephemeral_key(ephemeral_key)
             .membership_proofs(&fixed_proofs)
@@ -188,11 +189,185 @@ where
             compressed_secrets: CompressedSecrets {
                 cipher_text: public_inputs.compressed_secrets,
             },
+            swap_link: public_inputs.swap_link,
+            deadline: public_inputs.deadline,
+            swap_side: public_inputs.swap_side,
             proof,
         }),
         Err(e) => {
             error!("{id} Proving error {e:?}");
             Err("Transaction could not be completed due to a proving error.")
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn swap_operation<P, E>(
+    spend_commitments: &[impl Nullifiable; 4],
+    new_commitments: &[impl Commitment; 4],
+    root_key: Fr254,
+    ephemeral_key: BJJScalar,
+    secret_preimages: &[impl SecretHash; 4],
+    // === SWAP PARAMS ===
+    party_a_public_key: TEAffine<BabyJubJub>,
+    party_b_public_key: TEAffine<BabyJubJub>,
+    nf_token_a_id: Fr254,
+    value_a: Fr254,
+    nf_token_b_id: Fr254,
+    value_b: Fr254,
+    swap_nonce: Fr254,
+    deadline: Fr254,
+    id: &str,
+) -> Result<ClientTransaction<P>, &'static str>
+where
+    P: Proof,
+    E: ProvingEngine<P>,
+{
+    let nf_slot_id = new_commitments[0].get_nf_slot_id();
+
+    // We check that value is conserved for the tokens being transferred and fees.
+    let out_value = new_commitments[..2]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+    let in_value = spend_commitments[..2]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+    let out_fee = new_commitments[2..]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+    let in_fee = spend_commitments[2..]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+
+    let value_conserved = out_value == in_value;
+    let fee_conserved = out_fee == in_fee;
+
+    if !(value_conserved && fee_conserved) {
+        warn!("{id} Value or fee not conserved in this transaction: rejecting");
+        return Err("Value or fee not conserved in this transaction: rejecting");
+    }
+
+    // Collect the public keys from the nullified commitments
+    let public_keys: [TEAffine<BabyJubJub>; 4] = spend_commitments
+        .iter()
+        .map(|c| c.get_public_key())
+        .collect::<Vec<TEAffine<BabyJubJub>>>()
+        .try_into()
+        .map_err(|_| "Could not convert to fixed length array")?;
+
+    debug!("{id} Finding membership proofs for spend commitments");
+    let (membership_proofs, roots) = {
+        let mut proofs = vec![];
+        let mut roots = vec![];
+        let db = get_db_connection().await;
+        for commitment in spend_commitments.iter() {
+            if commitment.get_nf_token_id() == Fr254::zero() {
+                proofs.push(MembershipProof::default());
+                roots.push(Fr254::zero());
+                continue;
+            }
+            let commitment_hash = commitment.hash().map_err(|_| "Could not hash preimage")?;
+            debug!(
+                "{id} Looking for commitment with hash {}",
+                Fr254::to_hex_string(&commitment_hash)
+            );
+            let stored = db.get_commitment(&commitment_hash).await;
+            if stored.is_none() {
+                return Err("Could not find commitment in commitment database");
+            };
+            let membership_proof = db
+                .get_membership_proof(Some(&commitment_hash), None)
+                .await
+                .map_err(|_| "Could not get membership proof")?;
+            let root = <mongodb::Client as CommitmentTree<Fr254>>::get_root(db)
+                .await
+                .map_err(|_| "Could not get root")?;
+            let hasher = Poseidon::new();
+            membership_proof
+                .verify(&root, &hasher)
+                .map_err(|_| "Membership proof failed")?;
+            proofs.push(membership_proof);
+            roots.push(root);
+        }
+        (proofs, roots)
+    };
+
+    let fixed_proofs: [MembershipProof<Fr254>; 4] = membership_proofs
+        .try_into()
+        .map_err(|_| "Could not convert membership proofs to fixed length array")?;
+    let fixed_roots: [Fr254; 4] = roots
+        .try_into()
+        .map_err(|_| "Could not convert roots into fixed length array")?;
+
+    let nf_address = get_addresses().nightfall();
+    let (mut public_inputs, mut private_inputs) = (
+        PublicInputs::new()
+            .fee(new_commitments[2].get_value())
+            .roots(&fixed_roots)
+            .deadline(deadline)
+            .build(),
+        PrivateInputs::new()
+            .nf_address(nf_address)
+            .party_a_public_key(party_a_public_key)
+            .party_b_public_key(party_b_public_key)
+            .value_a(value_a)
+            .nf_token_a_id(nf_token_a_id)
+            .nf_token_b_id(nf_token_b_id)
+            .value_b(value_b)
+            .nf_slot_id(nf_slot_id)
+            .swap_nonce(swap_nonce)
+            .deadline(deadline)
+            .fee_token_id(get_fee_token_id())
+            .nullifiers_values(&spend_commitments.map(|c| c.get_value()))
+            .nullifiers_salts(&spend_commitments.map(|c| c.get_salt()))
+            .commitments_values(&[
+                new_commitments[1].get_value(),
+                new_commitments[3].get_value(),
+            ])
+            .commitments_salts(&[
+                new_commitments[1].get_salt(),
+                new_commitments[2].get_salt(),
+                new_commitments[3].get_salt(),
+            ])
+            .public_keys(&public_keys)
+            .root_key(root_key)
+            .ephemeral_key(ephemeral_key)
+            .membership_proofs(&fixed_proofs)
+            .withdraw_address(Fr254::zero()) // No withdraw in swap
+            .secret_preimages(&[
+                secret_preimages[0].to_array(),
+                secret_preimages[1].to_array(),
+                secret_preimages[2].to_array(),
+                secret_preimages[3].to_array(),
+            ])
+            .build(),
+    );
+
+    info!("{id} Generating swap proof");
+    let wrapped_proof: Result<P, E::Error> = E::prove(&mut private_inputs, &mut public_inputs);
+    debug!("{id} Creating swap client transaction");
+
+    match wrapped_proof {
+        Ok(proof) => Ok(ClientTransaction {
+            fee: public_inputs.fee,
+            historic_commitment_roots: public_inputs.roots,
+            commitments: public_inputs.commitments,
+            nullifiers: public_inputs.nullifiers,
+            compressed_secrets: CompressedSecrets {
+                cipher_text: public_inputs.compressed_secrets,
+            },
+            swap_link: public_inputs.swap_link,
+            deadline: public_inputs.deadline,
+            swap_side: public_inputs.swap_side,
+            proof,
+        }),
+        Err(e) => {
+            error!("{id} Swap proving error {e:?}");
+            Err("Swap transaction could not be completed due to a proving error.")
         }
     }
 }
@@ -262,5 +437,67 @@ pub async fn deposit_operation<T: TokenContract, N: NightfallContract>(
                 Salt::Deposit(secret_preimage),
             )),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_bn254::Fr as Fr254;
+    use ark_ff::PrimeField;
+    use ark_ec::twisted_edwards::Affine as TEAffine;
+    use ark_std::UniformRand;
+    use ark_std::Zero;
+    use jf_primitives::poseidon::{FieldHasher, Poseidon};
+    use jf_utils::test_rng;
+    use nf_curves::ed_on_bn254::BabyJubjub as BabyJubJub;
+
+    #[test]
+    fn test_swap_link_computation() {
+        let rng = &mut test_rng();
+
+        let party_a_pk = TEAffine::<BabyJubJub>::rand(rng);
+        let party_b_pk = TEAffine::<BabyJubJub>::rand(rng);
+        let token_a_id = Fr254::rand(rng);
+        let token_b_id = Fr254::rand(rng);
+        let value_a = Fr254::rand(rng);
+        let value_b = Fr254::rand(rng);
+        let swap_nonce = Fr254::from(u64::rand(rng));
+
+        let poseidon = Poseidon::<Fr254>::new();
+        let swap_link = poseidon
+            .hash(&[
+            Fr254::from_le_bytes_mod_order(b"SWAP_V1"), 
+            party_a_pk.x,
+            party_a_pk.y,
+            party_b_pk.x,
+            party_b_pk.y,
+            token_a_id,
+            value_a,
+            token_b_id,
+            value_b,
+            swap_nonce,
+        ])
+            .unwrap();
+
+        // Verify swap_link is non-zero (valid swap)
+        assert!(!swap_link.is_zero(), "Swap link should be non-zero");
+
+        // Verify determinism - same inputs = same output
+        let swap_link_2 = poseidon
+            .hash(&[
+            Fr254::from_le_bytes_mod_order(b"SWAP_V1"),
+            party_a_pk.x,
+            party_a_pk.y,
+            party_b_pk.x,
+            party_b_pk.y,
+            token_a_id,
+            value_a,
+            token_b_id,
+            value_b,
+            swap_nonce,
+        ])
+            .unwrap();
+
+        assert_eq!(swap_link, swap_link_2, "Swap link should be deterministic");
     }
 }

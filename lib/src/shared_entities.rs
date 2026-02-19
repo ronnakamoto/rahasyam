@@ -12,6 +12,7 @@ use ark_ec::twisted_edwards::Affine as TEAffine;
 use ark_ff::PrimeField;
 use ark_serialize::SerializationError;
 use ark_std::UniformRand;
+use ark_std::Zero;
 use jf_primitives::poseidon::{FieldHasher, Poseidon, PoseidonError};
 use log::{error, warn};
 use nf_curves::ed_on_bn254::BabyJubjub as BabyJubJub;
@@ -115,6 +116,10 @@ pub struct OnChainTransaction {
     pub nullifiers: [Fr254; 4],
     // public data (public inputs) associated with this transaction.
     pub public_data: CompressedSecrets,
+    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub swap_link: Fr254,
+    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub deadline: Fr254,
 }
 /// Converts the NF_4 smart contract representation of an on-chain transaction (i.e. a transaction that is
 /// rolled up into a block), into a form more sutiable for manipulation in Rust.
@@ -139,6 +144,10 @@ impl From<Nightfall::OnChainTransaction> for OnChainTransaction {
                     .0
             }),
             public_data: ntx.public_data.into(),
+            // NOTE: swap_link & deadline not yet emitted by smart contract.
+            // They are defaulted to zero for backward compatibility.
+            swap_link: Fr254::zero(),
+            deadline: Fr254::zero(),
         }
     }
 }
@@ -152,6 +161,9 @@ impl From<OnChainTransaction> for Nightfall::OnChainTransaction {
             commitments: otx.commitments.map(|c| Uint256::from(c).into()),
             nullifiers: otx.nullifiers.map(|n| Uint256::from(n).into()),
             public_data: otx.public_data.into(),
+            // TODO after SmartContract Updated
+            // swap_link: FrBn254::from(otx.swap_link).into(),
+            // deadline: FrBn254::from(otx.deadline).into(),
         }
     }
 }
@@ -164,6 +176,8 @@ impl<P> From<&ClientTransaction<P>> for OnChainTransaction {
             commitments: client_transaction.commitments,
             nullifiers: client_transaction.nullifiers,
             public_data: client_transaction.compressed_secrets,
+            swap_link: client_transaction.swap_link,
+            deadline: client_transaction.deadline,
         }
     }
 }
@@ -177,6 +191,8 @@ impl From<&PublicInputs> for OnChainTransaction {
             public_data: CompressedSecrets {
                 cipher_text: p.compressed_secrets,
             },
+            swap_link: p.swap_link,
+            deadline: p.deadline,
         }
     }
 }
@@ -245,6 +261,12 @@ pub struct ClientTransaction<P> {
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub nullifiers: [Fr254; 4],
     pub compressed_secrets: CompressedSecrets,
+    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub swap_link: Fr254, // ← SWAP_LINK
+    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub deadline: Fr254, // ← DEADLINE
+    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub swap_side: Fr254, // ← SWAP_SIDE (is_party_a)
     pub proof: P,
 }
 
@@ -269,6 +291,9 @@ impl<P: Proof + Debug + Serialize + Clone> From<&ClientTransaction<P>> for Publi
             nullifiers: tx.nullifiers,
             compressed_secrets: tx.compressed_secrets.cipher_text,
             roots: tx.historic_commitment_roots,
+            swap_link: tx.swap_link,
+            deadline: tx.deadline,
+            swap_side: tx.swap_side,
         }
     }
 }
