@@ -66,12 +66,13 @@ impl ProvingEngine<PlonkProof> for PlonkProvingEngine {
         let mut circuit = PlonkCircuit::<Fr254>::build_circuit(public_inputs, private_inputs)?;
         // add an extra check for circuit satisfiability. It's more compute but it gives better information in case of failure
         circuit.finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()?;
-        #[cfg(test)]
         {
             use jf_relation::Circuit;
             let pi = circuit.public_input()?;
-            circuit.check_circuit_satisfiability(&pi)?;
+            if let Err(e) = circuit.check_circuit_satisfiability(&pi) {
+            error!("Circuit is not satisfied before recursive_prove: {e:?}");
         }
+    }
         debug!("Retrieving proving and verifying keys");
         let pk: &'static Arc<ProvingKey<UnivariateKzgPCS<Bn254>>> = get_client_proving_key();
         // Our clients proofs must have blinding enabled.

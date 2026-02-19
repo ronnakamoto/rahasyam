@@ -1354,6 +1354,30 @@ mod tests {
         .with_swap(expected_swap_link, deadline, Fr254::zero())
     }
 
+    fn assert_valid_circuit(mut info: CircuitTestInfo) {
+        let circuit = unified_circuit_builder(&mut info.public_inputs, &mut info.private_inputs)
+            .expect("circuit should build for valid inputs");
+        circuit
+            .check_circuit_satisfiability(Vec::from(&info.public_inputs).as_slice())
+            .expect("circuit should be satisfiable for valid inputs");
+    }
+
+    fn assert_rejected_circuit(mut info: CircuitTestInfo) {
+        match unified_circuit_builder(&mut info.public_inputs, &mut info.private_inputs) {
+            Ok(circuit) => {
+                assert!(
+                    circuit
+                        .check_circuit_satisfiability(Vec::from(&info.public_inputs).as_slice(),)
+                        .is_err(),
+                    "invalid inputs should not satisfy the circuit"
+                );
+            }
+            Err(_) => {
+                // Invalid inputs can be rejected during circuit construction.
+            }
+        }
+    }
+
     #[test]
     fn test_transfer() {
         for _ in 0..10 {
@@ -1653,6 +1677,22 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_ignores_party_a_key_when_not_swap() {
+        let mut info = build_valid_transfer_inputs();
+
+        let original = info.private_inputs.party_a_public_key;
+        let mut new_root = info.private_inputs.root_key + Fr254::one();
+        let mut different_key = ZKPKeys::new(new_root).unwrap();
+        while different_key.zkp_public_key == original {
+            new_root += Fr254::one();
+            different_key = ZKPKeys::new(new_root).unwrap();
+        }
+
+        info.private_inputs.party_a_public_key = different_key.zkp_public_key;
+        assert_valid_circuit(info);
+    }
+
+    #[test]
     fn test_swap() {
         for _ in 0..10 {
             let mut circuit_test_info = build_valid_swap_inputs();
@@ -1803,6 +1843,136 @@ mod tests {
                 "party B swap should output swap_side=0"
             );
         }
+    }
+
+    #[test]
+    fn test_transfer_spends_previous_deposit_for_party_a() {
+        let info = build_valid_transfer_inputs();
+        assert_eq!(
+            info.private_inputs.public_keys[1],
+            Affine::<BabyJubjub>::zero()
+        );
+        assert_eq!(
+            info.private_inputs.public_keys[0],
+            info.private_inputs.party_a_public_key
+        );
+        assert_valid_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_party_a_spends_previous_deposit() {
+        let info = build_valid_swap_inputs();
+        assert_eq!(
+            info.private_inputs.public_keys[1],
+            Affine::<BabyJubjub>::zero()
+        );
+        assert_eq!(
+            info.private_inputs.public_keys[0],
+            info.private_inputs.party_a_public_key
+        );
+        assert_valid_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_party_b_spends_previous_deposit() {
+        let info = build_swap_inputs_as_party_b();
+        assert_eq!(
+            info.private_inputs.public_keys[1],
+            Affine::<BabyJubjub>::zero()
+        );
+        assert_eq!(
+            info.private_inputs.public_keys[0],
+            info.private_inputs.party_b_public_key
+        );
+        assert_valid_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_when_prover_matches_neither_party() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.root_key += Fr254::one();
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_neutral_party_keys() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.party_a_public_key = Affine::<BabyJubjub>::zero();
+        assert_rejected_circuit(info);
+
+        let mut info_b = build_valid_swap_inputs();
+        info_b.private_inputs.party_b_public_key = Affine::<BabyJubjub>::zero();
+        assert_rejected_circuit(info_b);
+    }
+
+    #[test]
+    fn test_swap_rejects_swap_and_withdraw_combination() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.withdraw_address = Fr254::one();
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_duplicate_non_zero_nullifiers() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.nullifiers_values[1] = info.private_inputs.nullifiers_values[0];
+        info.private_inputs.nullifiers_salts[1] = info.private_inputs.nullifiers_salts[0];
+        info.private_inputs.public_keys[1] = info.private_inputs.public_keys[0];
+        info.private_inputs.secret_preimages[1] = info.private_inputs.secret_preimages[0];
+        info.private_inputs.membership_proofs[1] = info.private_inputs.membership_proofs[0].clone();
+        info.public_inputs.roots[1] = info.public_inputs.roots[0];
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_swap_nonce_over_64_bits() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.swap_nonce = Fr254::from((1u128 << 65) + 1);
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_deadline_over_64_bits() {
+        let mut info = build_valid_swap_inputs();
+        info.private_inputs.deadline = Fr254::from((1u128 << 65) + 1);
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_swap_rejects_tampered_public_swap_outputs() {
+        let mut info = build_valid_swap_inputs();
+        let circuit = unified_circuit_builder(&mut info.public_inputs, &mut info.private_inputs)
+            .expect("valid swap should build");
+        circuit
+            .check_circuit_satisfiability(Vec::from(&info.public_inputs).as_slice())
+            .expect("valid swap should satisfy circuit");
+
+        let mut tampered = info.public_inputs;
+        tampered.swap_link += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered).as_slice())
+                .is_err(),
+            "tampered swap_link should be rejected"
+        );
+
+        let mut tampered_deadline = info.public_inputs;
+        tampered_deadline.deadline += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered_deadline).as_slice())
+                .is_err(),
+            "tampered deadline should be rejected"
+        );
+
+        let mut tampered_side = info.public_inputs;
+        tampered_side.swap_side += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered_side).as_slice())
+                .is_err(),
+            "tampered swap_side should be rejected"
+        );
     }
 
     #[test]
