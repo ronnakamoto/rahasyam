@@ -574,15 +574,15 @@ The proposer matches two swap transactions by their `swap_link` (a hash of all s
 The components of the JSON object have the following meaning:
 
 - `partyA`: The swap initiator's token details and identity.
-  - `ercAddress`: The Ethereum address of the ERC20|721|1155 contract for party A's token.
-  - `tokenId`: The token ID of the token, for a 721|1155 contract. It should be set to `"0x00"` for an ERC20 contract.
-  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721. ERC3525 (`"0x03"`) is not supported for swaps.
+  - `ercAddress`: The Ethereum address of the ERC20|721|1155|3525 contract for party A's token.
+  - `tokenId`: The token ID of the token, for a 721|1155|3525 contract. It should be set to `"0x00"` for an ERC20 contract.
+  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721, `"0x03"` for ERC3525.
   - `value`: The amount party A is offering in the swap.
   - `publicKey`: The compressed ZKP public key of party A. See the section on key derivation for more details.
 - `partyB`: The counterparty's token details and identity.
-  - `ercAddress`: The Ethereum address of the ERC20|721|1155 contract for party B's token.
-  - `tokenId`: The token ID of the token, for a 721|1155 contract. It should be set to `"0x00"` for an ERC20 contract.
-  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721. ERC3525 (`"0x03"`) is not supported for swaps.
+  - `ercAddress`: The Ethereum address of the ERC20|721|1155|3525 contract for party B's token.
+  - `tokenId`: The token ID of the token, for a 721|1155|3525 contract. It should be set to `"0x00"` for an ERC20 contract.
+  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721, `"0x03"` for ERC3525.
   - `value`: The amount party B is offering in the swap.
   - `publicKey`: The compressed ZKP public key of party B. See the section on key derivation for more details.
 - `swapNonce`: A unique nonce to identify this swap. Must be non-zero and fit within 64 bits.
