@@ -1,4 +1,4 @@
-use super::client_operation::handle_client_operation;
+use super::client_operation::{handle_client_operation, SwapParams};
 use crate::{
     domain::{
         entities::{
@@ -28,7 +28,7 @@ use ark_std::{rand::thread_rng, UniformRand};
 use configuration::{addresses::get_addresses, settings::get_settings};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
-    client_models::{DeEscrowDataReq, NF3DepositRequest, NF3TransferRequest, NF3WithdrawRequest},
+    client_models::{DeEscrowDataReq, NF3DepositRequest, NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest},
     commitments::{Commitment, Nullifiable},
     contract_conversions::FrBn254,
     derive_key::ZKPKeys,
@@ -40,7 +40,7 @@ use lib::{
     serialization::ark_de_hex,
     shared_entities::{DepositSecret, Preimage, Salt, TokenType},
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BJJTEAffine as JubJub, BabyJubjub, Fr as BJJScalar};
 use nightfall_bindings::artifacts::{Nightfall, IERC1155, IERC20, IERC3525, IERC721};
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,15 @@ where
         .and(warp::body::json())
         .and_then(queue_withdraw_request)
 }
+pub fn swap_request<P>(
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone
+where
+    P: Proof,
+{
+    path!("v1" / "swap")
+        .and(warp::body::json())
+        .and_then(queue_swap_request)
+}
 
 /// function to queue the deposit requests
 async fn queue_deposit_request(
@@ -121,6 +130,14 @@ async fn queue_withdraw_request(
     withdraw_req: NF3WithdrawRequest,
 ) -> Result<impl Reply, warp::Rejection> {
     let transaction_request = TransactionRequest::Withdraw(withdraw_req);
+    let uuid_string = Uuid::new_v4().to_string();
+
+    queue_request(transaction_request, uuid_string).await
+}
+
+/// function to queue the swap requests
+async fn queue_swap_request(swap_req: NF3SwapRequest) -> Result<impl Reply, warp::Rejection> {
+    let transaction_request = TransactionRequest::Swap(swap_req);
     let uuid_string = Uuid::new_v4().to_string();
 
     queue_request(transaction_request, uuid_string).await
@@ -209,6 +226,7 @@ where
         TransactionRequest::Withdraw(withdraw_req) => {
             handle_withdraw::<P, E, N>(withdraw_req, request_id).await
         }
+        TransactionRequest::Swap(swap_req) => handle_swap::<P, E, N>(swap_req, request_id).await,
     }
 }
 
@@ -428,6 +446,42 @@ pub async fn handle_deposit<N: NightfallContract>(
     Ok(NotificationPayload::TransactionEvent { response, uuid })
 }
 
+async fn rollback_commitments<DB>(db: &DB, commitment_ids: &[Fr254], id: &str)
+where
+    DB: CommitmentDB<Fr254, CommitmentEntry>,
+{
+    info!(
+        "{id} Rolling back {} spend commitments",
+        commitment_ids.len()
+    );
+
+    for commitment_id in commitment_ids {
+        if let Some(existing) = db.get_commitment(commitment_id).await {
+            let _ = db
+                .mark_commitments_unspent(
+                    &[*commitment_id],
+                    existing.layer_1_transaction_hash,
+                    existing.layer_2_block_number,
+                )
+                .await;
+        } else {
+            warn!(
+                "{id} Could not rollback value commitment {}: commitment not found",
+                commitment_id.to_hex_string()
+            );
+        }
+    }
+}
+
+fn fits_in_bits_fr254(value: Fr254, bits: usize) -> bool {
+    let limbs = BigInteger256::from(value).0;
+    match bits {
+        64 => limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0,
+        96 => limbs[2] == 0 && limbs[3] == 0 && (limbs[1] >> 32) == 0,
+        _ => false,
+    }
+}
+
 async fn handle_transfer<P, E, N>(
     transfer_req: NF3TransferRequest,
     id: &str,
@@ -527,18 +581,8 @@ where
                         .iter()
                         .filter_map(|c| c.hash().ok())
                         .collect::<Vec<_>>();
-
-                    for commitment_id in &value_commitment_ids {
-                        if let Some(existing) = db.get_commitment(commitment_id).await {
-                            let _ = db
-                                .mark_commitments_unspent(
-                                    &[*commitment_id],
-                                    existing.layer_1_transaction_hash,
-                                    existing.layer_2_block_number,
-                                )
-                                .await;
-                        }
-                    }
+                    rollback_commitments(db, &value_commitment_ids, id).await;
+                    let _ = db.update_request(id, RequestStatus::Failed).await;
                     return Err(TransactionHandlerError::CustomError(e.to_string()));
                 }
             }
@@ -646,19 +690,20 @@ where
         transport: Transport::OffChain,
         operation_type: OperationType::Transfer,
     };
-    match handle_client_operation::<P, E, N>(
+        match handle_client_operation::<P, E, N>(
         op,
         spend_commitments,
         new_commitments,
         ephemeral_private_key,
         Fr254::zero(),
         secret_preimages,
+        None,
         id,
     )
     .await
-    {
-        Ok(res) => Ok(res),
-        Err(e) => {
+        {
+            Ok(res) => Ok(res),
+            Err(e) => {
             //  rollback to UNSPENT status if handle_client_operation fails
             let db = get_db_connection().await;
 
@@ -667,23 +712,7 @@ where
                 .iter()
                 .map(|c| c.hash().unwrap())
                 .collect::<Vec<_>>();
-
-            info!(
-                "{id} Rolling back {} spend commitments",
-                commitment_ids.len()
-            );
-
-            for commitment_id in &commitment_ids {
-                if let Some(existing) = db.get_commitment(commitment_id).await {
-                    let _ = db
-                        .mark_commitments_unspent(
-                            &[*commitment_id],
-                            existing.layer_1_transaction_hash,
-                            existing.layer_2_block_number,
-                        )
-                        .await;
-                }
-            }
+            rollback_commitments(db, &commitment_ids, id).await;
             // Delete new commitments
             let new_commitment_ids = new_commitments
                 .iter()
@@ -692,6 +721,7 @@ where
 
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
             let _ = db.delete_commitments(new_commitment_ids).await;
+            let _ = db.update_request(id, RequestStatus::Failed).await;
 
             Err(TransactionHandlerError::CustomError(e.to_string()))
         }
@@ -765,17 +795,8 @@ where
                         .iter()
                         .filter_map(|c| c.hash().ok())
                         .collect::<Vec<_>>();
-                    for commitment_id in &value_commitment_ids {
-                        if let Some(existing) = db.get_commitment(commitment_id).await {
-                            let _ = db
-                                .mark_commitments_unspent(
-                                    &[*commitment_id],
-                                    existing.layer_1_transaction_hash,
-                                    existing.layer_2_block_number,
-                                )
-                                .await;
-                        }
-                    }
+                    rollback_commitments(db, &value_commitment_ids, id).await;
+                    let _ = db.update_request(id, RequestStatus::Failed).await;
                     return Err(TransactionHandlerError::CustomError(e.to_string()));
                 }
             }
@@ -878,6 +899,7 @@ where
         BJJScalar::zero(),
         recipient_address,
         secret_preimages,
+        None,
         id,
     )
     .await
@@ -918,22 +940,7 @@ where
                 .iter()
                 .map(|c| c.hash().unwrap())
                 .collect::<Vec<_>>();
-
-            info!(
-                "{id} Rolling back {} spend commitments to Unspent",
-                commitment_ids.len()
-            );
-            for commitment_id in &commitment_ids {
-                if let Some(existing) = db.get_commitment(commitment_id).await {
-                    let _ = db
-                        .mark_commitments_unspent(
-                            &[*commitment_id],
-                            existing.layer_1_transaction_hash,
-                            existing.layer_2_block_number,
-                        )
-                        .await;
-                }
-            }
+            rollback_commitments(db, &commitment_ids, id).await;
 
             // Delete new commitments
             let new_commitment_ids = new_commitments
@@ -943,6 +950,7 @@ where
 
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
             let _ = db.delete_commitments(new_commitment_ids).await;
+            let _ = db.update_request(id, RequestStatus::Failed).await;
             return Err(e);
         }
     };
@@ -967,16 +975,390 @@ where
     Ok(NotificationPayload::TransactionEvent { response, uuid })
 }
 
+async fn handle_swap<P, E, N>(
+    swap_req: NF3SwapRequest,
+    id: &str,
+) -> Result<NotificationPayload, TransactionHandlerError>
+where
+    P: Proof,
+    E: ProvingEngine<P>,
+    N: NightfallContract,
+{
+    debug!("{id} Handling swap request: {swap_req:?}");
+
+    let NF3SwapRequest {
+        party_a,
+        party_b,
+        swap_nonce,
+        deadline,
+        fee,
+    } = swap_req;
+
+    let token_type_a: TokenType = u8::from_str_radix(party_a.token_type.trim_start_matches("0x"), 16)
+        .map_err(|e| {
+            error!("{id} Error when reading party_a token_type: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?
+        .into();
+
+    let token_type_b: TokenType = u8::from_str_radix(party_b.token_type.trim_start_matches("0x"), 16)
+        .map_err(|e| {
+            error!("{id} Error when reading party_b token_type: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?
+        .into();
+
+    if token_type_a == TokenType::ERC3525 || token_type_b == TokenType::ERC3525 {
+        error!("{id} Invalid swap request: ERC3525 is not supported for swaps");
+        return Err(TransactionHandlerError::CustomError(
+            "swap does not support ERC3525".to_string(),
+        ));
+    }
+
+
+    // Convert request fields to appropriate types
+    let nf_token_a_id = to_nf_token_id_from_str(party_a.erc_address.as_str(), party_a.token_id.as_str())
+        .map_err(|e| {
+            error!("{id} Error when retrieving the Nightfall token id for token A: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?;
+
+    let nf_token_b_id = to_nf_token_id_from_str(party_b.erc_address.as_str(), party_b.token_id.as_str())
+        .map_err(|e| {
+            error!("{id} Error when retrieving the Nightfall token id for token B: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?;
+
+    let keys = get_zkp_keys().lock().expect("Poisoned Mutex lock").clone();
+
+    // let value = Fr254::from_hex_string(value.as_str()).map_err(|e| {
+    //     error!("{id} Error when reading value: {e}");
+    //     TransactionHandlerError::CustomError(e.to_string())
+    // })?;
+
+    let fee = Fr254::from_hex_string(fee.as_str()).map_err(|e| {
+        error!("{id} Error when reading fee: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let deadline_fr = Fr254::from_hex_string(deadline.as_str()).map_err(|e| {
+        error!("{id} Error when reading deadline: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let json_wrapped = format!("\"{}\"", party_a.public_key);
+    let party_a_pk: JubJub = serde_json::from_str::<JubJubPubKey>(&json_wrapped)
+        .map_err(|e| {
+            error!("{id} Could not deserialize party A public key: {e}");
+            TransactionHandlerError::CustomError(format!(
+                "Could not deserialize party A public key: {e}"
+            ))
+        })?
+        .0;
+
+    let json_wrapped = format!("\"{}\"", party_b.public_key);
+    let party_b_pk: JubJub = serde_json::from_str::<JubJubPubKey>(&json_wrapped)
+        .map_err(|e| {
+            error!("{id} Could not deserialize party B public key: {e}");
+            TransactionHandlerError::CustomError(format!(
+                "Could not deserialize party B public key: {e}"
+            ))
+        })?
+        .0;
+
+    // Parse swap values
+    let value_a_fr = Fr254::from_hex_string(party_a.value.as_str()).map_err(|e| {
+        error!("{id} Error when reading value_a: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let value_b_fr = Fr254::from_hex_string(party_b.value.as_str()).map_err(|e| {
+        error!("{id} Error when reading value_b: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let swap_nonce_fr = Fr254::from_hex_string(swap_nonce.as_str()).map_err(|e| {
+        error!("{id} Error when reading swap_nonce: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    if swap_nonce_fr.is_zero() {
+        error!("{id} Invalid swap request: swap_nonce must be non-zero");
+        return Err(TransactionHandlerError::CustomError(
+            "swap_nonce must be non-zero".to_string(),
+        ));
+    }
+
+    if deadline_fr.is_zero() {
+        error!("{id} Invalid swap request: deadline must be non-zero");
+        return Err(TransactionHandlerError::CustomError(
+            "deadline must be non-zero".to_string(),
+        ));
+    }
+
+    if !fits_in_bits_fr254(value_a_fr, 96) {
+        error!("{id} Invalid swap request: party_a.value exceeds 96 bits");
+        return Err(TransactionHandlerError::CustomError(
+            "party_a.value must fit in 96 bits".to_string(),
+        ));
+    }
+
+    if !fits_in_bits_fr254(value_b_fr, 96) {
+        error!("{id} Invalid swap request: party_b.value exceeds 96 bits");
+        return Err(TransactionHandlerError::CustomError(
+            "party_b.value must fit in 96 bits".to_string(),
+        ));
+    }
+
+    if !fits_in_bits_fr254(fee, 96) {
+        error!("{id} Invalid swap request: fee exceeds 96 bits");
+        return Err(TransactionHandlerError::CustomError(
+            "fee must fit in 96 bits".to_string(),
+        ));
+    }
+
+    if !fits_in_bits_fr254(swap_nonce_fr, 64) {
+        error!("{id} Invalid swap request: swap_nonce exceeds 64 bits");
+        return Err(TransactionHandlerError::CustomError(
+            "swap_nonce must fit in 64 bits".to_string(),
+        ));
+    }
+
+    if !fits_in_bits_fr254(deadline_fr, 64) {
+        error!("{id} Invalid swap request: deadline exceeds 64 bits");
+        return Err(TransactionHandlerError::CustomError(
+            "deadline must fit in 64 bits".to_string(),
+        ));
+    }
+
+    // Determine my role: am I party A or party B?
+    let is_party_a = keys.zkp_public_key == party_a_pk;
+    let is_party_b = keys.zkp_public_key == party_b_pk;
+
+    if !is_party_a && !is_party_b {
+        error!("{id} My public key doesn't match party A or party B");
+        return Err(TransactionHandlerError::CustomError(
+            "My public key doesn't match party A or party B".to_string(),
+        ));
+    }
+
+    if is_party_a && is_party_b {
+        error!("{id} Party A and party B cannot be the same");
+        return Err(TransactionHandlerError::CustomError(
+            "Party A and party B cannot be the same".to_string(),
+        ));
+    }
+
+    // Derive my token/value and counterparty from role
+    let (nf_token_id, value) = if is_party_a {
+        (nf_token_a_id, value_a_fr)
+    } else {
+        (nf_token_b_id, value_b_fr)
+    };
+
+    let counterparty_pk = if is_party_a { party_b_pk } else { party_a_pk };
+
+    // Generate ephemeral key for encryption
+    let ephemeral_private_key = {
+        let mut rng = ark_std::rand::thread_rng();
+        BJJScalar::rand(&mut rng)
+    };
+
+    // Compute shared secret with counterparty
+    let shared_secret: Affine<BabyJubjub> = (counterparty_pk * ephemeral_private_key).into();
+
+    // Select commitments to spend
+    let spend_commitments;
+    {
+        let db = get_db_connection().await;
+        let fee_token_id = get_fee_token_id();
+
+        let spend_value_commitments = find_usable_commitments(nf_token_id, value, db)
+            .await
+            .map_err(|e| {
+                error!("{id} Could not find enough usable value commitments for swap: {e}");
+                TransactionHandlerError::CustomError(e.to_string())
+            })?;
+
+        let spend_fee_commitments = if fee.is_zero() {
+            [Preimage::default(), Preimage::default()]
+        } else {
+            match find_usable_commitments(fee_token_id, fee, db).await {
+                Ok(commitments) => commitments,
+                Err(e) => {
+                    debug!("{id} Could not find enough usable fee commitments: {e}");
+                    // Rollback value commitments
+                    let value_commitment_ids = spend_value_commitments
+                        .iter()
+                        .filter_map(|c| c.hash().ok())
+                        .collect::<Vec<_>>();
+                    rollback_commitments(db, &value_commitment_ids, id).await;
+                    let _ = db.update_request(id, RequestStatus::Failed).await;
+                    return Err(TransactionHandlerError::CustomError(e.to_string()));
+                }
+            }
+        };
+
+        spend_commitments = [
+            spend_value_commitments[0],
+            spend_value_commitments[1],
+            spend_fee_commitments[0],
+            spend_fee_commitments[1],
+        ];
+    }
+
+    // Calculate change
+    let total_token_value = spend_commitments[..2]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+    let token_change = total_token_value - value;
+
+    let total_fee_value = spend_commitments[2..]
+        .iter()
+        .map(|c| c.get_value())
+        .sum::<Fr254>();
+    let fee_change = total_fee_value - fee;
+
+    // Derive shared salt
+    let poseidon = Poseidon::<Fr254>::new();
+    let shared_salt_hash = poseidon
+        .hash(&[shared_secret.x, shared_secret.y, DOMAIN_SHARED_SALT])
+        .map_err(|e| {
+            error!("{id} Failed to derive shared salt: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?;
+    let shared_salt = Salt::Transfer(shared_salt_hash);
+
+    // Create new commitments
+    // Commitment 0: Counterparty receives my tokens (uses shared salt)
+    let new_commitment_one = Preimage::new(
+        value,
+        nf_token_id,
+        spend_commitments[0].get_nf_slot_id(),
+        counterparty_pk,
+        shared_salt,
+    );
+
+    // Commitment 1: My change (if any)
+    let new_commitment_two = if !token_change.is_zero() {
+        Preimage::new(
+            token_change,
+            nf_token_id,
+            spend_commitments[0].get_nf_slot_id(),
+            keys.zkp_public_key,
+            Salt::new_transfer_salt(),
+        )
+    } else {
+        Preimage::default()
+    };
+
+    let nightfall_address = FrBn254::from(get_addresses().nightfall()).0;
+    let contract_nf_address = Affine::<BabyJubjub>::new_unchecked(Fr254::zero(), nightfall_address);
+
+    let fee_token_id = get_fee_token_id();
+
+    // Commitment 2: Fee to contract
+    let new_commitment_three = if !fee.is_zero() {
+        Preimage::new(
+            fee,
+            fee_token_id,
+            fee_token_id,
+            contract_nf_address,
+            Salt::new_transfer_salt(),
+        )
+    } else {
+        Preimage::default()
+    };
+
+    // Commitment 3: Fee change
+    let new_commitment_four = if !fee_change.is_zero() {
+        Preimage::new(
+            fee_change,
+            fee_token_id,
+            fee_token_id,
+            keys.zkp_public_key,
+            Salt::new_transfer_salt(),
+        )
+    } else {
+        Preimage::default()
+    };
+
+    let new_commitments = [
+        new_commitment_one,
+        new_commitment_two,
+        new_commitment_three,
+        new_commitment_four,
+    ];
+
+    let secret_preimages = [
+        spend_commitments[0].get_secret_preimage(),
+        spend_commitments[1].get_secret_preimage(),
+        spend_commitments[2].get_secret_preimage(),
+        spend_commitments[3].get_secret_preimage(),
+    ];
+
+    let op = Operation {
+        transport: Transport::OffChain,
+        operation_type: OperationType::Swap,
+    };
+
+    // Call handle_client_operation_swap with swap parameters
+    match handle_client_operation::<P, E, N>(
+        op,
+        spend_commitments,
+        new_commitments,
+        ephemeral_private_key,
+        Fr254::zero(),
+        secret_preimages,
+        Some(SwapParams {
+            party_a_public_key: party_a_pk,
+            party_b_public_key: party_b_pk,
+            token_a_id: nf_token_a_id,
+            value_a: value_a_fr,
+            token_b_id: nf_token_b_id,
+            value_b: value_b_fr,
+            swap_nonce: swap_nonce_fr,
+            deadline: deadline_fr,
+        }),
+        id,
+    )
+    .await
+    {
+        Ok(res) => Ok(res),
+        Err(e) => {
+            // Rollback on failure
+            let db = get_db_connection().await;
+
+            let commitment_ids = spend_commitments
+                .iter()
+                .filter_map(|c| c.hash().ok())
+                .collect::<Vec<_>>();
+            rollback_commitments(db, &commitment_ids, id).await;
+
+            let new_commitment_ids = new_commitments
+                .iter()
+                .filter_map(|c| c.hash().ok())
+                .collect::<Vec<_>>();
+
+            info!("{id} Deleting {} new commitments", new_commitment_ids.len());
+            let _ = db.delete_commitments(new_commitment_ids).await;
+            let _ = db.update_request(id, RequestStatus::Failed).await;
+
+            Err(TransactionHandlerError::CustomError(e.to_string()))
+            }
+        }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_ec::AffineRepr;
     use ark_ff::One;
     use ark_serialize::{CanonicalSerialize, Compress};
     use ark_std::Zero;
-    use lib::{
-        client_models::NF3RecipientData,
-        plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
-    };
+    use lib::client_models::{NF3RecipientData, NF3SwapRequest, SwapParty};
+    use lib::plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine};
     use nf_curves::ed_on_bn254::BabyJubjub;
     use nf_curves::ed_on_bn254::Fq;
 
@@ -1103,6 +1485,363 @@ mod tests {
             );
         } else {
             panic!("Expected TransactionHandlerError::CustomError with recipient public key deserialization failure");
+        }
+    }
+
+    /// Test that handle_swap rejects invalid counterparty public key
+    #[tokio::test]
+    async fn test_swap_api_rejects_invalid_party_keys() {
+        let invalid_hex =
+            "0x000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000".to_string();
+        let invalid_swap_req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: invalid_hex.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: invalid_hex.clone(),
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+        let result = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            invalid_swap_req,
+            "test-swap-invalid-party-keys",
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "Swap API should reject invalid party public keys"
+        );
+        if let Err(TransactionHandlerError::CustomError(msg)) = result {
+            assert!(
+                msg.contains("Could not deserialize party A public key")
+                    || msg.contains("Could not deserialize party B public key"),
+                "Expected deserialization failure, got: {msg}"
+            );
+        } else {
+            panic!("Expected TransactionHandlerError::CustomError for party public key");
+        }
+    }
+
+    /// Test that handle_swap rejects when my_public_key doesn't match party A or B
+    #[tokio::test]
+    async fn test_swap_api_rejects_mismatched_party_keys() {
+        let other_point = Affine::<BabyJubjub>::generator();
+        let mut other_bytes = Vec::new();
+        other_point
+            .serialize_with_mode(&mut other_bytes, Compress::Yes)
+            .unwrap();
+        other_bytes.reverse();
+        let other_point_hex = format!("0x{}", hex::encode(other_bytes));
+
+        let swap_req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: other_point_hex.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: other_point_hex.clone(),
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let result = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            swap_req,
+            "test-swap-mismatch",
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "Swap API should reject when my_public_key doesn't match party A or B"
+        );
+        if let Err(TransactionHandlerError::CustomError(msg)) = result {
+            assert!(
+                msg.contains("My public key doesn't match party A or party B"),
+                "Expected key mismatch error, got: {msg}"
+            );
+        } else {
+            panic!("Expected TransactionHandlerError::CustomError for key mismatch");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_nonce_over_64_bits() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x010000000000000000".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-nonce-over-64",
+        ).await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("swap_nonce must fit in 64 bits"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_deadline_over_64_bits() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x010000000000000000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-deadline-over-64",
+        )
+        .await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("deadline must fit in 64 bits"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_party_a_value_over_96_bits() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x01000000000000000000000000".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-party-a-value-over-96",
+        )
+        .await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("party_a.value must fit in 96 bits"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_party_b_value_over_96_bits() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x01000000000000000000000000".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-party-b-value-over-96",
+        )
+        .await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("party_b.value must fit in 96 bits"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_fee_over_96_bits() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x01000000000000000000000000".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-fee-over-96",
+        )
+        .await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("fee must fit in 96 bits"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_erc3525() {
+        let valid_pk = {
+            let p = Affine::<BabyJubjub>::generator();
+            let mut b = Vec::new();
+            p.serialize_with_mode(&mut b, Compress::Yes).unwrap();
+            b.reverse();
+            format!("0x{}", hex::encode(b))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x03".to_string(), // ERC3525
+                value: "0x04".to_string(),
+                public_key: valid_pk.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(), // ERC20
+                value: "0x05".to_string(),
+                public_key: valid_pk,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-erc3525-rejected",
+        )
+        .await;
+
+        assert!(res.is_err());
+        if let Err(TransactionHandlerError::CustomError(msg)) = res {
+            assert!(msg.contains("swap does not support ERC3525"), "got: {msg}");
+        } else {
+            panic!("Expected CustomError");
         }
     }
 }

@@ -21,8 +21,8 @@ use jf_primitives::{
 use lib::{
     blockchain_client::BlockchainClientConnection,
     client_models::{
-        DeEscrowDataReq, KeyRequest, NF3DepositRequest, NF3RecipientData, NF3TransferRequest,
-        NF3WithdrawRequest, WithdrawDataReq,
+        DeEscrowDataReq, KeyRequest, NF3DepositRequest, NF3RecipientData, NF3SwapRequest,
+        NF3TransferRequest, NF3WithdrawRequest, SwapParty, WithdrawDataReq,
     },
     commitments::Commitment,
     derive_key::ZKPKeys,
@@ -897,6 +897,34 @@ pub async fn create_nf3_transfer_transaction(
     Ok(Uuid::parse_str(&returned_id).unwrap())
 }
 
+pub async fn create_nf3_swap_transaction(
+    client: &reqwest::Client,
+    url: Url,
+    swap_request: NF3SwapRequest,
+) -> Result<Uuid, TestError> {
+    let id = Uuid::new_v4().to_string();
+    info!("Creating swap transaction offchain {}", &id);
+    let res = client
+        .post(url.clone())
+        .json(&serde_json::json!(swap_request))
+        .header(REQUEST_ID, &id)
+        .send()
+        .await
+        .map_err(|e| TestError::new(e.to_string()))?;
+    res.error_for_status_ref()
+        .map_err(|e| TestError::new(e.to_string()))?;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let returned_id = res
+        .headers()
+        .get(REQUEST_ID)
+        .unwrap()
+        .to_str()
+        .map_err(|e| TestError::new(e.to_string()))?
+        .to_string();
+    info!("Swap transaction {returned_id} has been accepted by the client");
+    Ok(Uuid::parse_str(&returned_id).unwrap())
+}
+
 pub async fn create_nf3_withdraw_transaction(
     client: &reqwest::Client,
     url: Url,
@@ -1070,6 +1098,40 @@ fn create_nf3_withdraw_request(
         token_type: token_type.to_string(),
         value,
         recipient_address,
+        fee,
+    }
+}
+
+pub fn create_nf3_swap_request(
+    party_a_public_key: String,
+    party_b_public_key: String,
+    party_a_token_type: TokenType,
+    party_a_token_id: String,
+    value_a: String,
+    party_b_token_type: TokenType,
+    party_b_token_id: String,
+    value_b: String,
+    fee: String,
+    swap_nonce: String,
+    deadline: String,
+) -> NF3SwapRequest {
+    NF3SwapRequest {
+        party_a: SwapParty {
+            erc_address: format!("0x{}", party_a_token_type.address()),
+            token_id: party_a_token_id,
+            token_type: party_a_token_type.to_string(),
+            value: value_a,
+            public_key: party_a_public_key,
+        },
+        party_b: SwapParty {
+            erc_address: format!("0x{}", party_b_token_type.address()),
+            token_id: party_b_token_id,
+            token_type: party_b_token_type.to_string(),
+            value: value_b,
+            public_key: party_b_public_key,
+        },
+        swap_nonce,
+        deadline,
         fee,
     }
 }
@@ -1250,7 +1312,7 @@ pub fn build_valid_transfer_inputs(rng: &mut impl Rng) -> (PublicInputs, Private
         .nf_token_a_id(nf_token_id)
         .nf_slot_id(nf_slot_id)
         .ephemeral_key(ephemeral_key)
-        .recipient_public_key(recipient_public_key)
+        .party_b_public_key(recipient_public_key)
         .nullifiers_values(&[
             nullified_one.get_value(),
             nullified_two.get_value(),

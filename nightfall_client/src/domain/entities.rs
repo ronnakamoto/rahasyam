@@ -104,6 +104,7 @@ pub enum OperationType {
     Deposit,
     Withdraw,
     Transfer,
+    Swap,
 }
 
 impl Display for OperationType {
@@ -112,6 +113,7 @@ impl Display for OperationType {
             OperationType::Deposit => write!(f, "Deposit"),
             OperationType::Withdraw => write!(f, "Withdraw"),
             OperationType::Transfer => write!(f, "Transfer"),
+            OperationType::Swap => write!(f, "Swap"),
         }
     }
 }
@@ -122,6 +124,7 @@ impl From<OperationType> for u8 {
             OperationType::Deposit => 0,
             OperationType::Withdraw => 1,
             OperationType::Transfer => 2,
+            OperationType::Swap => 3,
         }
     }
 }
@@ -132,6 +135,7 @@ impl From<u8> for OperationType {
             0 => OperationType::Deposit,
             1 => OperationType::Withdraw,
             2 => OperationType::Transfer,
+            3 => OperationType::Swap,
             _ => OperationType::Deposit,
         }
     }

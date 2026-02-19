@@ -13,7 +13,7 @@ use crate::{
 };
 use configuration::settings::get_settings;
 use lib::{
-    client_models::{NF3DepositRequest, NF3TransferRequest, NF3WithdrawRequest},
+    client_models::{NF3DepositRequest, NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest},
     nf_client_proof::{Proof, ProvingEngine},
     shared_entities::SynchronisationPhase::Desynchronized,
 };
@@ -33,6 +33,7 @@ pub enum TransactionRequest {
     Deposit(NF3DepositRequest),
     Transfer(NF3TransferRequest),
     Withdraw(NF3WithdrawRequest),
+    Swap(NF3SwapRequest),
 }
 
 /// This function is used to provide a singleton request queue across the entire application.
