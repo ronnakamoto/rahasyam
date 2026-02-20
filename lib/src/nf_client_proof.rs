@@ -228,7 +228,7 @@ impl Default for PrivateInputs {
             ephemeral_key: Fr254::zero(),
             withdraw_address: Fr254::zero(),
             secret_preimages: [[Fr254::zero(); 3]; 4],
-            // === NEW: SWAP DEFAULTS (all neutral/zero) ===
+            // === SWAP DEFAULTS (all neutral/zero) ===
             party_a_public_key: TEAffine::<BabyJubjub>::generator(),
             party_b_public_key: TEAffine::<BabyJubjub>::generator(),
             nf_token_a_id: Fr254::zero(),
@@ -432,7 +432,7 @@ pub struct PrivateInputsVar {
     pub withdraw_flag: BoolVar,
     /// The preimages to the secret hashes used for deposits
     pub secret_preimages: [[Variable; 3]; 4],
-    // === NEW: SWAP FIELDS ===
+    // === SWAP FIELDS ===
     pub party_a_public_key: PointVariable,
     pub party_b_public_key: PointVariable,
     pub nf_token_a_id: Variable,

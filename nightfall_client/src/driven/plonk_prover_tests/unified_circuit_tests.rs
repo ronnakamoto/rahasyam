@@ -29,13 +29,14 @@ mod tests {
     use jf_relation::{Arithmetization, Circuit};
     use lib::{
         commitments::Commitment,
+        deposit_circuit::deposit_circuit_builder,
         derive_key::ZKPKeys,
         hex_conversion::HexConvertible,
         nf_client_proof::{PrivateInputs, PublicInputs},
         nf_token_id::to_nf_token_id_from_str,
         plonk_prover::circuits::{unified_circuit::unified_circuit_builder, DOMAIN_SHARED_SALT},
         secret_hash::SecretHash,
-        shared_entities::{DepositSecret, Preimage, Salt},
+        shared_entities::{DepositData, DepositSecret, Preimage, Salt},
     };
     use nf_curves::ed_on_bn254::{BabyJubjub, Fq as Fr254, Fr as BJJScalar};
     use num_bigint::BigUint;
@@ -1378,6 +1379,43 @@ mod tests {
         }
     }
 
+    fn inject_deposit_commitment_as_first_spend(info: &mut CircuitTestInfo) {
+        let mut rng = jf_utils::test_rng();
+        let deposit_secret = DepositSecret::new(
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+        );
+        let secret_hash = deposit_secret.hash().expect("deposit secret hash");
+        let deposit_data = [
+            DepositData {
+                nf_token_id: info.private_inputs.nf_token_a_id,
+                nf_slot_id: info.private_inputs.nf_slot_id,
+                value: info.private_inputs.nullifiers_values[0],
+                secret_hash,
+            },
+            DepositData::default(),
+            DepositData::default(),
+            DepositData::default(),
+        ];
+        let mut deposit_public_inputs = PublicInputs::default();
+        let deposit_circuit = deposit_circuit_builder(&deposit_data, &mut deposit_public_inputs)
+            .expect("deposit circuit should build");
+        deposit_circuit
+            .check_circuit_satisfiability(Vec::from(&deposit_public_inputs).as_slice())
+            .expect("deposit circuit should be satisfiable");
+
+        let deposit_commitment = deposit_public_inputs.commitments[0];
+        let (membership_proof, root) = generate_random_path(deposit_commitment, &mut rng);
+
+        info.private_inputs.public_keys[0] = Affine::<BabyJubjub>::zero();
+        info.private_inputs.nullifiers_values[0] = deposit_data[0].value;
+        info.private_inputs.nullifiers_salts[0] = secret_hash;
+        info.private_inputs.secret_preimages[0] = deposit_secret.to_array();
+        info.private_inputs.membership_proofs[0] = membership_proof;
+        info.public_inputs.roots[0] = root;
+    }
+
     #[test]
     fn test_transfer() {
         for _ in 0..10 {
@@ -1846,44 +1884,16 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_spends_previous_deposit_for_party_a() {
-        let info = build_valid_transfer_inputs();
-        assert_eq!(
-            info.private_inputs.public_keys[1],
-            Affine::<BabyJubjub>::zero()
-        );
-        assert_eq!(
-            info.private_inputs.public_keys[0],
-            info.private_inputs.party_a_public_key
-        );
+    fn test_deposit_commitment_spendable_in_transfer() {
+        let mut info = build_valid_transfer_inputs();
+        inject_deposit_commitment_as_first_spend(&mut info);
         assert_valid_circuit(info);
     }
 
     #[test]
-    fn test_swap_party_a_spends_previous_deposit() {
-        let info = build_valid_swap_inputs();
-        assert_eq!(
-            info.private_inputs.public_keys[1],
-            Affine::<BabyJubjub>::zero()
-        );
-        assert_eq!(
-            info.private_inputs.public_keys[0],
-            info.private_inputs.party_a_public_key
-        );
-        assert_valid_circuit(info);
-    }
-
-    #[test]
-    fn test_swap_party_b_spends_previous_deposit() {
-        let info = build_swap_inputs_as_party_b();
-        assert_eq!(
-            info.private_inputs.public_keys[1],
-            Affine::<BabyJubjub>::zero()
-        );
-        assert_eq!(
-            info.private_inputs.public_keys[0],
-            info.private_inputs.party_b_public_key
-        );
+    fn test_deposit_commitment_spendable_in_swap() {
+        let mut info = build_valid_swap_inputs();
+        inject_deposit_commitment_as_first_spend(&mut info);
         assert_valid_circuit(info);
     }
 
@@ -1966,7 +1976,7 @@ mod tests {
         );
 
         let mut tampered_side = info.public_inputs;
-        tampered_side.swap_side += Fr254::one();
+        tampered_side.swap_side = Fr254::one() - tampered_side.swap_side;
         assert!(
             circuit
                 .check_circuit_satisfiability(Vec::from(&tampered_side).as_slice())

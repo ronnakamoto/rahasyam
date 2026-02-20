@@ -70,9 +70,9 @@ impl ProvingEngine<PlonkProof> for PlonkProvingEngine {
             use jf_relation::Circuit;
             let pi = circuit.public_input()?;
             if let Err(e) = circuit.check_circuit_satisfiability(&pi) {
-            error!("Circuit is not satisfied before recursive_prove: {e:?}");
+                error!("Circuit is not satisfied before recursive_prove: {e:?}");
+            }
         }
-    }
         debug!("Retrieving proving and verifying keys");
         let pk: &'static Arc<ProvingKey<UnivariateKzgPCS<Bn254>>> = get_client_proving_key();
         // Our clients proofs must have blinding enabled.

@@ -273,10 +273,9 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let pk_equal_and_swap = self.logic_and(is_swap, pk_equal)?;
         self.enforce_false(pk_equal_and_swap.into())?;
 
-        let swap_nonce_eff = self.conditional_select(is_swap, self.zero(), swap_nonce)?;
-        let deadline_eff = self.conditional_select(is_swap, self.zero(), deadline)?;
-        self.enforce_in_range(swap_nonce_eff, 64)?;
-        self.enforce_in_range(deadline_eff, 64)?;
+        self.enforce_in_range(swap_nonce, 64)?;
+        self.enforce_in_range(deadline, 64)?;
+        self.mul_gate(swap_nonce_is_zero.into(), deadline, self.zero())?;
 
         let final_swap_link = self.conditional_select(is_swap, self.zero(), computed_swap_link)?;
 
