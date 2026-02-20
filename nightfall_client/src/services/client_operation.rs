@@ -188,6 +188,9 @@ where
             compressed_secrets: CompressedSecrets {
                 cipher_text: public_inputs.compressed_secrets,
             },
+            swap_link: public_inputs.swap_link,
+            deadline: public_inputs.deadline,
+            swap_side: public_inputs.swap_side,
             proof,
         }),
         Err(e) => {

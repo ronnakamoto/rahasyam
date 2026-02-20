@@ -467,7 +467,11 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.set_variable_public(final_deadline)?;
         let deadline_out = self.witness(final_deadline)?;
 
-        // === Swap side (is_party_a) ===
+        // swap_side is a public role bit for swap matching:
+        // - 1 => prover is party A
+        // - 0 => prover is party B
+        // Proposer checks complementary sides (A+B) for the same swap_link to avoid
+        // pairing two same-side swap legs.
         let swap_side_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(swap_side_len_sep)?;
         let final_side = self.conditional_select(is_swap, self.zero(), is_party_a.into())?;
