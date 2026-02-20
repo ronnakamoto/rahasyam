@@ -261,11 +261,23 @@ pub struct ClientTransaction<P> {
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub nullifiers: [Fr254; 4],
     pub compressed_secrets: CompressedSecrets,
-    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex",
+        default
+    )]
     pub swap_link: Fr254, // ← SWAP_LINK
-    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex",
+        default
+    )]
     pub deadline: Fr254, // ← DEADLINE
-    #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex",
+        default
+    )]
     pub swap_side: Fr254, // ← SWAP_SIDE (is_party_a)
     pub proof: P,
 }
