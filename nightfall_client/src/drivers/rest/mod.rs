@@ -21,7 +21,6 @@ use self::{
     request_status::{get_queue_length, get_request_status},
     synchronisation::synchronisation,
     token_info::get_token_info,
-    withdraw::de_escrow,
 };
 
 pub mod balance;
@@ -33,7 +32,7 @@ pub mod proposers;
 mod request_status;
 mod synchronisation;
 mod token_info;
-mod withdraw;
+pub mod withdraw;
 
 pub fn routes<P, N>() -> impl Filter<Extract = (impl warp::Reply,)> + Clone
 where
@@ -50,7 +49,6 @@ where
         .or(get_max_transferable_amount_by_token_type())
         .or(derive_key_mnemonic())
         .or(get_proposers())
-        .or(de_escrow())
         .or(certification_validation_request())
         .or(keys_validation_request())
         .or(get_balance())
