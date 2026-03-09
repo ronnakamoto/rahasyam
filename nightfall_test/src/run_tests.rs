@@ -1,7 +1,7 @@
 use crate::{
     test::{
         self, create_nf3_deposit_transaction, create_nf3_swap_request, create_nf3_swap_transaction,
-        create_nf3_transfer_transaction, create_nf3_withdraw_transaction, de_escrow_request,
+        create_nf3_transfer_transaction, create_nf3_withdraw_transaction,
         get_key, get_recipient_address, set_anvil_mining_interval,
         verify_deposit_commitments_nf_token_id, wait_for_all_responses, wait_on_chain, TokenType,
     },
