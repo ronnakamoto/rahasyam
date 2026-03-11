@@ -177,7 +177,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // nullifiers_values[0]: first token's value for transfer/withdraw
         // nullifiers_values[1]: second token's value for transfer/withdraw
         // nullifiers_values[2]: first fee token's value for transfer/withdraw
-        // nullifiers_values[3]: second token's value for transfer/withdraw
+        // nullifiers_values[3]: second fee token's value for transfer/withdraw
 
         // value + change = nullifier[0] + nullifier[1]
         self.lc_gate(
