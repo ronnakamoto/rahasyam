@@ -3,7 +3,11 @@ use alloy::{
     providers::Provider,
 };
 
-use configuration::addresses::Addresses;
+use configuration::{
+    addresses::{validate_config_url, Addresses, AddressesError},
+    settings::Settings,
+};
+use eyre::eyre;
 use log::debug;
 use nightfall_bindings::artifacts::{Nightfall, RoundRobin, X509};
 use nightfall_bindings::artifacts::{

@@ -61,7 +61,7 @@ pub fn get_deposit_proving_key() -> &'static Arc<ProvingKey<UnivariateKzgPCS<Bn2
         }
         // If that fails, we'll try to load from a local file
         warn!("Could not load deposit proving key from server. Loading from local file");
-        let path = Path::new("./configuration/bin/deposit_proving_key");
+        let path = Path::new("./configuration/keys/deposit_proving_key");
         let source_file = find_file_with_path(path).unwrap();
         let pk = ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
             &*std::fs::read(source_file).expect("Could not read proving key"),
