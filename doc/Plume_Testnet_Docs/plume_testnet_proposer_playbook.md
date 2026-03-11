@@ -121,8 +121,9 @@ Now since you started as a proposer, you need to register as a proposer with the
 POST /v1/register
 
 ```sh
-curl -i --request POST 'http://localhost:3000/v1/register' \
-    --json '{ "url": "http://<server-ip>:3001" }'
+curl -i -X POST http://localhost:3001/v1/register \
+  -H "Content-Type: application/json" \
+  -d '"http://<server-ip>:3001"'
 ```
 ---
 
