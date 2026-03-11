@@ -66,7 +66,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             nullifiers_salts,
             membership_proofs,
             commitments_values,
-            commitments_salts,
+            sender_commitment_salts,
             public_keys,
             recipient_public_key,
             root_key,
@@ -86,12 +86,13 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // nullifiers_values[1]: second token's value for transfer/withdraw
         // nullifiers_values[2]: first fee token's value for transfer/withdraw
         // nullifiers_values[3]: second token's value for transfer/withdraw
+        let [token_change, fee_change] = commitments_values;
 
         // We check that the first two commitments and first two nullifiers have the same value
         self.lc_gate(
             &[
                 value,
-                commitments_values[0],
+                token_change,
                 nullifiers_values[0],
                 nullifiers_values[1],
                 self.zero(),
@@ -102,22 +103,22 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.lc_gate(
             &[
                 fee,
-                commitments_values[1],
+                fee_change,
                 nullifiers_values[2],
                 nullifiers_values[3],
                 self.zero(),
             ],
             &[Fr254::one(), Fr254::one(), -Fr254::one(), -Fr254::one()],
         )?;
-        // We range check `value`, `fee`, `commitments_values[0]` and `commitments_values[1]`
+        // We range check `value`, `fee`, `token_change`, and `fee_change`
         // If we don't do this the client send "negative" values that result in huge
         // change commitments due to a wrap around error.
         // We choose 96 bits, as this seems like a reasonable upper limit for a transfer.
         // In addition 96 is divisible by 8, which makes it slightly cheaper to range check.
         self.enforce_in_range(value, 96)?;
         self.enforce_in_range(fee, 96)?;
-        self.enforce_in_range(commitments_values[0], 96)?;
-        self.enforce_in_range(commitments_values[1], 96)?;
+        self.enforce_in_range(token_change, 96)?;
+        self.enforce_in_range(fee_change, 96)?;
 
         let pub_point =
             self.create_point_variable(&Point::<Fr254>::from(Affine::<BabyJubjub>::generator()))?;
@@ -214,7 +215,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             shared_salt,
             &commitments_values,
             &[recipient_public_key, zkp_pub_key],
-            &commitments_salts,
+            &sender_commitment_salts,
             withdraw_flag,
         )?;
 

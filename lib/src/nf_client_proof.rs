@@ -152,10 +152,11 @@ pub struct PrivateInputs {
     pub nullifiers_values: [Fr254; 4],
     pub nullifiers_salts: [Fr254; 4],
     pub membership_proofs: [MembershipProof<Fr254>; 4],
-    /// Values of any change commitments, first for the token second for the fee.
+    /// Change commitments encoded as `[token_change, fee_change]`.
     pub commitments_values: [Fr254; 2],
-    /// Only three as the first commitment salt is derived from the shared secret between sender and recipient
-    pub commitments_salts: [Fr254; 3],
+    /// Salts for sender-owned commitments only: `[commitment_1, commitment_2, commitment_3]`.
+    /// There are 4 commitments total; commitment_0 is for the recipient and uses shared-secret-derived salt.
+    pub sender_commitment_salts: [Fr254; 3],
     /// The public keys of the owners of the old commitments that will be nullified.
     pub public_keys: [TEAffine<BabyJubjub>; 4],
     pub recipient_public_key: TEAffine<BabyJubjub>,
@@ -189,7 +190,7 @@ impl Default for PrivateInputs {
             nullifiers_salts: [Fr254::zero(); 4],
             membership_proofs: [mproof.clone(), mproof.clone(), mproof.clone(), mproof],
             commitments_values: [Fr254::zero(); 2],
-            commitments_salts: [Fr254::zero(); 3],
+            sender_commitment_salts: [Fr254::zero(); 3],
             public_keys: [TEAffine::<BabyJubjub>::default(); 4],
             recipient_public_key: TEAffine::<BabyJubjub>::generator(),
             root_key: Fr254::zero(),
@@ -259,8 +260,8 @@ impl PrivateInputs {
         self
     }
 
-    pub fn commitments_salts(&mut self, commitments_salts: &[Fr254; 3]) -> &mut Self {
-        self.commitments_salts = *commitments_salts;
+    pub fn sender_commitment_salts(&mut self, sender_commitment_salts: &[Fr254; 3]) -> &mut Self {
+        self.sender_commitment_salts = *sender_commitment_salts;
         self
     }
 
@@ -305,7 +306,7 @@ impl PrivateInputs {
             nullifiers_salts: self.nullifiers_salts,
             membership_proofs: self.membership_proofs.clone(),
             commitments_values: self.commitments_values,
-            commitments_salts: self.commitments_salts,
+            sender_commitment_salts: self.sender_commitment_salts,
             public_keys: self.public_keys,
             recipient_public_key: self.recipient_public_key,
             root_key: self.root_key,
@@ -334,10 +335,11 @@ pub struct PrivateInputsVar {
     pub nullifiers_salts: [Variable; 4],
     /// Merkle paths
     pub membership_proofs: [MembershipProofVar; 4],
-    /// Commitments values, the values of any change
+    /// Change commitments encoded as `[token_change, fee_change]`.
     pub commitments_values: [Variable; 2],
-    /// Commitments salts
-    pub commitments_salts: [Variable; 3],
+    /// Salts for sender-owned commitments only: `[commitment_1, commitment_2, commitment_3]`.
+    /// There are 4 commitments total; commitment_0 is for the recipient and uses shared-secret-derived salt.
+    pub sender_commitment_salts: [Variable; 3],
     /// Public keys for the commitments being nullified
     pub public_keys: [PointVariable; 4],
     /// Recipient public key
@@ -403,8 +405,8 @@ impl PrivateInputsVar {
             .map_err(|_| {
                 CircuitError::ParameterError("Couldn't convert to fixed length array".to_string())
             })?;
-        let commitments_salts = private_inputs
-            .commitments_salts
+        let sender_commitment_salts = private_inputs
+            .sender_commitment_salts
             .iter()
             .map(|cs| circuit.create_variable(*cs))
             .collect::<Result<Vec<Variable>, CircuitError>>()?
@@ -504,7 +506,7 @@ impl PrivateInputsVar {
             nullifiers_salts,
             membership_proofs,
             commitments_values,
-            commitments_salts,
+            sender_commitment_salts,
             public_keys,
             recipient_public_key,
             root_key,
