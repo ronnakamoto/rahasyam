@@ -250,6 +250,7 @@ pub enum NightfallContractError {
     TransactionNotFound(alloy::primitives::TxHash),
     AbiDecodeError(String),
     DecodedCallError(String),
+    X509Error(String),
 }
 
 impl Display for NightfallContractError {
@@ -288,6 +289,9 @@ impl Display for NightfallContractError {
             }
             NightfallContractError::DecodedCallError(s) => {
                 write!(f, "Decoded call error: {s}")
+            }
+            NightfallContractError::X509Error(s) => {
+                write!(f, "X509 error: {s}")
             }
         }
     }

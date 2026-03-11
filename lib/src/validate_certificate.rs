@@ -1,11 +1,16 @@
 use super::models::CertificateReq;
 use crate::{
-    blockchain_client::BlockchainClientConnection, error::CertificateVerificationError,
-    initialisation::get_blockchain_client_connection, models::bad_request,
+    blockchain_client::BlockchainClientConnection,
+    error::{CertificateVerificationError, NightfallContractError},
+    initialisation::get_blockchain_client_connection,
+    models::bad_request,
     verify_contract::VerifiedContracts,
 };
-use alloy::primitives::{Address, U256};
-use configuration::addresses::get_addresses;
+use alloy::{
+    primitives::{Address, U256},
+    providers::Provider,
+};
+use configuration::{addresses::get_addresses, settings::get_settings};
 use futures::stream::TryStreamExt;
 use log::{debug, error, trace, warn};
 use nightfall_bindings::artifacts::X509;
@@ -226,7 +231,6 @@ async fn validate_certificate(
     let read_connection = get_blockchain_client_connection().await.read().await;
     let provider = read_connection.get_client();
     let blockchain_client = provider.root();
-    let caller = read_connection.get_address();
     let verified =
         VerifiedContracts::resolve_and_verify_contract(blockchain_client.clone(), get_addresses())
             .await
@@ -252,17 +256,48 @@ async fn validate_certificate(
         addr: sender_address,
     };
 
-    let tx_receipt = x509_instance
-        .validateCertificate(certificate_args)
-        .from(caller)
-        .send()
+    let signer = get_blockchain_client_connection()
+        .await
+        .read()
+        .await
+        .get_signer();
+
+    let nonce = blockchain_client
+        .get_transaction_count(signer.address())
+        .await
+        .map_err(|e| NightfallContractError::X509Error(format!("Transaction unsuccesful: {e}")))?;
+    let gas_price = blockchain_client
+        .get_gas_price()
+        .await
+        .map_err(|e| NightfallContractError::X509Error(format!("Transaction unsuccesful: {e}")))?;
+    let max_fee_per_gas = gas_price * 2;
+    let max_priority_fee_per_gas = gas_price;
+    let gas_limit = 16777216u64;
+
+    let call = x509_instance
+        .validateCertificate(certificate_args.clone())
+        .nonce(nonce)
+        .gas(gas_limit)
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(max_priority_fee_per_gas)
+        .chain_id(get_settings().network.chain_id) // Linea testnet chain ID
+        .build_raw_transaction((*signer).clone())
         .await
         .map_err(|e| {
             warn!("{e}");
             X509ValidationError
         })?;
-    if tx_receipt.get_receipt().await.is_err() {
-        error!("X509Validation transaction failed");
+    let tx_receipt = blockchain_client
+        .send_raw_transaction(&call)
+        .await
+        .map_err(|e| NightfallContractError::EscrowError(format!("Error getting receipt: {e}")))?
+        .get_receipt()
+        .await
+        .map_err(|e| {
+            NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
+        })?;
+    if !tx_receipt.status() {
+        error!("Failed to validate certificate on-chain. Transaction receipt: {tx_receipt:?}");
         return Err(Box::new(X509ValidationError));
     }
     Ok(())
