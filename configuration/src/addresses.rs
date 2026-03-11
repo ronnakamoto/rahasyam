@@ -85,7 +85,7 @@ fn deny_if_dns_private(host: &str) -> Result<(), AddressesError> {
 
 /// Validates configuration URLs with security enforcement.
 /// Production: HTTPS. Debug: HTTP allowed for localhost/test containers.
-fn validate_config_url(raw: &str) -> Result<Url, AddressesError> {
+pub fn validate_config_url(raw: &str) -> Result<Url, AddressesError> {
     let url = Url::parse(raw).map_err(|_| AddressesError::Toml(format!("Invalid URL: {raw}")))?;
 
     let host = url
