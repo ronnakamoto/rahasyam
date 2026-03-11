@@ -147,8 +147,8 @@ where
             .build(),
         PrivateInputs::new()
             .nf_address(nf_address)
-            .value(new_commitments[0].get_value())
-            .nf_token_id(nf_token_id)
+            .value_a(new_commitments[0].get_value())
+            .nf_token_a_id(nf_token_id)
             .nf_slot_id(nf_slot_id)
             .fee_token_id(fee_token_id)
             .nullifiers_values(&spend_commitments.map(|c| c.get_value()))

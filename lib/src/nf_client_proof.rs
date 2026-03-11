@@ -338,19 +338,7 @@ impl PrivateInputs {
         self
     }
 
-    // Backward-compatible alias used by non-swap transfer/withdraw call sites.
-    pub fn nf_token_id(&mut self, token_id: Fr254) -> &mut Self {
-        self.nf_token_a_id = token_id;
-        self
-    }
-
     pub fn value_a(&mut self, value: Fr254) -> &mut Self {
-        self.value_a = value;
-        self
-    }
-
-    // Backward-compatible alias used by non-swap transfer/withdraw call sites.
-    pub fn value(&mut self, value: Fr254) -> &mut Self {
         self.value_a = value;
         self
     }

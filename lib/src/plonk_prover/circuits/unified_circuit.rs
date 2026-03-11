@@ -201,8 +201,11 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             ],
             &[Fr254::one(), Fr254::one(), -Fr254::one(), -Fr254::one()],
         )?;
-
-        // Range checks to prevent wrap-around (96 bits)
+        // We range check `value`, `fee`, `commitments_values[0]` and `commitments_values[1]`
+        // If we don't do this the client send "negative" values that result in huge
+        // change commitments due to a wrap around error.
+        // We choose 96 bits, as this seems like a reasonable upper limit for a transfer.
+        // In addition 96 is divisible by 8, which makes it slightly cheaper to range check.
         self.enforce_in_range(value, 96)?;
         self.enforce_in_range(fee, 96)?;
         self.enforce_in_range(commitments_values[0], 96)?;
@@ -237,6 +240,9 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         // SWAP LOGIC (only enforced if is_swap)
         // 1. Verify swap_link hash
+        // Domain separator for swap_link hash.
+        // `SWAP_V1` is a protocol constant; keep it fixed for compatibility.
+        // Change it only in a coordinated breaking protocol upgrade if swap-link schema changes.
         let swap_domain = self.create_constant_variable(Fr254::from_le_bytes_mod_order(b"SWAP_V1"))?;
         let initial_state = PoseidonStateVar([self.zero(), self.zero(), self.zero(), self.zero()]);
         let absorbed_state = self.absorb(
@@ -289,9 +295,6 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let role_is_one = self.is_equal(role_sum, self.one())?;
         let role_valid = self.conditional_select(is_swap, self.one(), role_is_one.into())?;
         self.enforce_true(role_valid)?;
-
-        // token/value matching checks REMOVED — now true by construction
-        // since value and nf_token_id are derived from role detection above
 
         // MUTUAL EXCLUSION: Cannot be both swap and withdraw
         let both_swap_and_withdraw = self.logic_and(is_swap, withdraw_flag)?;
