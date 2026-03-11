@@ -1,6 +1,7 @@
 use super::verify::verify_duplicates_gadgets::VerifyDuplicatesCircuit;
 use super::DOMAIN_SHARED_SALT;
 use crate::{
+    derive_key::{NULLIFIER_PREFIX, PRIVATE_KEY_PREFIX},
     nf_client_proof::{PrivateInputs, PrivateInputsVar, PublicInputs},
     plonk_prover::circuits::verify::{
         verify_commitments_gadgets::VerifyCommitmentsCircuit,
@@ -123,22 +124,14 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         // Constrain nullifier_key from root_key
         let nullifier_prefix = self.create_constant_variable(Fr254::from(
-            BigUint::parse_bytes(
-                b"7805187439118198468809896822299973897593108379494079213870562208229492109015",
-                10,
-            )
-            .unwrap(),
+            BigUint::parse_bytes(NULLIFIER_PREFIX.as_bytes(), 10).unwrap(),
         ))?;
         let nullifier_key = self.poseidon_hash(&[root_key, nullifier_prefix])?;
 
         // Compute zkp_private_key from root_key
         // zkp_private_key = poseidon_hash(root_key, prefix) % BJJ_ORDER
         let private_prefix = self.create_constant_variable(Fr254::from(
-            BigUint::parse_bytes(
-                b"2708019456231621178814538244712057499818649907582893776052749473028258908910",
-                10,
-            )
-            .unwrap(),
+            BigUint::parse_bytes(PRIVATE_KEY_PREFIX.as_bytes(), 10).unwrap(),
         ))?;
         let fr_zkp_priv_key = self.poseidon_hash(&[root_key, private_prefix])?;
         let fr_zkp_priv_key_val = self.witness(fr_zkp_priv_key)?;
@@ -166,8 +159,8 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let zkp_pub_key =
             self.variable_base_scalar_mul::<BabyJubjub>(zkp_private_key, &pub_point)?;
 
-        // Verify that one of the public keys matches zkp_pub_key
-        //(skip if neutral point or zero value)
+        // Verify that public keys of the old commitments matches zkp_pub_key or 0 
+        // if the related nullifier value is zero or the public key is the neutral point
         for i in 0..4 {
             let is_neutral = self.is_neutral_point::<BabyJubjub>(&public_keys[i])?;
             let is_zero_value = self.is_zero(nullifiers_values[i])?;
