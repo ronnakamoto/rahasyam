@@ -176,31 +176,10 @@ pub async fn handle_certificate_validation(
         }
     };
 
-    // 4) READ-ONLY validation first (no state change). Treat any error as "not certified".
-    let is_end_user = true; // end-entity certs coming from clients/proposers
-    let check_only = true;
-
-    if let Err(err) = validate_certificate(
-        certificate_req.certificate.clone(),
-        ethereum_address_signature.clone(),
-        is_end_user,
-        check_only, // read-only
-        0,
-        requestor_address,
-    )
-    .await
-    {
-        error!("Read-only certificate validation failed: {err}");
-        let body = warp::reply::json(&serde_json::json!({
-            "status": "ok",
-            "certified": false
-        }));
-        return Ok(warp::reply::with_status(body, StatusCode::ACCEPTED));
-    }
-
-    // 5) ENROLL (state-changing): write the binding on-chain and await receipt.
+    // 4) ENROLL (state-changing): write the binding on-chain and await receipt.
     // We want one API that validates AND enrolls, so we do the write:
     let check_only = false;
+    let is_end_user = true; // end-entity certs coming from clients/proposers
 
     if let Err(err) = validate_certificate(
         certificate_req.certificate.clone(),
@@ -217,7 +196,7 @@ pub async fn handle_certificate_validation(
         warn!("Enroll (write) failed: {err}");
     }
 
-    // 6) Return POST-STATE truth from chain
+    // 5) Return POST-STATE truth from chain
     let is_certified_now = x509_instance
         .x509Check(requestor_address)
         .call()
