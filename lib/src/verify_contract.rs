@@ -4,13 +4,13 @@ use alloy::{
 };
 
 use configuration::addresses::Addresses;
+use log::debug;
 use nightfall_bindings::artifacts::{Nightfall, RoundRobin, X509};
 use nightfall_bindings::artifacts::{
     Nightfall::NightfallInstance, RoundRobin::RoundRobinInstance, X509::X509Instance,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
-use log::{debug};
 
 #[derive(Deserialize)]
 struct ContractHashes {

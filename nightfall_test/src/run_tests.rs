@@ -1,9 +1,8 @@
 use crate::{
     test::{
         self, create_nf3_deposit_transaction, create_nf3_transfer_transaction,
-        create_nf3_withdraw_transaction, get_key, get_recipient_address,
-        set_anvil_mining_interval, verify_deposit_commitments_nf_token_id, wait_for_all_responses,
-        wait_on_chain, TokenType,
+        create_nf3_withdraw_transaction, get_key, get_recipient_address, set_anvil_mining_interval,
+        verify_deposit_commitments_nf_token_id, wait_for_all_responses, wait_on_chain, TokenType,
     },
     test_settings::TestSettings,
     validate_certs::validate_all_certificates,
@@ -20,9 +19,8 @@ use ark_std::{collections::HashMap, Zero};
 use configuration::settings::{get_settings, Settings};
 use futures::future::try_join_all;
 use lib::{
-    blockchain_client::BlockchainClientConnection,
-    hex_conversion::HexConvertible, initialisation::get_blockchain_client_connection,
-    utils::get_block_size,
+    blockchain_client::BlockchainClientConnection, hex_conversion::HexConvertible,
+    initialisation::get_blockchain_client_connection, utils::get_block_size,
 };
 use log::{debug, info, warn};
 use nightfall_client::drivers::rest::client_nf_3::WithdrawResponse;

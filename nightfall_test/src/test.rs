@@ -11,7 +11,10 @@ use ark_std::{
     rand::{self, Rng},
     test_rng, UniformRand,
 };
-use configuration::{addresses::get_addresses, settings::{Settings, get_settings}};
+use configuration::{
+    addresses::get_addresses,
+    settings::{get_settings, Settings},
+};
 
 use hex::ToHex;
 use jf_primitives::{

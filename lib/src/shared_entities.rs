@@ -1,10 +1,10 @@
 use crate::{
     commitments::{Commitment, Nullifiable},
     contract_conversions::{Addr, FrBn254, Uint256},
+    error::ConversionError,
     nf_client_proof::{Proof, PublicInputs},
     secret_hash::SecretHash,
     serialization::{ark_de_hex, ark_se_hex},
-    error::ConversionError
 };
 use alloy::primitives::Address;
 use ark_bn254::Fr as Fr254;
@@ -214,7 +214,7 @@ impl From<u8> for TokenType {
             3 => TokenType::ERC3525,
             4 => TokenType::FeeToken,
             _ => {
-               warn!("Received unsupported token type value: {value}, defaulting to ERC20");
+                warn!("Received unsupported token type value: {value}, defaulting to ERC20");
                 TokenType::ERC20
             }
         }
