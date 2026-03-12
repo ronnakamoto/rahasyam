@@ -399,12 +399,7 @@ fn benchmark_unified_circuit(c: &mut Criterion) {
             .unwrap();
         })
     });
-    let mut inputs = Vec::new();
-    inputs.push(circuit_test_info.public_inputs.fee);
-    inputs.extend_from_slice(&circuit_test_info.public_inputs.roots);
-    inputs.extend_from_slice(&circuit_test_info.public_inputs.commitments);
-    inputs.extend_from_slice(&circuit_test_info.public_inputs.nullifiers);
-    inputs.extend_from_slice(&circuit_test_info.public_inputs.compressed_secrets);
+    let inputs = Vec::from(&circuit_test_info.public_inputs);
     let start = Instant::now();
     FFTPlonk::<UnivariateKzgPCS<Bn254>>::verify::<StandardTranscript>(
         &vk, &inputs, &proof, None, true,
