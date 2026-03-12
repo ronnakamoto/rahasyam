@@ -195,10 +195,10 @@ impl NightfallContract for Nightfall::NightfallCalls {
             .get_transaction_count(signer.address())
             .await
             .map_err(|e| {
-                NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
+                NightfallContractError::DeEscrowError(format!("Transaction unsuccesful: {e}"))
             })?;
         let gas_price = client.get_gas_price().await.map_err(|e| {
-            NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
+            NightfallContractError::DeEscrowError(format!("Transaction unsuccesful: {e}"))
         })?;
         let max_fee_per_gas = gas_price * 2;
         let max_priority_fee_per_gas = gas_price;
@@ -213,19 +213,19 @@ impl NightfallContract for Nightfall::NightfallCalls {
             .build_raw_transaction((*signer).clone())
             .await
             .map_err(|e| {
-                NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
+                NightfallContractError::DeEscrowError(format!("Transaction unsuccesful: {e}"))
             })?;
 
         let receipt = client
             .send_raw_transaction(&call)
             .await
             .map_err(|e| {
-                NightfallContractError::EscrowError(format!("Error getting receipt: {e}"))
+                NightfallContractError::DeEscrowError(format!("Error getting receipt: {e}"))
             })?
             .get_receipt()
             .await
             .map_err(|e| {
-                NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
+                NightfallContractError::DeEscrowError(format!("Transaction unsuccesful: {e}"))
             })?;
 
         if !receipt.gas_used.is_zero() {

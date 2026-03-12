@@ -75,10 +75,16 @@ async fn handle_rotate_proposer() -> Result<impl Reply, warp::Rejection> {
     let tx_receipt = blockchain_client
         .send_raw_transaction(&call)
         .await
-        .expect("Failed to send rotation proposer transaction")
+        .map_err(|e| {
+            warn!("Error sending raw transaction in rotate_proposer: {e}");
+            warp::reject::custom(ProposerRejection::FailedToRotateProposer)
+        })?
         .get_receipt()
         .await
-        .expect("Failed to get receipt of rotation proposer transaction");
+        .map_err(|e| {
+            warn!("Failed to get receipt of rotation proposer transaction: {e}");
+            warp::reject::custom(ProposerRejection::FailedToRotateProposer)
+        })?;
     if tx_receipt.status() {
         info!("Rotated proposer successfully");
         Ok(StatusCode::OK)

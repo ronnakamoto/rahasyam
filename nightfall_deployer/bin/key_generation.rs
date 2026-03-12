@@ -25,7 +25,10 @@ fn main() {
     } else {
         println!("Generating keys for REAL rollup prover");
     }
-    let path = std::env::current_dir().expect("Failed to get current path").as_path().join("configuration");
+    let path = std::env::current_dir()
+        .expect("Failed to get current path")
+        .as_path()
+        .join("configuration");
     std::fs::create_dir_all(path.join("bin/keys"))
         .expect("Failed to create directory for proving keys");
     generate_proving_keys(&settings).unwrap();

@@ -290,12 +290,10 @@ async fn validate_certificate(
     let tx_receipt = blockchain_client
         .send_raw_transaction(&call)
         .await
-        .map_err(|e| NightfallContractError::EscrowError(format!("Error getting receipt: {e}")))?
+        .map_err(|e| NightfallContractError::X509Error(format!("Error getting receipt: {e}")))?
         .get_receipt()
         .await
-        .map_err(|e| {
-            NightfallContractError::EscrowError(format!("Transaction unsuccesful: {e}"))
-        })?;
+        .map_err(|e| NightfallContractError::X509Error(format!("Transaction unsuccesful: {e}")))?;
     if !tx_receipt.status() {
         error!("Failed to validate certificate on-chain. Transaction receipt: {tx_receipt:?}");
         return Err(Box::new(X509ValidationError));
