@@ -63,7 +63,7 @@ pub async fn run_tests(
     let erc721_contract = IERC721::new(erc721_token_address, provider.clone());
     let erc1155_contract = IERC1155::new(erc1155_token_address, provider.clone());
     let erc3525_contract = IERC3525::new(erc3525_token_address, provider.clone());
-    
+
     let client_1_address = Address::from_str(
         &std::env::var("CLIENT_ADDRESS").expect("CLIENT_ADDRESS environment variable not set"),
     )
@@ -132,21 +132,21 @@ pub async fn run_tests(
     ];
     validate_all_certificates(certs, &http_client).await;
 
+    let erc20_mint_value = 1000;
+    let erc1155_mint_value = 100;
     let my_balance = erc20_contract
         .balanceOf(client_1_address)
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC20 L1 Balance Before Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(erc20_mint_value));
 
     let my_balance = erc721_contract
         .balanceOf(client_1_address)
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC721 L1 Balance Before Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(1));
 
     let my_balance = erc1155_contract
         .balanceOf(
@@ -156,16 +156,14 @@ pub async fn run_tests(
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC1155 L1 Balance Before Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(erc1155_mint_value));
 
     let my_balance = erc3525_contract
         .balanceOf_0(client_1_address)
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1: ERC3525 L1 Balance Before Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(2));
 
     //see if the NF4_LARGE_BLOCK_TEST environment variable is set to 'true' and run the large block test only if it is
     let (
@@ -361,7 +359,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC20,
-        test_settings.erc20_deposit_1,
+        test_settings.erc20_deposit_1.clone(),
         "0x27".to_string(), //deposit_fee
     ));
     debug!("transaction_erc20_deposit_1 has been created");
@@ -379,7 +377,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC20,
-        test_settings.erc20_deposit_3,
+        test_settings.erc20_deposit_3.clone(),
         "0x00".to_string(), //deposit_fee
     ));
     debug!("transaction_erc20_deposit_3 has been created");
@@ -425,7 +423,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC1155,
-        test_settings.erc1155_deposit_1,
+        test_settings.erc1155_deposit_1.clone(),
         "0x11".to_string(), //deposit_fee
     ));
     debug!("transaction_erc1155_deposit_1 has been created");
@@ -434,7 +432,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC1155,
-        test_settings.erc1155_deposit_2,
+        test_settings.erc1155_deposit_2.clone(),
         "0x14".to_string(), //deposit_fee
     ));
     debug!("transaction_erc1155_deposit_2 has been created");
@@ -514,16 +512,21 @@ pub async fn run_tests(
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC20 L1 Balance After Deposit: {my_balance}");
+    assert_eq!(
+        my_balance,
+        U256::from(erc20_mint_value)
+            - U256::from_hex_string(&test_settings.erc20_deposit_0.value).unwrap()
+            - U256::from_hex_string(&test_settings.erc20_deposit_1.value).unwrap()
+            - U256::from_hex_string(&test_settings.erc20_deposit_2.value).unwrap()
+            - U256::from_hex_string(&test_settings.erc20_deposit_3.value).unwrap()
+    );
 
     let my_balance = erc721_contract
         .balanceOf(client_1_address)
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC721 L1 Balance After Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     let my_balance = erc1155_contract
         .balanceOf(
@@ -533,16 +536,19 @@ pub async fn run_tests(
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1 : ERC1155 L1 Balance After Deposit: {my_balance}");
+    assert_eq!(
+        my_balance,
+        U256::from(erc1155_mint_value)
+            - U256::from_hex_string(&test_settings.erc1155_deposit_1.value).unwrap()
+            - U256::from_hex_string(&test_settings.erc1155_deposit_2.value).unwrap()
+    );
 
     let my_balance = erc3525_contract
         .balanceOf_0(client_1_address)
         .call()
         .await
         .expect("balanceOf() call failed");
-
-    info!("Client 1: ERC3525 L1 Balance After Deposit: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     // get the fee balance
     let fee_balance = get_fee_balance(
@@ -848,7 +854,7 @@ pub async fn run_tests(
         .await
         .expect("balanceOf() call failed");
 
-    info!("Recipient : ERC20 L1 Balance Before withdraw: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     let my_balance = erc721_contract
         .balanceOf(recipient_addr)
@@ -856,7 +862,7 @@ pub async fn run_tests(
         .await
         .expect("balanceOf() call failed");
 
-    info!("Recipient : ERC721 L1 Balance Before withdraw: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     let my_balance = erc1155_contract
         .balanceOf(
@@ -867,7 +873,7 @@ pub async fn run_tests(
         .await
         .expect("balanceOf() call failed");
 
-    info!("Recipient : ERC1155 L1 Balance Before withdraw: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     let my_balance = erc3525_contract
         .balanceOf_0(recipient_addr)
@@ -875,7 +881,7 @@ pub async fn run_tests(
         .await
         .expect("balanceOf() call failed");
 
-    info!("Recipient : ERC3525 L1 Balance Before withdraw: {my_balance}");
+    assert_eq!(my_balance, U256::from(0));
 
     // create withdraw requests
     let mut withdraw_data = vec![];
@@ -961,24 +967,27 @@ pub async fn run_tests(
     // withdraw the other token types
     let mut withdraw_data = vec![];
 
+    let erc721_withdraw = test_settings.erc721_withdraw.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
         TokenType::ERC721,
-        test_settings.erc721_withdraw,
+        erc721_withdraw.clone(),
         recipient_address.clone(),
     ));
     debug!("transaction_erc721_withdraw has been created");
 
+    let erc3525_withdraw = test_settings.erc3525_withdraw.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
         TokenType::ERC3525,
-        test_settings.erc3525_withdraw,
+        erc3525_withdraw.clone(),
         recipient_address.clone(),
     ));
     debug!("transaction_erc3525_withdraw has been created");
 
+    let erc1155_withdraw_1_value = test_settings.erc1155_withdraw_1.value.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
@@ -988,6 +997,7 @@ pub async fn run_tests(
     ));
     debug!("transaction_erc1155_withdraw_1 has been created");
 
+    let erc1155_withdraw_0_value = test_settings.erc1155_withdraw_2_nft.value.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
@@ -1102,15 +1112,21 @@ pub async fn run_tests(
             .expect("balanceOf() call failed");
 
         if recipient_erc1155_balance.is_zero()
-            || recipient_erc20_balance.is_zero()
+            || recipient_erc20_balance > 1
             || recipient_erc721_balance.is_zero()
             || recipient_erc3525_balance.is_zero()
         {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }
-    info!("Recipient : ERC20 L1 Balance After withdraw: {recipient_erc20_balance}");
-    info!("Recipient : ERC1155 L1 Balance After withdraw: {recipient_erc1155_balance}");
-    info!("Recipient : ERC721 L1 Balance After withdraw: {recipient_erc721_balance}");
-    info!("Recipient : ERC3525 L1 Balance After withdraw: {recipient_erc3525_balance}");
+    assert!(recipient_erc20_balance > U256::ZERO);
+
+    assert_eq!(
+        recipient_erc1155_balance,
+        U256::from_hex_string(&erc1155_withdraw_0_value).unwrap()
+            + U256::from_hex_string(&erc1155_withdraw_1_value).unwrap()
+    );
+
+    assert_eq!(recipient_erc721_balance, 1);
+    assert_eq!(recipient_erc3525_balance, 1);
 }
