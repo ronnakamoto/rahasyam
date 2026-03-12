@@ -460,7 +460,7 @@ services:
       - type: volume
         source: toml_data
         target: /var/www/html/configuration/toml
-         read_only: true
+        read_only: true
       - type: volume
         source: key_data
         target: /var/www/html/configuration/bin/keys

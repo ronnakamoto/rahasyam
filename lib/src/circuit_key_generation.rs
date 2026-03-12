@@ -41,6 +41,8 @@ pub fn universal_setup_for_production(
         .expect("Failed to get current directory")
         .as_path()
         .join("configuration");
+    std::fs::create_dir_all(path.join("bin/trusted_setup"))
+        .expect("Failed to create directory for trusted_setup");
     // Download perpetual powers of Tau file if not cached locally, then extract a KZG structured reference string from cached setup if it exists, otherwise create it
     let ptau_file = path.join(format!("bin/trusted_setup/ppot_{max_kzg_degree}.ptau"));
     UnivariateKzgPCS::download_ptau_file_if_needed(max_kzg_degree, &ptau_file)
