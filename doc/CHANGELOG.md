@@ -10,6 +10,7 @@ All notable changes to this repository will be documented in this file.
 ### Breaking Changes
 - `ClientTransaction` serialization now includes swap metadata fields (`swap_link`, `deadline`, `swap_side`).
 - Public input serialization/hash format changed to include swap outputs (`swap_link`, `deadline`, `swap_side`).
+- Public input schema tag bumped from `public_inputsversion1` to `public_inputsversion2`.
 - Legacy proofs generated before this change are not compatible with the new public-input format.
 - Legacy serialized records/payloads that do not include the new swap fields may fail to deserialize unless defaults/migration are applied.
 
