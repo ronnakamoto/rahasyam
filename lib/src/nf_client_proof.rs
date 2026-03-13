@@ -136,7 +136,7 @@ impl From<&PublicInputs> for Vec<Fr254> {
     fn from(value: &PublicInputs) -> Self {
         // We include the initialisation bytes and length separators
         let mut init_bytes = "public_inputs".as_bytes().to_vec();
-        init_bytes.extend_from_slice("version1".as_bytes());
+        init_bytes.extend_from_slice("version2".as_bytes());
         [
             &[Fr254::from_le_bytes_mod_order(init_bytes.as_slice())],
             &[Fr254::one()],

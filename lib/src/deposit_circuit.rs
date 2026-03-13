@@ -139,7 +139,7 @@ impl DepositCircuitGadget<Fr254> for PlonkCircuit<Fr254> {
         // compressed_secrets
 
         let mut init_bytes = "public_inputs".as_bytes().to_vec();
-        init_bytes.extend_from_slice("version1".as_bytes());
+        init_bytes.extend_from_slice("version2".as_bytes());
         let init_pi_var =
             self.create_constant_variable(Fr254::from_le_bytes_mod_order(init_bytes.as_slice()))?;
         self.set_variable_public(init_pi_var)?;

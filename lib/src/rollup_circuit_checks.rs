@@ -262,7 +262,7 @@ impl RecursiveProver for RollupKeyGenerator {
         // part of the on-chain transaction hash, so we must keep projecting the
         // same 18-field subset here until the contract boundary is upgraded.
         let mut init_bytes = "public_inputs".as_bytes().to_vec();
-        init_bytes.extend_from_slice("version1".as_bytes());
+        init_bytes.extend_from_slice("version2".as_bytes());
         for specific_pi in specific_pis {
             circuit.enforce_constant(
                 specific_pi[0],
