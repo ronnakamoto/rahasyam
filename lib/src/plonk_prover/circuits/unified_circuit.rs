@@ -14,7 +14,11 @@ use ark_ff::{One, PrimeField, Zero};
 use jf_plonk::errors::PlonkError;
 use jf_primitives::circuit::poseidon::sponge::{PoseidonStateVar, SpongePoseidonHashGadget};
 use jf_primitives::circuit::poseidon::PoseidonHashGadget;
-use jf_relation::{errors::CircuitError, gadgets::ecc::{Point, PointVariable}, Circuit, PlonkCircuit, Variable};
+use jf_relation::{
+    errors::CircuitError,
+    gadgets::ecc::{Point, PointVariable},
+    Circuit, PlonkCircuit, Variable,
+};
 use nf_curves::ed_on_bn254::Fr as BJJScalar;
 use nf_curves::ed_on_bn254::{BabyJubjub, Fq as Fr254};
 use num_bigint::BigUint;
@@ -86,8 +90,10 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.enforce_in_range(nf_address, 160)?;
 
         // KEY DERIVATION
-        let pub_point =
-           self.create_constant_point_variable(&Point::<Fr254>::from(Affine::<BabyJubjub>::generator()))?;
+        let pub_point = self
+            .create_constant_point_variable(&Point::<Fr254>::from(
+                Affine::<BabyJubjub>::generator(),
+            ))?;
 
         // Constrain nullifier_key from root_key
         let nullifier_prefix = self.create_constant_variable(Fr254::from(
@@ -148,7 +154,15 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let my_pk_x_eq_a = self.is_equal(zkp_pub_key.get_x(), party_a_public_key.get_x())?;
         let my_pk_y_eq_a = self.is_equal(zkp_pub_key.get_y(), party_a_public_key.get_y())?;
         let is_party_a = self.logic_and(my_pk_x_eq_a, my_pk_y_eq_a)?;
-        
+
+        // Canonicalize non-swap witnesses so transfer/withdraw do not carry
+        // free swap-leg variables.
+        self.mul_gate(swap_nonce_is_zero.into(), nf_token_b_id, self.zero())?;
+        self.mul_gate(swap_nonce_is_zero.into(), value_b, self.zero())?;
+        let not_party_a = self.logic_neg(is_party_a)?;
+        let invalid_non_swap_party_a = self.logic_and(swap_nonce_is_zero, not_party_a)?;
+        self.enforce_false(invalid_non_swap_party_a.into())?;
+
         // Swap-specific: derive from role
         let swap_value = self.conditional_select(is_party_a, value_b, value_a)?;
         let swap_nf_token_id = self.conditional_select(is_party_a, nf_token_b_id, nf_token_a_id)?;
@@ -162,13 +176,15 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             party_a_public_key.get_y(),
             party_b_public_key.get_y(),
         )?;
-        
+
         // Final: for transfer use value_a/party_b directly, for swap use role-based
         let value = self.conditional_select(is_swap, value_a, swap_value)?;
         let nf_token_id = self.conditional_select(is_swap, nf_token_a_id, swap_nf_token_id)?;
-        let recipient_x = self.conditional_select(is_swap, party_b_public_key.get_x(), swap_recipient_x)?;
-        let recipient_y = self.conditional_select(is_swap, party_b_public_key.get_y(), swap_recipient_y)?;
-       
+        let recipient_x =
+            self.conditional_select(is_swap, party_b_public_key.get_x(), swap_recipient_x)?;
+        let recipient_y =
+            self.conditional_select(is_swap, party_b_public_key.get_y(), swap_recipient_y)?;
+
         let recipient_public_key = PointVariable::TE(recipient_x, recipient_y);
 
         // BALANCE CHECKS
@@ -243,7 +259,8 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // Domain separator for swap_link hash.
         // `SWAP_V1` is a protocol constant; keep it fixed for compatibility.
         // Change it only in a coordinated breaking protocol upgrade if swap-link schema changes.
-        let swap_domain = self.create_constant_variable(Fr254::from_le_bytes_mod_order(b"SWAP_V1"))?;
+        let swap_domain =
+            self.create_constant_variable(Fr254::from_le_bytes_mod_order(b"SWAP_V1"))?;
         let initial_state = PoseidonStateVar([self.zero(), self.zero(), self.zero(), self.zero()]);
         let absorbed_state = self.absorb(
             &initial_state,
@@ -261,7 +278,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             ],
         )?;
         let computed_swap_link = self.squeeze(&absorbed_state, 1)?[0];
-     
+
         // Swap-only input constraints:
         // - party keys must be non-neutral
         // - party keys must be distinct

@@ -270,7 +270,10 @@ fn build_valid_transfer_inputs() -> CircuitTestInfo {
         .nf_token_a_id(nf_token_id)
         .nf_slot_id(nf_slot_id)
         .ephemeral_key(ephemeral_key)
+        .party_a_public_key(keys.zkp_public_key)
         .party_b_public_key(recipient_public_key)
+        .nf_token_b_id(Fr254::zero())
+        .value_b(Fr254::zero())
         .nullifiers_values(&[
             nullified_one.get_value(),
             nullified_two.get_value(),

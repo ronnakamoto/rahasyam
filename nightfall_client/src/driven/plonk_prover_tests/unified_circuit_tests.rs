@@ -836,8 +836,8 @@ mod tests {
             }
         };
         // Values
-        let value_a = value; 
-        let value_b = Fr254::from(200u64); 
+        let value_a = value;
+        let value_b = Fr254::from(200u64);
         let swap_nonce = Fr254::from(u64::rand(&mut rng));
         let deadline = Fr254::from(1000u64);
 
@@ -1702,12 +1702,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut inputs = Vec::new();
-        inputs.push(circuit_test_info.public_inputs.fee);
-        inputs.extend_from_slice(&circuit_test_info.public_inputs.roots);
-        inputs.extend_from_slice(&circuit_test_info.public_inputs.commitments);
-        inputs.extend_from_slice(&circuit_test_info.public_inputs.nullifiers);
-        inputs.extend_from_slice(&circuit_test_info.public_inputs.compressed_secrets);
+        let inputs = Vec::from(&circuit_test_info.public_inputs);
 
         let _ = FFTPlonk::<UnivariateKzgPCS<Bn254>>::verify::<StandardTranscript>(
             &vk, &inputs, &proof, None, true,
@@ -1715,7 +1710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_ignores_party_a_key_when_not_swap() {
+    fn test_transfer_rejects_mismatched_party_a_key_when_not_swap() {
         let mut info = build_valid_transfer_inputs();
 
         let original = info.private_inputs.party_a_public_key;
@@ -1727,7 +1722,29 @@ mod tests {
         }
 
         info.private_inputs.party_a_public_key = different_key.zkp_public_key;
-        assert_valid_circuit(info);
+        assert_rejected_circuit(info);
+    }
+
+    #[test]
+    fn test_transfer_rejects_non_zero_counterparty_offer_when_not_swap() {
+        let mut token_info = build_valid_transfer_inputs();
+        token_info.private_inputs.nf_token_b_id = Fr254::from(1u64);
+        assert_rejected_circuit(token_info);
+
+        let mut value_info = build_valid_transfer_inputs();
+        value_info.private_inputs.value_b = Fr254::from(1u64);
+        assert_rejected_circuit(value_info);
+    }
+
+    #[test]
+    fn test_withdraw_rejects_non_zero_counterparty_offer_when_not_swap() {
+        let mut token_info = build_valid_withdraw_inputs();
+        token_info.private_inputs.nf_token_b_id = Fr254::from(1u64);
+        assert_rejected_circuit(token_info);
+
+        let mut value_info = build_valid_withdraw_inputs();
+        value_info.private_inputs.value_b = Fr254::from(1u64);
+        assert_rejected_circuit(value_info);
     }
 
     #[test]
@@ -1877,7 +1894,8 @@ mod tests {
                 "deadline mismatch"
             );
             assert_eq!(
-                circuit_test_info.public_inputs.swap_side, Fr254::zero(),
+                circuit_test_info.public_inputs.swap_side,
+                Fr254::zero(),
                 "party B swap should output swap_side=0"
             );
         }
