@@ -1596,23 +1596,6 @@ mod tests {
         .try_into()
         .unwrap();
 
-        let sponge_param = PoseidonPerm::<Fr254>::perm().unwrap();
-        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_param);
-        let swap_domain = Fr254::from_le_bytes_mod_order(b"SWAP_V1");
-        sponge.absorb(&vec![
-            swap_domain,
-            keys_a.zkp_public_key.x,
-            keys_a.zkp_public_key.y,
-            keys_b.zkp_public_key.x,
-            keys_b.zkp_public_key.y,
-            nf_token_a_id,
-            value_a,
-            nf_token_b_id,
-            value_b,
-            swap_nonce,
-        ]);
-        let expected_swap_link = sponge.squeeze_native_field_elements(1)[0];
-
         CircuitTestInfo::new(
             public_inputs,
             private_inputs,
@@ -1620,7 +1603,7 @@ mod tests {
             expected_nullifiers,
             expected_compressed_secrets,
         )
-        .with_swap(expected_swap_link, deadline, expected_side)
+        .with_swap(Fr254::zero(), deadline, expected_side)
     }
 
     fn assert_valid_circuit(mut info: CircuitTestInfo) {
@@ -2202,6 +2185,22 @@ mod tests {
         let swap_nonce = Fr254::from(42u64);
         let deadline = Fr254::from(1000u64);
         let fee = Fr254::from(5u64);
+        let sponge_param = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_param);
+        let swap_domain = Fr254::from_le_bytes_mod_order(b"SWAP_V1");
+        sponge.absorb(&vec![
+            swap_domain,
+            keys_a.zkp_public_key.x,
+            keys_a.zkp_public_key.y,
+            keys_b.zkp_public_key.x,
+            keys_b.zkp_public_key.y,
+            nf_token_a_id,
+            value_a,
+            nf_token_b_id,
+            value_b,
+            swap_nonce,
+        ]);
+        let expected_swap_link = sponge.squeeze_native_field_elements(1)[0];
 
         let mut party_a_leg = build_matching_swap_leg_inputs(
             &mut rng,
@@ -2255,6 +2254,14 @@ mod tests {
         assert_eq!(
             party_a_leg.public_inputs.swap_link, party_b_leg.public_inputs.swap_link,
             "complementary swap legs must emit the same swap_link"
+        );
+        assert_eq!(
+            party_a_leg.public_inputs.swap_link, expected_swap_link,
+            "party A leg swap_link must match independently computed value"
+        );
+        assert_eq!(
+            party_b_leg.public_inputs.swap_link, expected_swap_link,
+            "party B leg swap_link must match independently computed value"
         );
         assert_eq!(
             party_a_leg.public_inputs.swap_side,
