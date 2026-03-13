@@ -1355,6 +1355,274 @@ mod tests {
         .with_swap(expected_swap_link, deadline, Fr254::zero())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn build_matching_swap_leg_inputs(
+        rng: &mut StdRng,
+        keys_a: &ZKPKeys,
+        keys_b: &ZKPKeys,
+        nf_token_a_id: Fr254,
+        nf_token_b_id: Fr254,
+        value_a: Fr254,
+        value_b: Fr254,
+        swap_nonce: Fr254,
+        deadline: Fr254,
+        fee: Fr254,
+        fee_token_id: Fr254,
+        nf_address_h160: Address,
+        prover_is_party_a: bool,
+    ) -> CircuitTestInfo {
+        let poseidon = Poseidon::<Fr254>::new();
+        let nf_address_field = Fr254::from(BigUint::from_bytes_be(nf_address_h160.as_slice()));
+
+        let (prover_keys, recipient_pk, nf_token_id, value, expected_side) = if prover_is_party_a {
+            (
+                keys_a,
+                keys_b.zkp_public_key,
+                nf_token_a_id,
+                value_a,
+                Fr254::one(),
+            )
+        } else {
+            (
+                keys_b,
+                keys_a.zkp_public_key,
+                nf_token_b_id,
+                value_b,
+                Fr254::zero(),
+            )
+        };
+        let nf_slot_id = nf_token_id;
+
+        let mut nullified_value_one = rand_96_bit(rng);
+        let mut nullified_value_two = rand_96_bit(rng);
+        while value > (nullified_value_one + nullified_value_two)
+            || (nullified_value_one + nullified_value_two) - value >= Fr254::from(1u128 << 96)
+        {
+            nullified_value_one = rand_96_bit(rng);
+            nullified_value_two = rand_96_bit(rng);
+        }
+        let value_change = nullified_value_one + nullified_value_two - value;
+
+        let mut nullified_fee_one = rand_96_bit(rng);
+        let mut nullified_fee_two = rand_96_bit(rng);
+        while fee > (nullified_fee_one + nullified_fee_two)
+            || (nullified_fee_one + nullified_fee_two) - fee >= Fr254::from(1u128 << 96)
+        {
+            nullified_fee_one = rand_96_bit(rng);
+            nullified_fee_two = rand_96_bit(rng);
+        }
+        let fee_change = nullified_fee_one + nullified_fee_two - fee;
+
+        let nullified_one = Preimage::new(
+            nullified_value_one,
+            nf_token_id,
+            nf_slot_id,
+            prover_keys.zkp_public_key,
+            Salt::new_transfer_salt(),
+        );
+        let nullified_two = Preimage::new(
+            nullified_value_two,
+            nf_token_id,
+            nf_slot_id,
+            Affine::<BabyJubjub>::zero(),
+            Salt::Deposit(DepositSecret::new(
+                Fr254::rand(rng),
+                Fr254::rand(rng),
+                Fr254::rand(rng),
+            )),
+        );
+        let nullified_three = Preimage::new(
+            nullified_fee_one,
+            fee_token_id,
+            fee_token_id,
+            prover_keys.zkp_public_key,
+            Salt::new_transfer_salt(),
+        );
+        let nullified_four = Preimage::new(
+            nullified_fee_two,
+            fee_token_id,
+            fee_token_id,
+            Affine::<BabyJubjub>::zero(),
+            Salt::Deposit(DepositSecret::new(
+                Fr254::rand(rng),
+                Fr254::rand(rng),
+                Fr254::rand(rng),
+            )),
+        );
+
+        let spend_commitments = [
+            nullified_one,
+            nullified_two,
+            nullified_three,
+            nullified_four,
+        ];
+        let mut membership_proofs = vec![];
+        let mut roots = vec![];
+        for nullifier in spend_commitments.iter() {
+            let (membership_proof, root) = generate_random_path(nullifier.hash().unwrap(), rng);
+            membership_proofs.push(membership_proof);
+            roots.push(root);
+        }
+        let mem_proofs: [MembershipProof<Fr254>; 4] = membership_proofs.try_into().unwrap();
+        let roots: [Fr254; 4] = roots.try_into().unwrap();
+
+        let new_salts = [Salt::new_transfer_salt().get_salt(); 3];
+        let ephemeral_key = BJJScalar::rand(rng);
+
+        let public_inputs = PublicInputs::new().fee(fee).roots(&roots).build();
+
+        let private_inputs = PrivateInputs::new()
+            .fee_token_id(fee_token_id)
+            .nf_address(nf_address_h160)
+            .value_a(value_a)
+            .nf_token_a_id(nf_token_a_id)
+            .nf_slot_id(nf_slot_id)
+            .ephemeral_key(ephemeral_key)
+            .party_a_public_key(keys_a.zkp_public_key)
+            .party_b_public_key(keys_b.zkp_public_key)
+            .nf_token_b_id(nf_token_b_id)
+            .value_b(value_b)
+            .swap_nonce(swap_nonce)
+            .deadline(deadline)
+            .nullifiers_values(&[
+                nullified_one.get_value(),
+                nullified_two.get_value(),
+                nullified_three.get_value(),
+                nullified_four.get_value(),
+            ])
+            .nullifiers_salts(&[
+                nullified_one.get_salt(),
+                nullified_two.get_salt(),
+                nullified_three.get_salt(),
+                nullified_four.get_salt(),
+            ])
+            .commitments_values(&[value_change, fee_change])
+            .commitments_salts(&new_salts)
+            .membership_proofs(&mem_proofs)
+            .secret_preimages(&[
+                nullified_one.get_secret_preimage().to_array(),
+                nullified_two.get_secret_preimage().to_array(),
+                nullified_three.get_secret_preimage().to_array(),
+                nullified_four.get_secret_preimage().to_array(),
+            ])
+            .root_key(prover_keys.root_key)
+            .public_keys(&[
+                nullified_one.get_public_key(),
+                nullified_two.get_public_key(),
+                nullified_three.get_public_key(),
+                nullified_four.get_public_key(),
+            ])
+            .withdraw_address(Fr254::zero())
+            .build();
+
+        let shared_secret: Affine<BabyJubjub> = (recipient_pk * ephemeral_key).into();
+        let shared_salt = poseidon
+            .hash(&[shared_secret.x, shared_secret.y, DOMAIN_SHARED_SALT])
+            .unwrap();
+
+        let contract_nf_address =
+            Affine::<BabyJubjub>::new_unchecked(Fr254::zero(), nf_address_field);
+        let preimage_one = Preimage::new(
+            value,
+            nf_token_id,
+            nf_slot_id,
+            recipient_pk,
+            Salt::Transfer(shared_salt),
+        );
+        let preimage_two = Preimage::new(
+            value_change,
+            nf_token_id,
+            nf_slot_id,
+            prover_keys.zkp_public_key,
+            Salt::Transfer(new_salts[0]),
+        );
+        let preimage_three = Preimage::new(
+            fee,
+            fee_token_id,
+            fee_token_id,
+            contract_nf_address,
+            Salt::Transfer(new_salts[1]),
+        );
+        let preimage_four = Preimage::new(
+            fee_change,
+            fee_token_id,
+            fee_token_id,
+            prover_keys.zkp_public_key,
+            Salt::Transfer(new_salts[2]),
+        );
+
+        let expected_commitments = [
+            preimage_one.hash().unwrap(),
+            preimage_two.hash().unwrap(),
+            preimage_three.hash().unwrap(),
+            preimage_four.hash().unwrap(),
+        ];
+
+        let expected_nullifiers: [Fr254; 4] = [
+            nullified_one,
+            nullified_two,
+            nullified_three,
+            nullified_four,
+        ]
+        .map(|c| {
+            let commitment_hash = c.hash().unwrap();
+            let secret = c.get_secret_preimage();
+            if c.get_public_key() == Affine::<BabyJubjub>::zero() {
+                let deposit_nullifier_key = poseidon
+                    .hash(&[
+                        secret.to_array()[0],
+                        secret.to_array()[1],
+                        secret.to_array()[2],
+                        Fr254::from_le_bytes_mod_order(b"DEPOSIT_NULLIFIER_V1"),
+                    ])
+                    .unwrap();
+                poseidon
+                    .hash(&[deposit_nullifier_key, commitment_hash])
+                    .unwrap()
+            } else {
+                poseidon
+                    .hash(&[prover_keys.nullifier_key, commitment_hash])
+                    .unwrap()
+            }
+        });
+
+        let expected_compressed_secrets: [Fr254; 5] = kemdem_encrypt::<false>(
+            ephemeral_key,
+            recipient_pk,
+            &[nf_token_id, nf_slot_id, value],
+            Affine::<BabyJubjub>::generator(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+        let sponge_param = PoseidonPerm::<Fr254>::perm().unwrap();
+        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_param);
+        let swap_domain = Fr254::from_le_bytes_mod_order(b"SWAP_V1");
+        sponge.absorb(&vec![
+            swap_domain,
+            keys_a.zkp_public_key.x,
+            keys_a.zkp_public_key.y,
+            keys_b.zkp_public_key.x,
+            keys_b.zkp_public_key.y,
+            nf_token_a_id,
+            value_a,
+            nf_token_b_id,
+            value_b,
+            swap_nonce,
+        ]);
+        let expected_swap_link = sponge.squeeze_native_field_elements(1)[0];
+
+        CircuitTestInfo::new(
+            public_inputs,
+            private_inputs,
+            expected_commitments,
+            expected_nullifiers,
+            expected_compressed_secrets,
+        )
+        .with_swap(expected_swap_link, deadline, expected_side)
+    }
+
     fn assert_valid_circuit(mut info: CircuitTestInfo) {
         let circuit = unified_circuit_builder(&mut info.public_inputs, &mut info.private_inputs)
             .expect("circuit should build for valid inputs");
@@ -1899,6 +2167,105 @@ mod tests {
                 "party B swap should output swap_side=0"
             );
         }
+    }
+
+    #[test]
+    fn test_matching_swap_legs_produce_same_link_and_opposite_sides() {
+        let mut rng = jf_utils::test_rng();
+        let keys_a = ZKPKeys::new(Fr254::rand(&mut rng)).unwrap();
+        let keys_b = ZKPKeys::new(Fr254::rand(&mut rng)).unwrap();
+
+        let erc_address_a: [u8; 20] = rand::thread_rng().gen();
+        let erc_address_a_string = format!("0x{}", hex::encode(erc_address_a));
+        let token_id_a = Fr254::rand(&mut rng);
+        let nf_token_a_id =
+            to_nf_token_id_from_str(&erc_address_a_string, &Fr254::to_hex_string(&token_id_a))
+                .unwrap();
+
+        let erc_address_b: [u8; 20] = rand::thread_rng().gen();
+        let erc_address_b_string = format!("0x{}", hex::encode(erc_address_b));
+        let token_id_b = Fr254::rand(&mut rng);
+        let nf_token_b_id =
+            to_nf_token_id_from_str(&erc_address_b_string, &Fr254::to_hex_string(&token_id_b))
+                .unwrap();
+
+        let nf_address_h160 = Address::new(rand::thread_rng().gen());
+        let nf_address_token = nf_address_h160.tokenize();
+        let u256_zero = U256::ZERO.tokenize();
+        let fee_token_id_biguint =
+            BigUint::from_bytes_be(keccak256(encode(&(nf_address_token, u256_zero))).as_slice())
+                >> 4;
+        let fee_token_id = Fr254::from(fee_token_id_biguint);
+
+        let value_a = Fr254::from(123u64);
+        let value_b = Fr254::from(456u64);
+        let swap_nonce = Fr254::from(42u64);
+        let deadline = Fr254::from(1000u64);
+        let fee = Fr254::from(5u64);
+
+        let mut party_a_leg = build_matching_swap_leg_inputs(
+            &mut rng,
+            &keys_a,
+            &keys_b,
+            nf_token_a_id,
+            nf_token_b_id,
+            value_a,
+            value_b,
+            swap_nonce,
+            deadline,
+            fee,
+            fee_token_id,
+            nf_address_h160,
+            true,
+        );
+        let mut party_b_leg = build_matching_swap_leg_inputs(
+            &mut rng,
+            &keys_a,
+            &keys_b,
+            nf_token_a_id,
+            nf_token_b_id,
+            value_a,
+            value_b,
+            swap_nonce,
+            deadline,
+            fee,
+            fee_token_id,
+            nf_address_h160,
+            false,
+        );
+
+        let circuit_a = unified_circuit_builder(
+            &mut party_a_leg.public_inputs,
+            &mut party_a_leg.private_inputs,
+        )
+        .unwrap();
+        circuit_a
+            .check_circuit_satisfiability(Vec::from(&party_a_leg.public_inputs).as_slice())
+            .unwrap();
+
+        let circuit_b = unified_circuit_builder(
+            &mut party_b_leg.public_inputs,
+            &mut party_b_leg.private_inputs,
+        )
+        .unwrap();
+        circuit_b
+            .check_circuit_satisfiability(Vec::from(&party_b_leg.public_inputs).as_slice())
+            .unwrap();
+
+        assert_eq!(
+            party_a_leg.public_inputs.swap_link, party_b_leg.public_inputs.swap_link,
+            "complementary swap legs must emit the same swap_link"
+        );
+        assert_eq!(
+            party_a_leg.public_inputs.swap_side,
+            Fr254::one(),
+            "party A leg must emit swap_side=1"
+        );
+        assert_eq!(
+            party_b_leg.public_inputs.swap_side,
+            Fr254::zero(),
+            "party B leg must emit swap_side=0"
+        );
     }
 
     #[test]
