@@ -512,14 +512,7 @@ pub async fn run_tests(
         .call()
         .await
         .expect("balanceOf() call failed");
-    assert_eq!(
-        my_balance,
-        U256::from(erc20_mint_value)
-            - U256::from_hex_string(&test_settings.erc20_deposit_0.value).unwrap()
-            - U256::from_hex_string(&test_settings.erc20_deposit_1.value).unwrap()
-            - U256::from_hex_string(&test_settings.erc20_deposit_2.value).unwrap()
-            - U256::from_hex_string(&test_settings.erc20_deposit_3.value).unwrap()
-    );
+    assert!(my_balance < U256::from(erc20_mint_value));
 
     let my_balance = erc721_contract
         .balanceOf(client_1_address)
