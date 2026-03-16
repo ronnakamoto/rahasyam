@@ -39,7 +39,7 @@ use lib::{
     secret_hash::SecretHash,
     shared_entities::{DepositSecret, Preimage, Salt},
 };
-use log::{debug, info};
+use log::{debug, info, warn};
 use nf_curves::ed_on_bn254::{BabyJubjub as BabyJubJub, Fr as BJJScalar};
 use nightfall_client::{
     domain::{
@@ -770,6 +770,60 @@ pub async fn wait_on_chain(
         time::sleep(time::Duration::from_secs(5)).await;
     }
     info!("Commitments are now on-chain");
+    Ok(())
+}
+
+/// Wait until each withdraw nullifier appears in the client DB as spent.
+pub async fn wait_for_withdraws_on_chain(
+    withdraws: &[DeEscrowDataReq],
+    client_url: &str,
+) -> Result<(), TestError> {
+    info!("Waiting for withdraw nullifiers to appear on-chain");
+    let client = reqwest::Client::new();
+    let commitments_url = Url::parse(client_url)
+        .map_err(|e| TestError::new(e.to_string()))?
+        .join("v1/commitments")
+        .map_err(|e| TestError::new(e.to_string()))?;
+    let mut confirmed = HashSet::new();
+    while confirmed.len() < withdraws.len() {
+        let commitments = client
+            .get(commitments_url.clone())
+            .header(REQUEST_ID, Uuid::new_v4().to_string())
+            .send()
+            .await
+            .map_err(|e| TestError::new(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| TestError::new(e.to_string()))?
+            .json::<Vec<CommitmentEntry>>()
+            .await
+            .map_err(|e| TestError::new(e.to_string()))?;
+
+        for withdraw in withdraws {
+            if confirmed.contains(&withdraw.withdraw_fund_salt) {
+                continue;
+            }
+            let withdraw_nullifier = Fr254::from_hex_string(&withdraw.withdraw_fund_salt)
+                .map_err(|e| TestError::new(e.to_string()))?;
+
+            if commitments.iter().any(|commitment| {
+                commitment.nullifier == withdraw_nullifier
+                    && commitment.status == CommitmentStatus::Spent
+            }) {
+                debug!(
+                    "Withdraw nullifier {} is on-chain",
+                    withdraw.withdraw_fund_salt
+                );
+                confirmed.insert(withdraw.withdraw_fund_salt.clone());
+            }
+        }
+        warn!(
+            "Waiting for withdraw nullifiers. Current confirmed: {}, expected: {}",
+            confirmed.len(),
+            withdraws.len()
+        );
+        time::sleep(time::Duration::from_secs(5)).await;
+    }
+    info!("Withdraw nullifiers are now on-chain");
     Ok(())
 }
 

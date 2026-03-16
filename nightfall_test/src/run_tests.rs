@@ -2,7 +2,8 @@ use crate::{
     test::{
         self, create_nf3_deposit_transaction, create_nf3_transfer_transaction,
         create_nf3_withdraw_transaction, get_key, get_recipient_address, set_anvil_mining_interval,
-        verify_deposit_commitments_nf_token_id, wait_for_all_responses, wait_on_chain, TokenType,
+        verify_deposit_commitments_nf_token_id, wait_for_all_responses,
+        wait_for_withdraws_on_chain, wait_on_chain, TokenType,
     },
     test_settings::TestSettings,
     validate_certs::validate_all_certificates,
@@ -19,7 +20,9 @@ use ark_std::{collections::HashMap, Zero};
 use configuration::settings::{get_settings, Settings};
 use futures::future::try_join_all;
 use lib::{
-    blockchain_client::BlockchainClientConnection, hex_conversion::HexConvertible,
+    blockchain_client::BlockchainClientConnection,
+    client_models::DeEscrowDataReq,
+    hex_conversion::HexConvertible,
     initialisation::get_blockchain_client_connection, utils::get_block_size,
 };
 use log::{debug, info, warn};
@@ -738,12 +741,10 @@ pub async fn run_tests(
 
     // create withdraw requests
     let mut withdraw_data = vec![];
+    let client2_url = Url::parse("http://client2:3000").unwrap();
 
     info!("Sending withdraw transactions");
-    let url = Url::parse("http://client2:3000")
-        .unwrap()
-        .join("v1/withdraw")
-        .unwrap();
+    let url = client2_url.clone().join("v1/withdraw").unwrap();
     // compute the recipient address from the signing key (we will reuse the deployer key here to withdraw it to ourselves)
     let recipient_address = get_recipient_address(&settings).unwrap();
 
@@ -812,8 +813,27 @@ pub async fn run_tests(
         withdraw_data[i].1.withdraw_fund_salt = response.1.withdraw_fund_salt.clone();
     }
 
+    let erc20_de_escrow_requests = withdraw_data
+        .iter()
+        .map(|(_, data)| DeEscrowDataReq {
+            token_id: data.token_id.clone(),
+            erc_address: data.erc_address.clone(),
+            recipient_address: data.recipient_address.clone(),
+            value: data.value.clone(),
+            token_type: data.token_type.clone(),
+            withdraw_fund_salt: data.withdraw_fund_salt.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    wait_for_withdraws_on_chain(
+        &erc20_de_escrow_requests,
+        client2_url.as_str(),
+    )
+    .await
+    .unwrap();
+
     //check the balance of the ERC20 tokens after the withdraws
-    let balance = get_erc20_balance(&http_client, Url::parse("http://client2:3000").unwrap()).await;
+    let balance = get_erc20_balance(&http_client, client2_url.clone()).await;
     info!("Balance of ERC20 tokens held as layer 2 commitments by client2: {balance}");
     assert_eq!(balance, 17 + client2_starting_balance);
 
@@ -893,6 +913,25 @@ pub async fn run_tests(
     for (i, response) in withdraw_responses.iter().enumerate() {
         withdraw_data[i].1.withdraw_fund_salt = response.1.withdraw_fund_salt.clone();
     }
+
+    let other_de_escrow_requests = withdraw_data
+        .iter()
+        .map(|(_, data)| DeEscrowDataReq {
+            token_id: data.token_id.clone(),
+            erc_address: data.erc_address.clone(),
+            recipient_address: data.recipient_address.clone(),
+            value: data.value.clone(),
+            token_type: data.token_type.clone(),
+            withdraw_fund_salt: data.withdraw_fund_salt.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    wait_for_withdraws_on_chain(
+        &other_de_escrow_requests,
+        client2_url.as_str(),
+    )
+    .await
+    .unwrap();
 
     // get the final balance of all the addresses used. As these are all addresses funded by Anvil,
     // we can simple print those balances
