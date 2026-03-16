@@ -71,7 +71,7 @@ contract RoundRobin is ProposerManager, Certified, UUPSUpgradeable {
         __Certified_init(msg.sender, x509_address, sanctionsListAddress);
 
         require(cooling_blocks > 0, "Cooling blocks must be > 0");
-        require(stake >= lazy_penalty, "Stake should be more than exit penalty");
+        require(stake >= lazy_penalty, "Stake should be more than lazy penalty");
         require(lazy_penalty > exit_penalty, "LazyPenalty should be more than  exit penalty");
         require(grace_blocks > 0 && grace_blocks < rotation_blocks, "Grace blocks must be > 0 and less than rotation blocks");
 

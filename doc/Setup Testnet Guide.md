@@ -212,8 +212,8 @@ where you need to it for following keys `base_bn254_pk`, `base_grumpkin_pk`, `de
 ******
 ______
 
-## Step 2: Start the disignated proposer
-As mentioned before, disignated proposer is for liveness, but this doesn't mean that Nightfall has centralisation problem for proposer. You can safely skip this step, and run Step 4 to start a proposer node, and rotate proposer to its turn when it's time to rotate proposer. 
+## Step 2: Start the designated proposer
+As mentioned before, designated proposer is for liveness, but this doesn't introduce centralization into Nightfall. You can safely skip this step, and run Step 4 to start a proposer node, and rotate proposer to its turn when it's time to rotate proposer. 
 > ⚠️ **Resource requirement:**
 >
 > Proving a L2 block with full privacy is heavy. A large server is recommended (e.g., 144 cores / 750GB RAM).
@@ -313,7 +313,7 @@ When proposer is proving a block, you will see `Computing block`, it will take 2
 When proposer successfully sent the block to L1, you will see `The L2 block was sent to L1`, you can verify this by checking the L1 exploer of nightfall contract address.
 
 
-Proposer can twist block making parameters by changing `block_assembly_max_wait_secs` `block_assembly_target_fill_ratio`, `block_assembly_initial_interval_secs`, `max_event_listener_attempts`, `block_size` in [host-chain.nightfall_proposer] nightfall.toml.
+Proposer can adjust block making parameters by changing `block_assembly_max_wait_secs` `block_assembly_target_fill_ratio`, `block_assembly_initial_interval_secs`, `max_event_listener_attempts`, `block_size` in [host-chain.nightfall_proposer] nightfall.toml.
 
 ------
 ******
@@ -527,7 +527,7 @@ When proposer is proving a block, you will see `Computing block`, it will take 2
 When proposer successfully sent the block to L1, you will see `The L2 block was sent to L1`, you can verify this by checking the L1 exploer of nightfall contract address.
 
 
-Proposer can twist block making parameters by changing `block_assembly_max_wait_secs` `block_assembly_target_fill_ratio`, `block_assembly_initial_interval_secs`, `max_event_listener_attempts`, `block_size` in [host-chain.nightfall_proposer] nightfall.toml.
+Proposer can adjust block making parameters by changing `block_assembly_max_wait_secs` `block_assembly_target_fill_ratio`, `block_assembly_initial_interval_secs`, `max_event_listener_attempts`, `block_size` in [host-chain.nightfall_proposer] nightfall.toml.
 
 ------
 ******

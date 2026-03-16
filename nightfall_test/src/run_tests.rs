@@ -20,10 +20,9 @@ use ark_std::{collections::HashMap, Zero};
 use configuration::settings::{get_settings, Settings};
 use futures::future::try_join_all;
 use lib::{
-    blockchain_client::BlockchainClientConnection,
-    client_models::DeEscrowDataReq,
-    hex_conversion::HexConvertible,
-    initialisation::get_blockchain_client_connection, utils::get_block_size,
+    blockchain_client::BlockchainClientConnection, client_models::DeEscrowDataReq,
+    hex_conversion::HexConvertible, initialisation::get_blockchain_client_connection,
+    utils::get_block_size,
 };
 use log::{debug, info, warn};
 use nightfall_client::drivers::rest::client_nf_3::WithdrawResponse;
@@ -825,12 +824,9 @@ pub async fn run_tests(
         })
         .collect::<Vec<_>>();
 
-    wait_for_withdraws_on_chain(
-        &erc20_de_escrow_requests,
-        client2_url.as_str(),
-    )
-    .await
-    .unwrap();
+    wait_for_withdraws_on_chain(&erc20_de_escrow_requests, client2_url.as_str())
+        .await
+        .unwrap();
 
     //check the balance of the ERC20 tokens after the withdraws
     let balance = get_erc20_balance(&http_client, client2_url.clone()).await;
@@ -926,12 +922,9 @@ pub async fn run_tests(
         })
         .collect::<Vec<_>>();
 
-    wait_for_withdraws_on_chain(
-        &other_de_escrow_requests,
-        client2_url.as_str(),
-    )
-    .await
-    .unwrap();
+    wait_for_withdraws_on_chain(&other_de_escrow_requests, client2_url.as_str())
+        .await
+        .unwrap();
 
     // get the final balance of all the addresses used. As these are all addresses funded by Anvil,
     // we can simple print those balances

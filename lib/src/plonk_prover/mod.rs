@@ -17,7 +17,6 @@ use std::sync::{Arc, OnceLock};
 pub fn get_client_proving_key() -> &'static Arc<ProvingKey<UnivariateKzgPCS<Bn254>>> {
     static PK: OnceLock<Arc<ProvingKey<UnivariateKzgPCS<Bn254>>>> = OnceLock::new();
     PK.get_or_init(|| {
-        // We'll try to load from the configuration server first.
         let clienpatht_pk_path = get_configuration_keys_path()
             .expect("Configuration keys path not found")
             .join("proving_key");

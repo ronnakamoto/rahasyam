@@ -309,7 +309,8 @@ where
                     }
                 };
 
-                let onchain_current_proposer = match rr.get_current_proposer_address().call().await {
+                let onchain_current_proposer = match rr.get_current_proposer_address().call().await
+                {
                     Ok(addr) => addr,
                     Err(e) => {
                         error!("Finality checker: failed rr.get_current_proposer_address(): {e}");
