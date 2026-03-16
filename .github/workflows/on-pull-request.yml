@@ -81,6 +81,8 @@ jobs:
       - name: link pptau cache
         # This is a workaround to avoid downloading the ppot_26.ptau file every time. It creates a symlink to a cached file (which will be downloaded if it doesn't exist on the testrunner).
         run: |
+          TARGET_DIR="$GITHUB_WORKSPACE/configuration/bin/trusted_setup"
+          mkdir -p "$TARGET_DIR"
           if [ -e /home/testrunner/ptau-cache/ppot_26.ptau ]
           then
             echo "Using cached ppot_26.ptau"
@@ -92,7 +94,7 @@ jobs:
             chmod 444 ptau-cache/ppot_26.ptau # Make it read-only
             echo "Cached ppot_26.ptau created"
           fi
-          ln -sf /home/testrunner/ptau-cache/ppot_26.ptau /home/testrunner/actions-runner/_work/nightfall_4_PV/nightfall_4_PV/configuration/bin/trusted_setup/ppot_26.ptau
+          ln -sf /home/testrunner/ptau-cache/ppot_26.ptau "$TARGET_DIR/ppot_26.ptau"
       - name: link bn254 setup cache
         shell: bash
         run: |
