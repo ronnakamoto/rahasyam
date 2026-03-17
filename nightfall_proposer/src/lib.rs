@@ -54,20 +54,26 @@ pub fn get_deposit_proving_key() -> &'static Arc<ProvingKey<UnivariateKzgPCS<Bn2
     static PK: OnceLock<Arc<ProvingKey<UnivariateKzgPCS<Bn254>>>> = OnceLock::new();
     PK.get_or_init(|| {
         // We'll try to load from the configuration directory first.
-        let path = get_configuration_keys_path()
-            .expect("Configuration keys path not found")
-            .join("deposit_proving_key");
-        let source_file = find_file_with_path(&path)
-            .unwrap_or_else(|| panic!("deposit proving key not found at {path:?}"));
-        if let Some(_key_bytes) = load_key_locally(&source_file) {
-            let deposit_proving_key =
-                ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
-                    &*std::fs::read(source_file).expect("Could not read deposit_proving_key"),
-                )
-                .expect("Could not deserialise deposit_proving_key");
-            return Arc::new(deposit_proving_key);
+        if let Some(path) = get_configuration_keys_path().map(|path| path.join("deposit_proving_key")) {
+            if let Some(source_file) = find_file_with_path(&path) {
+                if let Some(key_bytes) = load_key_locally(&source_file) {
+                    let deposit_proving_key =
+                        ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
+                            &*key_bytes,
+                        )
+                        .expect("Could not deserialise deposit_proving_key");
+                    return Arc::new(deposit_proving_key);
+                }
+                warn!("Could not load deposit_proving_key from local file. Loading from server");
+            } else {
+                warn!(
+                    "Could not find local deposit_proving_key at {}. Loading from server",
+                    path.display()
+                );
+            }
+        } else {
+            warn!("Configuration keys path not found. Loading deposit_proving_key from server");
         }
-        warn!("Could not load deposit_proving_key from local file. Loading from server");
 
         if let Some(key_bytes) = load_key_from_server("deposit_proving_key") {
             let pk = ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
