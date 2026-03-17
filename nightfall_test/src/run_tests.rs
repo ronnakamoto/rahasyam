@@ -1,9 +1,8 @@
 use crate::{
     test::{
         self, create_nf3_deposit_transaction, create_nf3_transfer_transaction,
-        create_nf3_withdraw_transaction, get_key, get_recipient_address,
-        set_anvil_mining_interval, verify_deposit_commitments_nf_token_id, wait_for_all_responses,
-        wait_on_chain, TokenType,
+        create_nf3_withdraw_transaction, get_key, get_recipient_address, set_anvil_mining_interval,
+        verify_deposit_commitments_nf_token_id, wait_for_all_responses, wait_on_chain, TokenType,
     },
     test_settings::TestSettings,
     validate_certs::validate_all_certificates,
@@ -20,9 +19,8 @@ use ark_std::{collections::HashMap, Zero};
 use configuration::settings::{get_settings, Settings};
 use futures::future::try_join_all;
 use lib::{
-    blockchain_client::BlockchainClientConnection,
-    hex_conversion::HexConvertible, initialisation::get_blockchain_client_connection,
-    utils::get_block_size,
+    blockchain_client::BlockchainClientConnection, hex_conversion::HexConvertible,
+    initialisation::get_blockchain_client_connection, utils::get_block_size,
 };
 use log::{debug, info, warn};
 use nightfall_client::drivers::rest::client_nf_3::WithdrawResponse;
@@ -33,6 +31,14 @@ use test::{
 use url::Url;
 use uuid::Uuid;
 
+use alloy::primitives::Address;
+use alloy::providers::ProviderBuilder;
+use nightfall_bindings::artifacts::IERC1155;
+use nightfall_bindings::artifacts::IERC20;
+use nightfall_bindings::artifacts::IERC3525;
+use nightfall_bindings::artifacts::IERC721;
+use std::{str::FromStr, sync::Arc};
+
 pub async fn run_tests(
     responses: std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
     mining_interval: u32,
@@ -40,6 +46,34 @@ pub async fn run_tests(
     let settings: Settings = Settings::new().unwrap();
     let test_settings: TestSettings = TestSettings::new().unwrap();
     info!("Running tests on nightall_client http:// interface");
+
+    let rpc_url = "http://anvil:8545";
+    let provider = ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .connect_http(rpc_url.parse().expect("Invalid anvil RPC URL"));
+
+    let provider = Arc::new(provider);
+
+    let erc20_token_address = test_settings.mock_addresses.erc20;
+    let erc721_token_address = test_settings.mock_addresses.erc721;
+    let erc1155_token_address = test_settings.mock_addresses.erc1155;
+    let erc3525_token_address = test_settings.mock_addresses.erc3525;
+
+    let erc20_contract = IERC20::new(erc20_token_address, provider.clone());
+    let erc721_contract = IERC721::new(erc721_token_address, provider.clone());
+    let erc1155_contract = IERC1155::new(erc1155_token_address, provider.clone());
+    let erc3525_contract = IERC3525::new(erc3525_token_address, provider.clone());
+
+    let client_1_address = Address::from_str(
+        &std::env::var("CLIENT_ADDRESS").expect("CLIENT_ADDRESS environment variable not set"),
+    )
+    .expect("Invalid Client address");
+
+    let recipient_addr = Address::from_str(&get_recipient_address(&settings).unwrap())
+        .expect("Invalid recipient address");
+
+    let erc1155_deposit_1_token_id = test_settings.erc1155_deposit_1.token_id.clone();
+    let erc1155_withdraw_1_token_id = test_settings.erc1155_withdraw_1.token_id.clone();
 
     // override the mining interval that may have been set in Anvil. If Anvil was set to automine, also turn that off
     let http_client = reqwest::Client::new();
@@ -97,6 +131,39 @@ pub async fn run_tests(
         ),
     ];
     validate_all_certificates(certs, &http_client).await;
+
+    let erc20_mint_value = 1000;
+    let erc1155_mint_value = 100;
+    let my_balance = erc20_contract
+        .balanceOf(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(erc20_mint_value));
+
+    let my_balance = erc721_contract
+        .balanceOf(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(1));
+
+    let my_balance = erc1155_contract
+        .balanceOf(
+            client_1_address,
+            U256::from_hex_string(&erc1155_deposit_1_token_id).unwrap(),
+        )
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(erc1155_mint_value));
+
+    let my_balance = erc3525_contract
+        .balanceOf_0(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(2));
 
     //see if the NF4_LARGE_BLOCK_TEST environment variable is set to 'true' and run the large block test only if it is
     let (
@@ -292,7 +359,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC20,
-        test_settings.erc20_deposit_1,
+        test_settings.erc20_deposit_1.clone(),
         "0x27".to_string(), //deposit_fee
     ));
     debug!("transaction_erc20_deposit_1 has been created");
@@ -310,7 +377,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC20,
-        test_settings.erc20_deposit_3,
+        test_settings.erc20_deposit_3.clone(),
         "0x00".to_string(), //deposit_fee
     ));
     debug!("transaction_erc20_deposit_3 has been created");
@@ -356,7 +423,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC1155,
-        test_settings.erc1155_deposit_1,
+        test_settings.erc1155_deposit_1.clone(),
         "0x11".to_string(), //deposit_fee
     ));
     debug!("transaction_erc1155_deposit_1 has been created");
@@ -365,7 +432,7 @@ pub async fn run_tests(
         &http_client,
         url.clone(),
         TokenType::ERC1155,
-        test_settings.erc1155_deposit_2,
+        test_settings.erc1155_deposit_2.clone(),
         "0x14".to_string(), //deposit_fee
     ));
     debug!("transaction_erc1155_deposit_2 has been created");
@@ -439,6 +506,42 @@ pub async fn run_tests(
     )
     .await;
     assert!(balance.is_some_and(|balance| balance.is_zero()));
+
+    let my_balance = erc20_contract
+        .balanceOf(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert!(my_balance < U256::from(erc20_mint_value));
+
+    let my_balance = erc721_contract
+        .balanceOf(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(0));
+
+    let my_balance = erc1155_contract
+        .balanceOf(
+            client_1_address,
+            U256::from_hex_string(&erc1155_deposit_1_token_id).unwrap(),
+        )
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(
+        my_balance,
+        U256::from(erc1155_mint_value)
+            - U256::from_hex_string(&test_settings.erc1155_deposit_1.value).unwrap()
+            - U256::from_hex_string(&test_settings.erc1155_deposit_2.value).unwrap()
+    );
+
+    let my_balance = erc3525_contract
+        .balanceOf_0(client_1_address)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+    assert_eq!(my_balance, U256::from(0));
 
     // get the fee balance
     let fee_balance = get_fee_balance(
@@ -738,6 +841,41 @@ pub async fn run_tests(
     info!("Balance of ERC20 tokens held as layer 2 commitments by client2: {balance}");
     assert_eq!(balance, 20 + client2_starting_balance);
 
+    let my_balance = erc20_contract
+        .balanceOf(recipient_addr)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+
+    assert_eq!(my_balance, U256::from(0));
+
+    let my_balance = erc721_contract
+        .balanceOf(recipient_addr)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+
+    assert_eq!(my_balance, U256::from(0));
+
+    let my_balance = erc1155_contract
+        .balanceOf(
+            recipient_addr,
+            U256::from_hex_string(&test_settings.erc1155_withdraw_1.token_id).unwrap(),
+        )
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+
+    assert_eq!(my_balance, U256::from(0));
+
+    let my_balance = erc3525_contract
+        .balanceOf_0(recipient_addr)
+        .call()
+        .await
+        .expect("balanceOf() call failed");
+
+    assert_eq!(my_balance, U256::from(0));
+
     // create withdraw requests
     let mut withdraw_data = vec![];
 
@@ -822,24 +960,27 @@ pub async fn run_tests(
     // withdraw the other token types
     let mut withdraw_data = vec![];
 
+    let erc721_withdraw = test_settings.erc721_withdraw.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
         TokenType::ERC721,
-        test_settings.erc721_withdraw,
+        erc721_withdraw.clone(),
         recipient_address.clone(),
     ));
     debug!("transaction_erc721_withdraw has been created");
 
+    let erc3525_withdraw = test_settings.erc3525_withdraw.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
         TokenType::ERC3525,
-        test_settings.erc3525_withdraw,
+        erc3525_withdraw.clone(),
         recipient_address.clone(),
     ));
     debug!("transaction_erc3525_withdraw has been created");
 
+    let erc1155_withdraw_1_value = test_settings.erc1155_withdraw_1.value.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
@@ -849,6 +990,7 @@ pub async fn run_tests(
     ));
     debug!("transaction_erc1155_withdraw_1 has been created");
 
+    let erc1155_withdraw_0_value = test_settings.erc1155_withdraw_2_nft.value.clone();
     withdraw_data.push(create_nf3_withdraw_transaction(
         &http_client,
         url.clone(),
@@ -924,4 +1066,60 @@ pub async fn run_tests(
         "Total spent was {:#?}",
         format_units(total, "ether").unwrap()
     );
+    info!("Waiting for withdraw be on-chain");
+    let mut recipient_erc1155_balance = U256::ZERO;
+    let mut recipient_erc20_balance = U256::ZERO;
+    let mut recipient_erc721_balance = U256::ZERO;
+    let mut recipient_erc3525_balance = U256::ZERO;
+
+    while recipient_erc1155_balance.is_zero()
+        || recipient_erc20_balance.is_zero()
+        || recipient_erc721_balance.is_zero()
+        || recipient_erc3525_balance.is_zero()
+    {
+        recipient_erc1155_balance = erc1155_contract
+            .balanceOf(
+                recipient_addr,
+                U256::from_hex_string(&erc1155_withdraw_1_token_id).unwrap(),
+            )
+            .call()
+            .await
+            .expect("balanceOf() call failed");
+
+        recipient_erc20_balance = erc20_contract
+            .balanceOf(recipient_addr)
+            .call()
+            .await
+            .expect("balanceOf() call failed");
+
+        recipient_erc721_balance = erc721_contract
+            .balanceOf(recipient_addr)
+            .call()
+            .await
+            .expect("balanceOf() call failed");
+
+        recipient_erc3525_balance = erc3525_contract
+            .balanceOf_0(recipient_addr)
+            .call()
+            .await
+            .expect("balanceOf() call failed");
+
+        if recipient_erc1155_balance.is_zero()
+            || recipient_erc20_balance > 1
+            || recipient_erc721_balance.is_zero()
+            || recipient_erc3525_balance.is_zero()
+        {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    }
+    assert!(recipient_erc20_balance > U256::ZERO);
+
+    assert_eq!(
+        recipient_erc1155_balance,
+        U256::from_hex_string(&erc1155_withdraw_0_value).unwrap()
+            + U256::from_hex_string(&erc1155_withdraw_1_value).unwrap()
+    );
+
+    assert_eq!(recipient_erc721_balance, 1);
+    assert_eq!(recipient_erc3525_balance, 1);
 }
