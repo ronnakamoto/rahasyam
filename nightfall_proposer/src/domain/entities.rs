@@ -27,6 +27,8 @@ pub struct Block {
     // The list of transactions in this block.
     pub transactions: Vec<OnChainTransaction>,
     pub rollup_proof: Vec<u8>,
+    #[serde(default)]
+    pub block_number: u64,
 }
 
 /// Struct used to represent deposit data, used in making deposit proofs by the proposer.
