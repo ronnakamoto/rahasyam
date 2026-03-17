@@ -52,11 +52,17 @@ async fn handle_rotate_proposer() -> Result<impl Reply, warp::Rejection> {
     let nonce = blockchain_client
         .get_transaction_count(signer.address())
         .await
-        .expect("Failed to generate nonce during proposer rotation");
+        .map_err(|e| {
+            warn!("Failed to generate nonce during proposer rotation: {e}");
+            warp::reject::custom(ProposerRejection::FailedToRotateProposer)
+        })?;
     let gas_price = blockchain_client
         .get_gas_price()
         .await
-        .expect("Failed to generate gas_price during proposer rotation");
+        .map_err(|e| {
+            warn!("Failed to generate gas_price during proposer rotation: {e}");
+            warp::reject::custom(ProposerRejection::FailedToRotateProposer)
+        })?;
     let max_fee_per_gas = gas_price * 2;
     let max_priority_fee_per_gas = gas_price;
     let gas_limit = 5000000u64;
@@ -70,7 +76,10 @@ async fn handle_rotate_proposer() -> Result<impl Reply, warp::Rejection> {
         .chain_id(get_settings().network.chain_id) // Linea testnet chain ID
         .build_raw_transaction((*signer).clone())
         .await
-        .expect("Failed to call rotate_proposer");
+        .map_err(|e| {
+            warn!("Failed to build rotate_proposer transaction: {e}");
+            warp::reject::custom(ProposerRejection::FailedToRotateProposer)
+        })?;
 
     let tx_receipt = blockchain_client
         .send_raw_transaction(&call)
