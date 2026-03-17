@@ -344,8 +344,7 @@ impl RecursiveProver for RollupProver {
         BN254_MERGE_PKS
             .get_or_init(|| {
                 let config_path = get_configuration_keys_path()
-                    .expect("Configuration keys path not found")
-                    .join("bin");
+                    .expect("Configuration keys path not found");
 
                 let mut pks = Vec::new();
                 let mut i = 0;
