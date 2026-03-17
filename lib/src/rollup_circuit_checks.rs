@@ -122,6 +122,15 @@ pub fn find_file_with_path(path: &Path) -> Option<std::path::PathBuf> {
 /// The struct for the rollup circuits checks needed in key generation.
 pub struct RollupKeyGenerator;
 
+/// The number of client-proof public inputs that are currently bound into the
+/// contract-visible transaction hash:
+/// fee + 4 roots + 4 commitments + 4 nullifiers + 5 compressed secrets.
+///
+/// Swap metadata is carried by the client proof, but the current Solidity
+/// block hash still excludes it, so recursion must continue to project the
+/// legacy subset until the contract boundary is upgraded in lockstep.
+const CONTRACT_HASH_FIELDS_PER_TX: usize = 18;
+
 impl RecursiveProver for RollupKeyGenerator {
     // these checks are implementation of RecursiveProver in Nightfish and will be called by each corresponding circuit
     fn base_bn254_extra_checks(
@@ -198,12 +207,13 @@ impl RecursiveProver for RollupKeyGenerator {
     ) -> Result<Vec<Variable>, CircuitError> {
         let first_pis = &specific_pis[0];
         let second_pis = &specific_pis[1];
+        let tx_len = CONTRACT_HASH_FIELDS_PER_TX;
 
         let pi_slices = [
-            &first_pis[..18],
-            &first_pis[18..],
-            &second_pis[..18],
-            &second_pis[18..],
+            &first_pis[..tx_len],
+            &first_pis[tx_len..],
+            &second_pis[..tx_len],
+            &second_pis[tx_len..],
         ];
         let fee_sum = pi_slices
             .iter()
@@ -256,10 +266,18 @@ impl RecursiveProver for RollupKeyGenerator {
         circuit: &mut PlonkCircuit<Fq254>,
     ) -> Result<Vec<Variable>, CircuitError> {
         let mut output_pis = Vec::<Variable>::new();
+        const LEGACY_PUBLIC_INPUT_LEN: usize = 24;
+        const SWAP_PUBLIC_INPUT_LEN: usize = 30;
         // We are in the base case, so we enforce the initialisation message and length separators to be constant
         // Everything else we simply concatenate into the output `Variable`s.
+        //
+        // IMPORTANT: the current Solidity block hash still binds only the legacy
+        // transaction payload (fee/roots/commitments/nullifiers/compressed_secrets).
+        // Swap metadata is verified inside the client proof itself, but is not yet
+        // part of the on-chain transaction hash, so we must keep projecting the
+        // same 18-field subset here until the contract boundary is upgraded.
         let mut init_bytes = "public_inputs".as_bytes().to_vec();
-        init_bytes.extend_from_slice("version1".as_bytes());
+        init_bytes.extend_from_slice("version2".as_bytes());
         for specific_pi in specific_pis {
             circuit.enforce_constant(
                 specific_pi[0],
@@ -274,7 +292,23 @@ impl RecursiveProver for RollupKeyGenerator {
             circuit.enforce_constant(specific_pi[13], Fq254::from(4u8))?;
             output_pis.extend_from_slice(&specific_pi[14..18]);
             circuit.enforce_constant(specific_pi[18], Fq254::from(5u8))?;
-            output_pis.extend_from_slice(&specific_pi[19..]);
+            output_pis.extend_from_slice(&specific_pi[19..24]);
+
+            match specific_pi.len() {
+                LEGACY_PUBLIC_INPUT_LEN => {}
+                SWAP_PUBLIC_INPUT_LEN => {
+                    // Validate the extra swap field separators, but intentionally
+                    // exclude the values from the contract-bound rollup hash.
+                    circuit.enforce_constant(specific_pi[24], Fq254::one())?;
+                    circuit.enforce_constant(specific_pi[26], Fq254::one())?;
+                    circuit.enforce_constant(specific_pi[28], Fq254::one())?;
+                }
+                len => {
+                    return Err(CircuitError::ParameterError(format!(
+                        "Unexpected client public input length {len}; expected {LEGACY_PUBLIC_INPUT_LEN} or {SWAP_PUBLIC_INPUT_LEN}"
+                    )));
+                }
+            }
         }
         Ok(output_pis)
     }
