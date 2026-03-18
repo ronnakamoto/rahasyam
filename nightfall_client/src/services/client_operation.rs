@@ -160,7 +160,7 @@ where
                 new_commitments[1].get_value(),
                 new_commitments[3].get_value(),
             ])
-            .commitments_salts(&[
+            .sender_commitment_salts(&[
                 new_commitments[1].get_salt(),
                 new_commitments[2].get_salt(),
                 new_commitments[3].get_salt(),

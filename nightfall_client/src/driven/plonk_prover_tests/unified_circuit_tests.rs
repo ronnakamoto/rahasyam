@@ -398,7 +398,7 @@ mod tests {
                 nullified_four.get_salt(),
             ])
             .commitments_values(&[value_change, fee_change])
-            .commitments_salts(&new_salts)
+            .sender_commitment_salts(&new_salts)
             .membership_proofs(&mem_proofs)
             .secret_preimages(&[
                 nullified_one.get_secret_preimage().to_array(),
@@ -676,7 +676,7 @@ mod tests {
                 nullified_four.get_salt(),
             ])
             .commitments_values(&[value_change, fee_change])
-            .commitments_salts(&new_salts)
+            .sender_commitment_salts(&new_salts)
             .membership_proofs(&mem_proofs)
             .secret_preimages(&[
                 nullified_one.get_secret_preimage().to_array(),
@@ -938,7 +938,7 @@ mod tests {
                 nullified_four.get_salt(),
             ])
             .commitments_values(&[value_change, fee_change])
-            .commitments_salts(&new_salts)
+            .sender_commitment_salts(&new_salts)
             .membership_proofs(&mem_proofs)
             .secret_preimages(&[
                 nullified_one.get_secret_preimage().to_array(),
@@ -1229,7 +1229,7 @@ mod tests {
                 nullified_four.get_salt(),
             ])
             .commitments_values(&[value_change, fee_change])
-            .commitments_salts(&new_salts)
+            .sender_commitment_salts(&new_salts)
             .membership_proofs(&mem_proofs)
             .secret_preimages(&[
                 nullified_one.get_secret_preimage().to_array(),
@@ -1497,7 +1497,7 @@ mod tests {
                 nullified_four.get_salt(),
             ])
             .commitments_values(&[value_change, fee_change])
-            .commitments_salts(&new_salts)
+            .sender_commitment_salts(&new_salts)
             .membership_proofs(&mem_proofs)
             .secret_preimages(&[
                 nullified_one.get_secret_preimage().to_array(),

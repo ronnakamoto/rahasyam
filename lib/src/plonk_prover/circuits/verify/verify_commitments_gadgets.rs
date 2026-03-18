@@ -21,7 +21,7 @@ where
         shared_secret_y: Variable,
         new_commitments_values: &[Variable; 2],
         recipient_public_key: &[PointVariable; 2],
-        new_commitments_salts: &[Variable; 3],
+        sender_commitment_salts: &[Variable; 3],
         withdraw_flag: BoolVar,
     ) -> Result<[Variable; 4], CircuitError>;
 }
@@ -42,7 +42,7 @@ where
         shared_secret_y: Variable,
         new_commitments_values: &[Variable; 2],
         recipient_public_key: &[PointVariable; 2],
-        new_commitments_salts: &[Variable; 3],
+        sender_commitment_salts: &[Variable; 3],
         withdraw_flag: BoolVar,
     ) -> Result<[Variable; 4], CircuitError> {
         // new_commitments_values[0]: transfer/withdraw change value
@@ -67,7 +67,7 @@ where
             new_commitments_values[0],
             recipient_public_key[1].get_x(),
             recipient_public_key[1].get_y(),
-            new_commitments_salts[0],
+            sender_commitment_salts[0],
         ])?;
         let second_commitment =
             self.conditional_select(is_transfer_change_zero, second_commitment_hash, self.zero())?;
@@ -82,7 +82,7 @@ where
             fee,
             self.zero(),
             nf_address,
-            new_commitments_salts[1],
+            sender_commitment_salts[1],
         ])?;
         let third_commitment =
             self.conditional_select(is_fee_zero, third_commitment_hash, self.zero())?;
@@ -96,7 +96,7 @@ where
             new_commitments_values[1],
             recipient_public_key[1].get_x(),
             recipient_public_key[1].get_y(),
-            new_commitments_salts[2],
+            sender_commitment_salts[2],
         ])?;
         let final_commitment =
             self.conditional_select(is_fee_change_zero, final_commitment_hash, self.zero())?;

@@ -22,7 +22,8 @@ COPY configuration/trust/* /usr/local/share/ca-certificates/
 RUN chmod 644 /usr/local/share/ca-certificates/* && update-ca-certificates
 # Copy application binaries and configuration
 COPY --from=builder /app/bin/proposer bin/
-COPY configuration/bin/* configuration/bin/
+RUN mkdir -p configuration/bin/keys
+COPY configuration/bin/keys/* configuration/bin/keys
 COPY .env *.env nightfall.toml .
 
 EXPOSE 3000

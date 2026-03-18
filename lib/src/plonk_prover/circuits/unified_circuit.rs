@@ -1,6 +1,7 @@
 use super::verify::verify_duplicates_gadgets::VerifyDuplicatesCircuit;
 use super::DOMAIN_SHARED_SALT;
 use crate::{
+    derive_key::{NULLIFIER_PREFIX, PRIVATE_KEY_PREFIX},
     nf_client_proof::{PrivateInputs, PrivateInputsVar, PublicInputs},
     plonk_prover::circuits::verify::{
         verify_commitments_gadgets::VerifyCommitmentsCircuit,
@@ -67,7 +68,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             nullifiers_salts,
             membership_proofs,
             commitments_values,
-            commitments_salts,
+            sender_commitment_salts,
             public_keys,
             root_key,
             ephemeral_key,
@@ -97,32 +98,27 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         // Constrain nullifier_key from root_key
         let nullifier_prefix = self.create_constant_variable(Fr254::from(
-            BigUint::parse_bytes(
-                b"7805187439118198468809896822299973897593108379494079213870562208229492109015",
-                10,
-            )
-            .unwrap(),
+            BigUint::parse_bytes(NULLIFIER_PREFIX.as_bytes(), 10).unwrap(),
         ))?;
         let nullifier_key = self.poseidon_hash(&[root_key, nullifier_prefix])?;
 
-        // Compute zkp_private_key from root_key
-        // zkp_private_key = poseidon_hash(root_key, prefix) % BJJ_ORDER
+        // Derive a dedicated private-key hash from root_key using a fixed domain-separation prefix.
         let private_prefix = self.create_constant_variable(Fr254::from(
-            BigUint::parse_bytes(
-                b"2708019456231621178814538244712057499818649907582893776052749473028258908910",
-                10,
-            )
-            .unwrap(),
+            BigUint::parse_bytes(PRIVATE_KEY_PREFIX.as_bytes(), 10).unwrap(),
         ))?;
         let fr_zkp_priv_key = self.poseidon_hash(&[root_key, private_prefix])?;
         let fr_zkp_priv_key_val = self.witness(fr_zkp_priv_key)?;
 
+        // Convert the BN254 hash output into a BabyJubjub scalar by modular reduction.
+        // The remainder is required because BabyJubjub scalar multiplication expects scalars
+        // in [0, BJJ_ORDER), while fr_zkp_priv_key is an element of the larger BN254 field.
         let hash_bigint = BigUint::from(BigInteger256::from(fr_zkp_priv_key_val));
         let bjj_order_bigint = BigUint::from(BJJScalar::MODULUS);
         let zkp_private_key_val = Fr254::from(&hash_bigint % &bjj_order_bigint);
         let zkp_private_key = self.create_variable(zkp_private_key_val)?;
 
-        // Constrain zkp_private_key: zkp_private_key + lambda * BJJ_ORDER == fr_zkp_priv_key
+        // Prove in-circuit that reduction was done correctly:
+        // fr_zkp_priv_key = zkp_private_key + lambda * BJJ_ORDER
         let lambda_val = Fr254::from(&hash_bigint / &bjj_order_bigint);
         let lambda = self.create_variable(lambda_val)?;
         let bjj_scalar_order = Fr254::from(BJJScalar::MODULUS);
@@ -133,6 +129,11 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             &[zkp_private_key, lambda],
             &fr_zkp_priv_key,
         )?;
+        // Enforce a canonical remainder and a bounded quotient for BN254 -> BJJ reduction.
+        // For any BN254 element h, lambda = floor(h / BJJ_ORDER).
+        // Since h <= Fr254::MODULUS - 1, the maximum possible quotient is
+        // floor((Fr254::MODULUS - 1) / BJJScalar::MODULUS) = 7, so lambda < 8.
+
         self.enforce_lt_constant(zkp_private_key, bjj_scalar_order)?;
         self.enforce_lt_constant(lambda, Fr254::from(8u64))?;
 
@@ -340,7 +341,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             shared_salt,
             &commitments_values,
             &[recipient_public_key, zkp_pub_key],
-            &commitments_salts,
+            &sender_commitment_salts,
             withdraw_flag,
         )?;
 
