@@ -15,6 +15,7 @@ use configuration::addresses::get_addresses;
 use jf_primitives::{poseidon::Poseidon, trees::MembershipProof};
 use lib::{
     commitments::{Commitment, Nullifiable},
+    derive_key::ZKPKeys,
     get_fee_token_id,
     hex_conversion::HexConvertible,
     nf_client_proof::{PrivateInputs, Proof, ProvingEngine, PublicInputs},
@@ -136,6 +137,8 @@ where
     let fixed_roots: [Fr254; 4] = roots
         .try_into()
         .map_err(|_| "Could not convert roots into fixed length array")?;
+    let keys = ZKPKeys::new(root_key)
+        .map_err(|_| "Transaction could not be completed due to an invalid root key.")?;
     // Construct Private Inputs [ Commitment value, salt, recipient public_key];
     let nf_address = get_addresses().nightfall();
     let nf_token_id = spend_commitments[0].get_nf_token_id();
@@ -147,8 +150,8 @@ where
             .build(),
         PrivateInputs::new()
             .nf_address(nf_address)
-            .value(new_commitments[0].get_value())
-            .nf_token_id(nf_token_id)
+            .value_a(new_commitments[0].get_value())
+            .nf_token_a_id(nf_token_id)
             .nf_slot_id(nf_slot_id)
             .fee_token_id(fee_token_id)
             .nullifiers_values(&spend_commitments.map(|c| c.get_value()))
@@ -157,13 +160,16 @@ where
                 new_commitments[1].get_value(),
                 new_commitments[3].get_value(),
             ])
-            .commitments_salts(&[
+            .sender_commitment_salts(&[
                 new_commitments[1].get_salt(),
                 new_commitments[2].get_salt(),
                 new_commitments[3].get_salt(),
             ])
             .public_keys(&public_keys)
+            .party_a_public_key(keys.zkp_public_key)
             .recipient_public_key(recipient_public_key)
+            .nf_token_b_id(Fr254::zero())
+            .value_b(Fr254::zero())
             .root_key(root_key)
             .ephemeral_key(ephemeral_key)
             .membership_proofs(&fixed_proofs)
@@ -188,6 +194,9 @@ where
             compressed_secrets: CompressedSecrets {
                 cipher_text: public_inputs.compressed_secrets,
             },
+            swap_link: public_inputs.swap_link,
+            deadline: public_inputs.deadline,
+            swap_side: public_inputs.swap_side,
             proof,
         }),
         Err(e) => {
