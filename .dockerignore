@@ -12,6 +12,9 @@ remappings.txt
 nightfall_bindings/build.rs
 # Ignore everything under bin
 configuration/bin/*
+# Allow current key artifacts checked into configuration/bin
+!configuration/bin/proving_key
+!configuration/bin/deposit_proving_key
 # But allow the keys directory itself
 !configuration/bin/keys/
 # And allow its contents
