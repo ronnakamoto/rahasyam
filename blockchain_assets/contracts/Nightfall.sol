@@ -87,6 +87,12 @@ struct TokenIdValue {
     TokenType token_type;
 }
 
+struct SlotIdValue {
+    address erc_address;
+    uint256 slot_id;
+    TokenType token_type;
+}
+
 error escrowFundsError();
 
 /// @title Nightfall (UUPS-upgradeable)
@@ -118,6 +124,8 @@ contract Nightfall is
 
     // Map Nightfall tokenId to the original ercAddress and tokenId
     mapping(uint256 => TokenIdValue) internal tokenIdMapping;
+    // Map Nightfall slotId to the original ercAddress and slotId
+    mapping(uint256 => SlotIdValue) internal slotIdMapping;
 
     int256 public layer2_block_number; // set in initialize to 0
     uint256 internal commitmentRoot; // set in initialize to 0
@@ -168,6 +176,8 @@ contract Nightfall is
         feeId = computedFeeId;
         // nfTokenId for fee commitment is keccak256(abi.encode(address(this), 0))
         tokenIdMapping[feeId] = TokenIdValue(address(this), 0, TokenType.FeeToken);
+        // fee slot is also 0 for native fee commitments
+        slotIdMapping[feeId] = SlotIdValue(address(this), 0, TokenType.FeeToken);
     }
 
     function set_x509_address(address x509_address) external onlyOwner {
@@ -435,6 +445,10 @@ contract Nightfall is
         uint256 nfTokenId = sha256_and_shift(abi.encode(ercAddress, tokenId));
         tokenIdMapping[nfTokenId] = TokenIdValue(ercAddress, tokenId, token_type);
 
+        uint256 nativeSlotId = (token_type == TokenType.ERC3525)
+            ? IERC3525(ercAddress).slotOf(tokenId)
+            : tokenId;
+
         uint256 nfSlotId = (token_type == TokenType.ERC3525)
             ? uint256(
                 keccak256(
@@ -442,6 +456,7 @@ contract Nightfall is
                 )
             ) >> 4
             : nfTokenId;
+        slotIdMapping[nfSlotId] = SlotIdValue(ercAddress, nativeSlotId, token_type);
 
         DepositCommitment memory valueCommitment = DepositCommitment(
             nfTokenId,
@@ -564,6 +579,14 @@ contract Nightfall is
     ) external view returns (address ercAddress, uint256 tokenId, TokenType tokenType) {
         TokenIdValue memory tokenData = tokenIdMapping[nfTokenId];
         return (tokenData.erc_address, tokenData.token_id, tokenData.token_type);
+    }
+
+    // Function to get original ercAddress and native slotId from nfSlotId.
+    function getSlotInfo(
+        uint256 nfSlotId
+    ) external view returns (address ercAddress, uint256 slotId, TokenType tokenType) {
+        SlotIdValue memory slotData = slotIdMapping[nfSlotId];
+        return (slotData.erc_address, slotData.slot_id, slotData.token_type);
     }
     
     // Called by the client to remove their funds from escrow, once they've proved they're entitled to them

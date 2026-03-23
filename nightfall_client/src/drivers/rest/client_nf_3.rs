@@ -40,7 +40,7 @@ use lib::{
     serialization::ark_de_hex,
     shared_entities::{DepositSecret, Preimage, Salt, TokenType},
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BJJTEAffine as JubJub, BabyJubjub, Fr as BJJScalar};
 use nightfall_bindings::artifacts::{Nightfall, IERC1155, IERC20, IERC3525, IERC721};
 use serde::{Deserialize, Serialize};
@@ -346,7 +346,7 @@ pub async fn handle_deposit<N: NightfallContract>(
         .nullifier_hash(&nullifier_key)
         .expect("Could not hash commitment {}");
     let commitment_hash = preimage_value.hash().expect("Could not hash commitment");
-    let commitment_entry = CommitmentEntry::new(
+    let mut commitment_entry = CommitmentEntry::new(
         preimage_value,
         nullifier,
         CommitmentStatus::PendingCreation,
@@ -354,6 +354,23 @@ pub async fn handle_deposit<N: NightfallContract>(
         None,
         None,
     );
+
+    match (
+        N::get_token_info(preimage_value.nf_token_id).await,
+        N::get_slot_info(preimage_value.nf_slot_id).await,
+    ) {
+        (Ok(token_info), Ok(slot_info)) => {
+            commitment_entry.native_token_id = Some(token_info.token_id.to_hex_string());
+            commitment_entry.native_slot_id = Some(slot_info.slot_id.to_hex_string());
+        }
+        (token_result, slot_result) => {
+            warn!(
+                "{id} Could not enrich commitment with native token/slot metadata. token_info_ok={}, slot_info_ok={}",
+                token_result.is_ok(),
+                slot_result.is_ok()
+            );
+        }
+    }
 
     db.store_commitment(commitment_entry)
         .await
@@ -382,7 +399,7 @@ pub async fn handle_deposit<N: NightfallContract>(
             Err(e) => error!("{id} Failed to  map deposit fee commitment to request: {e}"),
         }
 
-        let commitment_entry = CommitmentEntry::new(
+        let mut commitment_entry = CommitmentEntry::new(
             preimage_fee,
             nullifier,
             CommitmentStatus::PendingCreation,
@@ -390,6 +407,23 @@ pub async fn handle_deposit<N: NightfallContract>(
             None,
             None,
         );
+
+        match (
+            N::get_token_info(preimage_fee.nf_token_id).await,
+            N::get_slot_info(preimage_fee.nf_slot_id).await,
+        ) {
+            (Ok(token_info), Ok(slot_info)) => {
+                commitment_entry.native_token_id = Some(token_info.token_id.to_hex_string());
+                commitment_entry.native_slot_id = Some(slot_info.slot_id.to_hex_string());
+            }
+            (token_result, slot_result) => {
+                warn!(
+                    "{id} Could not enrich fee commitment with native token/slot metadata. token_info_ok={}, slot_info_ok={}",
+                    token_result.is_ok(),
+                    slot_result.is_ok()
+                );
+            }
+        }
         // Store the fee commitment in the database, error if storage fails
         db.store_commitment(commitment_entry)
             .await
