@@ -146,6 +146,13 @@ pub struct NF3SwapRequest {
     pub fee: String,
 }
 
+/// Structure representing a request to cancel a pending swap and unlock local commitments.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NF3QuitSwapRequest {
+    pub request_id: String,
+}
+
 /// structure representing NF_3 recipient data
 /// This is a sub-structure of the NF_3 transfer request
 #[derive(Debug, Deserialize, Serialize)]

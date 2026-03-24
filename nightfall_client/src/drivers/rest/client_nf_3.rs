@@ -30,7 +30,8 @@ use configuration::{addresses::get_addresses, settings::get_settings};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
     client_models::{
-        DeEscrowDataReq, NF3DepositRequest, NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest,
+        DeEscrowDataReq, NF3DepositRequest, NF3QuitSwapRequest, NF3SwapRequest, NF3TransferRequest,
+        NF3WithdrawRequest,
     },
     commitments::{Commitment, Nullifiable},
     contract_conversions::FrBn254,
@@ -66,6 +67,8 @@ pub struct WithdrawResponse {
 pub(crate) struct SwapChildRequestArgs {
     #[serde(default)]
     pub deadline: Option<String>,
+    #[serde(default)]
+    pub spend_commitment_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +240,13 @@ fn validate_withdraw_request_payload(req: &NF3WithdrawRequest) -> Result<(), Str
     validate_asset_constraints(token_type, value, token_id)
 }
 
+pub fn quit_swap_request(
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    path!("v1" / "swap" / "quit")
+        .and(warp::body::json())
+        .and_then(handle_quit_swap_request)
+}
+
 /// function to queue the deposit requests
 async fn queue_deposit_request(
     deposit_req: NF3DepositRequest,
@@ -301,6 +311,119 @@ async fn queue_swap_request(swap_req: NF3SwapRequest) -> Result<impl Reply, warp
     let uuid_string = Uuid::new_v4().to_string();
 
     queue_request(transaction_request, uuid_string).await
+}
+
+async fn handle_quit_swap_request(
+    quit_req: NF3QuitSwapRequest,
+) -> Result<impl Reply, warp::Rejection> {
+    let request_id = quit_req.request_id;
+    if Uuid::parse_str(&request_id).is_err() {
+        return Err(warp::reject::custom(
+            crate::domain::error::ClientRejection::InvalidRequestId,
+        ));
+    }
+
+    let db = get_db_connection().await;
+    let request = db.get_request(&request_id).await.ok_or_else(|| {
+        warp::reject::custom(crate::domain::error::ClientRejection::RequestNotFound)
+    })?;
+
+    let Some(child_args_json) = request.child_request_args else {
+        warn!("{request_id} Quit swap refused: no child_request_args found");
+        return Ok(reply::with_status(
+            json(
+                &serde_json::json!({
+                    "requestId": request_id,
+                    "message": "No pending swap commitments found for this request"
+                }),
+            ),
+            StatusCode::CONFLICT,
+        ));
+    };
+
+    let child_args: SwapChildRequestArgs = serde_json::from_str(&child_args_json).map_err(|e| {
+        error!("{request_id} Failed to deserialize child_request_args: {e}");
+        warp::reject::custom(crate::domain::error::ClientRejection::DatabaseError)
+    })?;
+
+    let mut unlocked = 0usize;
+    let mut skipped = 0usize;
+
+    for commitment_hex in &child_args.spend_commitment_ids {
+        let commitment_id = match Fr254::from_hex_string(commitment_hex) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("{request_id} Quit swap skipped invalid commitment id {commitment_hex}: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let Some(existing) = db.get_commitment(&commitment_id).await else {
+            warn!(
+                "{request_id} Quit swap skipped missing commitment {}",
+                commitment_id.to_hex_string()
+            );
+            skipped += 1;
+            continue;
+        };
+
+        if existing.status == CommitmentStatus::PendingSpend {
+            let update_ok = db
+                .mark_commitments_unspent(
+                    &[commitment_id],
+                    existing.layer_1_transaction_hash,
+                    existing.layer_2_block_number,
+                )
+                .await
+                .is_some();
+            if update_ok {
+                unlocked += 1;
+            } else {
+                error!(
+                    "{request_id} Quit swap failed to unlock commitment {}",
+                    commitment_id.to_hex_string()
+                );
+                skipped += 1;
+            }
+        } else {
+            warn!(
+                "{request_id} Quit swap skipped commitment {} with status {:?}",
+                commitment_id.to_hex_string(),
+                existing.status
+            );
+            skipped += 1;
+        }
+    }
+
+    if unlocked > 0 {
+        let _ = db.clear_request_child_args(&request_id).await;
+        info!("{request_id} Quit swap accepted: unlocked={unlocked}, skipped={skipped}");
+        Ok(reply::with_status(
+            json(
+                &serde_json::json!({
+                    "requestId": request_id,
+                    "unlocked": unlocked,
+                    "skipped": skipped,
+                    "message": "Swap commitments unlocked"
+                }),
+            ),
+            StatusCode::OK,
+        ))
+    } else {
+        warn!("{request_id} Quit swap refused: unlocked=0, skipped={skipped}");
+        Ok(reply::with_status(
+            json(
+                &serde_json::json!({
+                    "requestId": request_id,
+                    "unlocked": 0,
+                    "skipped": skipped,
+                    "message": "No pending commitments could be unlocked"
+                }),
+            ),
+            StatusCode::CONFLICT,
+        ))
+    }
 }
 
 /// This function queues all types of transaction request
@@ -1400,6 +1523,36 @@ where
             spend_fee_commitments[0],
             spend_fee_commitments[1],
         ];
+    }
+
+    // Persist spend commitments for this swap request so the client can later "quit swap"
+    // and unlock only these locally reserved commitments.
+    let spend_commitment_ids = spend_commitments
+        .iter()
+        .filter(|c| c.get_preimage() != Preimage::default())
+        .filter_map(|c| c.hash().ok())
+        .collect::<Vec<_>>();
+    let child_args = SwapChildRequestArgs {
+        spend_commitment_ids: spend_commitment_ids
+            .iter()
+            .map(|c| c.to_hex_string())
+            .collect::<Vec<_>>(),
+    };
+    let child_args_json = serde_json::to_string(&child_args).map_err(|e| {
+        error!("{id} Failed to serialize swap child args: {e}");
+        TransactionHandlerError::JsonConversionError(e)
+    })?;
+    {
+        let db = get_db_connection().await;
+        if db
+            .update_request_child_args(id, &child_args_json)
+            .await
+            .is_none()
+        {
+            rollback_commitments(db, &spend_commitment_ids, id).await;
+            let _ = db.update_request(id, RequestStatus::Failed).await;
+            return Err(TransactionHandlerError::DatabaseError);
+        }
     }
 
     // Calculate change
