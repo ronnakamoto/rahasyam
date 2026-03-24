@@ -3,7 +3,7 @@ use crate::{
     domain::{
         entities::{
             should_overwrite_request_status_with_failed, CommitmentStatus, ERCAddress, Operation,
-            OperationType, RequestStatus, Transport,
+            OperationType, Request, RequestStatus, Transport,
         },
         error::{DepositError, TokenContractError, TransactionHandlerError},
         notifications::NotificationPayload,
@@ -22,10 +22,12 @@ use crate::{
         client_operation::deposit_operation, commitment_selection::find_usable_commitments,
     },
 };
+use alloy::primitives::TxHash;
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine;
 use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
 use ark_std::{rand::thread_rng, UniformRand};
+use async_trait::async_trait;
 use configuration::{addresses::get_addresses, settings::get_settings};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
@@ -313,37 +315,109 @@ async fn queue_swap_request(swap_req: NF3SwapRequest) -> Result<impl Reply, warp
     queue_request(transaction_request, uuid_string).await
 }
 
-async fn handle_quit_swap_request(
-    quit_req: NF3QuitSwapRequest,
-) -> Result<impl Reply, warp::Rejection> {
-    let request_id = quit_req.request_id;
-    if Uuid::parse_str(&request_id).is_err() {
-        return Err(warp::reject::custom(
-            crate::domain::error::ClientRejection::InvalidRequestId,
-        ));
+#[async_trait]
+trait QuitSwapStore {
+    async fn get_request(&self, request_id: &str) -> Option<Request>;
+    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry>;
+    async fn mark_commitments_unspent(
+        &self,
+        commitments: &[Fr254],
+        layer_1_transaction_hash: Option<TxHash>,
+        layer_2_block_number: Option<i64>,
+    ) -> Option<()>;
+    async fn clear_request_child_args(&self, request_id: &str) -> Option<()>;
+}
+
+#[async_trait]
+impl QuitSwapStore for mongodb::Client {
+    async fn get_request(&self, request_id: &str) -> Option<Request> {
+        RequestDB::get_request(self, request_id).await
     }
 
-    let db = get_db_connection().await;
-    let request = db.get_request(&request_id).await.ok_or_else(|| {
-        warp::reject::custom(crate::domain::error::ClientRejection::RequestNotFound)
-    })?;
+    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry> {
+        CommitmentDB::get_commitment(self, commitment_id).await
+    }
+
+    async fn mark_commitments_unspent(
+        &self,
+        commitments: &[Fr254],
+        layer_1_transaction_hash: Option<TxHash>,
+        layer_2_block_number: Option<i64>,
+    ) -> Option<()> {
+        CommitmentDB::mark_commitments_unspent(
+            self,
+            commitments,
+            layer_1_transaction_hash,
+            layer_2_block_number,
+        )
+        .await
+    }
+
+    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
+        RequestDB::clear_request_child_args(self, request_id).await
+    }
+}
+
+#[async_trait]
+impl QuitSwapStore for &mongodb::Client {
+    async fn get_request(&self, request_id: &str) -> Option<Request> {
+        RequestDB::get_request(*self, request_id).await
+    }
+
+    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry> {
+        CommitmentDB::get_commitment(*self, commitment_id).await
+    }
+
+    async fn mark_commitments_unspent(
+        &self,
+        commitments: &[Fr254],
+        layer_1_transaction_hash: Option<TxHash>,
+        layer_2_block_number: Option<i64>,
+    ) -> Option<()> {
+        CommitmentDB::mark_commitments_unspent(
+            *self,
+            commitments,
+            layer_1_transaction_hash,
+            layer_2_block_number,
+        )
+        .await
+    }
+
+    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
+        RequestDB::clear_request_child_args(*self, request_id).await
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct QuitSwapExecution {
+    status_code: StatusCode,
+    unlocked: usize,
+    skipped: usize,
+    message: &'static str,
+}
+
+async fn process_quit_swap(
+    db: &impl QuitSwapStore,
+    request_id: &str,
+) -> Result<QuitSwapExecution, crate::domain::error::ClientRejection> {
+    let request = db
+        .get_request(request_id)
+        .await
+        .ok_or(crate::domain::error::ClientRejection::RequestNotFound)?;
 
     let Some(child_args_json) = request.child_request_args else {
         warn!("{request_id} Quit swap refused: no child_request_args found");
-        return Ok(reply::with_status(
-            json(
-                &serde_json::json!({
-                    "requestId": request_id,
-                    "message": "No pending swap commitments found for this request"
-                }),
-            ),
-            StatusCode::CONFLICT,
-        ));
+        return Ok(QuitSwapExecution {
+            status_code: StatusCode::CONFLICT,
+            unlocked: 0,
+            skipped: 0,
+            message: "No pending swap commitments found for this request",
+        });
     };
 
     let child_args: SwapChildRequestArgs = serde_json::from_str(&child_args_json).map_err(|e| {
         error!("{request_id} Failed to deserialize child_request_args: {e}");
-        warp::reject::custom(crate::domain::error::ClientRejection::DatabaseError)
+        crate::domain::error::ClientRejection::DatabaseError
     })?;
 
     let mut unlocked = 0usize;
@@ -397,33 +471,51 @@ async fn handle_quit_swap_request(
     }
 
     if unlocked > 0 {
-        let _ = db.clear_request_child_args(&request_id).await;
+        let _ = db.clear_request_child_args(request_id).await;
         info!("{request_id} Quit swap accepted: unlocked={unlocked}, skipped={skipped}");
-        Ok(reply::with_status(
-            json(
-                &serde_json::json!({
-                    "requestId": request_id,
-                    "unlocked": unlocked,
-                    "skipped": skipped,
-                    "message": "Swap commitments unlocked"
-                }),
-            ),
-            StatusCode::OK,
-        ))
+        Ok(QuitSwapExecution {
+            status_code: StatusCode::OK,
+            unlocked,
+            skipped,
+            message: "Swap commitments unlocked",
+        })
     } else {
         warn!("{request_id} Quit swap refused: unlocked=0, skipped={skipped}");
-        Ok(reply::with_status(
-            json(
-                &serde_json::json!({
-                    "requestId": request_id,
-                    "unlocked": 0,
-                    "skipped": skipped,
-                    "message": "No pending commitments could be unlocked"
-                }),
-            ),
-            StatusCode::CONFLICT,
-        ))
+        Ok(QuitSwapExecution {
+            status_code: StatusCode::CONFLICT,
+            unlocked: 0,
+            skipped,
+            message: "No pending commitments could be unlocked",
+        })
     }
+}
+
+async fn handle_quit_swap_request(
+    quit_req: NF3QuitSwapRequest,
+) -> Result<impl Reply, warp::Rejection> {
+    let request_id = quit_req.request_id;
+    if Uuid::parse_str(&request_id).is_err() {
+        return Err(warp::reject::custom(
+            crate::domain::error::ClientRejection::InvalidRequestId,
+        ));
+    }
+
+    let db = get_db_connection().await;
+    let execution = process_quit_swap(&db, &request_id)
+        .await
+        .map_err(warp::reject::custom)?;
+
+    Ok(reply::with_status(
+        json(
+            &serde_json::json!({
+                "requestId": request_id,
+                "unlocked": execution.unlocked,
+                "skipped": execution.skipped,
+                "message": execution.message
+            }),
+        ),
+        execution.status_code,
+    ))
 }
 
 /// This function queues all types of transaction request
@@ -1715,21 +1807,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::RequestStatus;
+    use async_trait::async_trait;
     use ark_ec::AffineRepr;
     use ark_ff::One;
     use ark_serialize::{CanonicalSerialize, Compress};
     use ark_std::Zero;
     use lib::{
         client_models::{
-            NF3DepositRequest, NF3RecipientData, NF3SwapRequest, NF3TransferRequest,
+            NF3DepositRequest, NF3QuitSwapRequest, NF3RecipientData, NF3SwapRequest,
+            NF3TransferRequest,
             NF3WithdrawRequest, SwapParty,
         },
         derive_key::ZKPKeys,
         plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
+        shared_entities::{Preimage, TokenType},
     };
     use nf_curves::ed_on_bn254::BabyJubjub;
     use nf_curves::ed_on_bn254::Fq;
     use serde_json::{json, Value};
+    use tokio::sync::Mutex;
 
     fn sample_deposit_request() -> NF3DepositRequest {
         NF3DepositRequest {
@@ -1772,6 +1869,112 @@ mod tests {
                 )],
             },
             fee: "0x00".to_string(),
+        }
+    }
+
+    #[derive(Default)]
+    struct MockQuitSwapStore {
+        requests: Mutex<Vec<Request>>,
+        commitments: Mutex<Vec<CommitmentEntry>>,
+        fail_mark_unspent: bool,
+    }
+
+    impl MockQuitSwapStore {
+        async fn push_request(&self, request: Request) {
+            self.requests.lock().await.push(request);
+        }
+
+        async fn push_commitment(&self, commitment: CommitmentEntry) {
+            self.commitments.lock().await.push(commitment);
+        }
+
+        async fn get_commitment_status(&self, commitment_id: Fr254) -> Option<CommitmentStatus> {
+            self.commitments
+                .lock()
+                .await
+                .iter()
+                .find(|c| c.key == commitment_id)
+                .map(|c| c.status)
+        }
+
+        async fn request_child_args(&self, request_id: &str) -> Option<Option<String>> {
+            self.requests
+                .lock()
+                .await
+                .iter()
+                .find(|r| r.uuid == request_id)
+                .map(|r| r.child_request_args.clone())
+        }
+    }
+
+    #[async_trait]
+    impl QuitSwapStore for MockQuitSwapStore {
+        async fn get_request(&self, request_id: &str) -> Option<Request> {
+            self.requests
+                .lock()
+                .await
+                .iter()
+                .find(|r| r.uuid == request_id)
+                .cloned()
+        }
+
+        async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry> {
+            self.commitments
+                .lock()
+                .await
+                .iter()
+                .find(|c| c.key == *commitment_id)
+                .cloned()
+        }
+
+        async fn mark_commitments_unspent(
+            &self,
+            commitments: &[Fr254],
+            layer_1_transaction_hash: Option<TxHash>,
+            layer_2_block_number: Option<i64>,
+        ) -> Option<()> {
+            if self.fail_mark_unspent {
+                return None;
+            }
+
+            let mut entries = self.commitments.lock().await;
+            let mut updated = false;
+            for commitment_id in commitments {
+                if let Some(entry) = entries.iter_mut().find(|c| c.key == *commitment_id) {
+                    entry.status = CommitmentStatus::Unspent;
+                    entry.layer_1_transaction_hash = layer_1_transaction_hash;
+                    entry.layer_2_block_number = layer_2_block_number;
+                    updated = true;
+                }
+            }
+            if updated { Some(()) } else { None }
+        }
+
+        async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
+            let mut requests = self.requests.lock().await;
+            let request = requests.iter_mut().find(|r| r.uuid == request_id)?;
+            request.child_request_args = None;
+            Some(())
+        }
+    }
+
+    fn mock_commitment(key: Fr254, status: CommitmentStatus) -> CommitmentEntry {
+        CommitmentEntry {
+            preimage: Preimage::default(),
+            status,
+            key,
+            nullifier: Fr254::zero(),
+            token_type: TokenType::ERC20,
+            layer_1_transaction_hash: None,
+            layer_2_block_number: Some(7),
+        }
+    }
+
+    fn mock_request(request_id: &str, child_request_args: Option<String>) -> Request {
+        Request {
+            status: RequestStatus::Queued,
+            uuid: request_id.to_string(),
+            child_request_args,
         }
     }
 
@@ -2740,6 +2943,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_quit_swap_request_rejects_invalid_uuid() {
+        let result = handle_quit_swap_request(NF3QuitSwapRequest {
+            request_id: "not-a-uuid".to_string(),
+        })
+        .await;
+
+        match result {
+            Ok(_) => panic!("invalid UUID should be rejected"),
+            Err(rejection) => {
+                assert!(matches!(
+                    rejection.find::<crate::domain::error::ClientRejection>(),
+                    Some(crate::domain::error::ClientRejection::InvalidRequestId)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_swap_api_rejects_unsupported_token_type_for_party_b() {
         let my_public_key_hex = {
             let my_key = crate::get_zkp_keys()
@@ -2786,5 +3007,108 @@ mod tests {
             }
             other => panic!("Expected unsupported token_type error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_process_quit_swap_returns_request_not_found() {
+        let db = MockQuitSwapStore::default();
+        let request_id = "11111111-1111-1111-1111-111111111111";
+
+        let result = process_quit_swap(&db, request_id).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::domain::error::ClientRejection::RequestNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_process_quit_swap_returns_conflict_when_no_child_args() {
+        let db = MockQuitSwapStore::default();
+        let request_id = "22222222-2222-2222-2222-222222222222";
+        db.push_request(mock_request(request_id, None)).await;
+
+        let result = process_quit_swap(&db, request_id)
+            .await
+            .expect("quit swap should return an execution result");
+
+        assert_eq!(
+            result,
+            QuitSwapExecution {
+                status_code: StatusCode::CONFLICT,
+                unlocked: 0,
+                skipped: 0,
+                message: "No pending swap commitments found for this request",
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_quit_swap_unlocks_pending_commitment_and_clears_args() {
+        let db = MockQuitSwapStore::default();
+        let request_id = "33333333-3333-3333-3333-333333333333";
+        let commitment_id = Fr254::from(42u64);
+        let child_args = serde_json::to_string(&SwapChildRequestArgs {
+            deadline: None,
+            spend_commitment_ids: vec![commitment_id.to_hex_string()],
+        })
+        .expect("serialize child args");
+
+        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::PendingSpend))
+            .await;
+
+        let result = process_quit_swap(&db, request_id)
+            .await
+            .expect("quit swap should succeed");
+
+        assert_eq!(
+            result,
+            QuitSwapExecution {
+                status_code: StatusCode::OK,
+                unlocked: 1,
+                skipped: 0,
+                message: "Swap commitments unlocked",
+            }
+        );
+        assert_eq!(
+            db.get_commitment_status(commitment_id).await,
+            Some(CommitmentStatus::Unspent)
+        );
+        assert_eq!(db.request_child_args(request_id).await, Some(None));
+    }
+
+    #[tokio::test]
+    async fn test_process_quit_swap_conflict_when_nothing_unlockable() {
+        let db = MockQuitSwapStore::default();
+        let request_id = "44444444-4444-4444-4444-444444444444";
+        let commitment_id = Fr254::from(99u64);
+        let child_args = serde_json::to_string(&SwapChildRequestArgs {
+            deadline: None,
+            spend_commitment_ids: vec![commitment_id.to_hex_string()],
+        })
+        .expect("serialize child args");
+
+        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::Spent))
+            .await;
+
+        let result = process_quit_swap(&db, request_id)
+            .await
+            .expect("quit swap should return conflict");
+
+        assert_eq!(
+            result,
+            QuitSwapExecution {
+                status_code: StatusCode::CONFLICT,
+                unlocked: 0,
+                skipped: 1,
+                message: "No pending commitments could be unlocked",
+            }
+        );
+        assert_eq!(
+            db.get_commitment_status(commitment_id).await,
+            Some(CommitmentStatus::Spent)
+        );
     }
 }
