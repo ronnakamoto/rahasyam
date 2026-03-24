@@ -592,6 +592,43 @@ The components of the JSON object have the following meaning:
 
 ***
 
+POST /v1/swap/quit
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/v1/swap/quit' \
+  --data-raw '{
+    "requestId": "33333333-3333-3333-3333-333333333333"
+  }'
+```
+
+Returns:
+- `200 OK` when one or more swap input commitments are unlocked (moved from `PendingSpend` back to `Unspent`).
+- `409 CONFLICT` when no pending commitments can be unlocked (for example already spent/unavailable, or no swap child args saved for that request).
+- `404 NOT FOUND` if `requestId` does not exist.
+- `400 BAD REQUEST` if `requestId` is not a valid UUID.
+
+Response body (200/409):
+
+```json
+{
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "unlocked": 1,
+  "skipped": 0,
+  "message": "Swap commitments unlocked"
+}
+```
+
+This call allows a client to cancel its local participation in a pending swap and unlock the commitments that were reserved for that swap request.
+
+Security note:
+- This endpoint only updates local client DB commitment status (`PendingSpend` -> `Unspent`).
+- It does not modify on-chain state, does not forge counterpart signatures, and does not bypass circuit/proposer validation.
+- If a commitment is already spent or not unlockable, it is skipped and reported in the response.
+
+***
+
 POST /v1/withdraw
 
 ```sh

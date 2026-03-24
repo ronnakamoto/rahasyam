@@ -6,6 +6,7 @@ All notable changes to this repository will be documented in this file.
 
 ### Added
 - Atomic swap support across client/prover/proposer flow, including `swap_link`, `deadline`, and `swap_side`.
+- Quit-swap API `POST /v1/swap/quit` to unlock locally reserved swap commitments (`PendingSpend` -> `Unspent`) when a client cancels a pending swap request.
 
 ### Breaking Changes
 - `ClientTransaction` serialization now includes swap metadata fields (`swap_link`, `deadline`, `swap_side`).
