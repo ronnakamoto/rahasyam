@@ -133,13 +133,9 @@ fn validate_asset_constraints(
             }
             Ok(())
         }
-        TokenType::ERC1155 | TokenType::ERC3525 => {
+       TokenType::ERC1155 | TokenType::ERC3525 => {
             if value.is_zero() {
-                return Err(match token_type {
-                    TokenType::ERC1155 => "ERC1155 operations require value > 0".to_string(),
-                    TokenType::ERC3525 => "ERC3525 operations require value > 0".to_string(),
-                    _ => unreachable!(),
-                });
+                return Err(format!("{token_type:?} operations require value > 0"));
             }
             Ok(())
         }
