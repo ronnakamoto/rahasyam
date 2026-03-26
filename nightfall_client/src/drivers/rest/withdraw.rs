@@ -1,3 +1,4 @@
+use super::client_nf_3::parse_token_type;
 use crate::ports::contracts::NightfallContract;
 use ::nightfall_bindings::artifacts::Nightfall;
 use lib::{client_models::DeEscrowDataReq, shared_entities::WithdrawData as NFWithdrawData};
@@ -6,17 +7,10 @@ use reqwest::StatusCode;
 use warp::{reject, Reply};
 
 pub async fn handle_de_escrow(data: DeEscrowDataReq) -> Result<impl Reply, warp::Rejection> {
-    let normalized_token_type = data
-        .token_type
-        .trim()
-        .trim_start_matches("0x")
-        .trim_start_matches("0X");
-    let token_type = u8::from_str_radix(normalized_token_type, 16)
-        .map_err(|_| {
-            error!("Could not convert token type");
-            reject::custom(crate::domain::error::ClientRejection::FailedDeEscrow)
-        })?
-        .into();
+    let token_type = parse_token_type(data.token_type.as_str()).map_err(|e| {
+        error!("Could not convert token type: {e}");
+        reject::custom(crate::domain::error::ClientRejection::FailedDeEscrow)
+    })?;
     let withdraw_data: NFWithdrawData = NFWithdrawData::try_from(data.clone()).map_err(|e| {
         error!("Could not convert Withdraw data request to WithdrawData: {e}");
         reject::custom(crate::domain::error::ClientRejection::FailedDeEscrow)

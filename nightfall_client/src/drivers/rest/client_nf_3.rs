@@ -95,7 +95,7 @@ where
         .and_then(queue_withdraw_request)
 }
 
-fn parse_token_type(token_type: &str) -> Result<TokenType, String> {
+pub(super) fn parse_token_type(token_type: &str) -> Result<TokenType, String> {
     let normalized = token_type
         .trim()
         .trim_start_matches("0x")
@@ -780,10 +780,11 @@ where
         new_commitment_four,
     ];
 
-    dbg!(new_commitments
+    let new_commitment_hashes = new_commitments
         .iter()
-        .map(|c| c.hash().unwrap().to_hex_string())
-        .collect::<Vec<_>>());
+        .filter_map(|c| c.hash().ok().map(|h| h.to_hex_string()))
+        .collect::<Vec<_>>();
+    debug!("{id} New commitments prepared: {new_commitment_hashes:?}");
 
     let secret_preimages = [
         spend_commitments[0].get_secret_preimage(),
@@ -814,7 +815,7 @@ where
             // Rollback the spend commitments to unspent
             let commitment_ids = spend_commitments
                 .iter()
-                .map(|c| c.hash().unwrap())
+                .filter_map(|c| c.hash().ok())
                 .collect::<Vec<_>>();
 
             info!(
@@ -836,7 +837,7 @@ where
             // Delete new commitments
             let new_commitment_ids = new_commitments
                 .iter()
-                .map(|c| c.hash().unwrap())
+                .filter_map(|c| c.hash().ok())
                 .collect::<Vec<_>>();
 
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
@@ -1184,9 +1185,19 @@ mod tests {
     fn test_validate_deposit_rejects_erc721_non_zero_value() {
         let mut req = sample_deposit_request();
         req.token_type = "02".to_string();
+        req.token_id = "0x2a".to_string();
         req.value = "0x01".to_string();
         let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
         assert_eq!(err, "ERC721 operations require value to be 0");
+    }
+
+    #[test]
+    fn test_validate_deposit_accepts_erc721_zero_token_id_when_value_zero() {
+        let mut req = sample_deposit_request();
+        req.token_type = "02".to_string();
+        req.token_id = "0x00".to_string();
+        req.value = "0x00".to_string();
+        validate_deposit_request_payload(&req).expect("validation should pass");
     }
 
     #[test]
