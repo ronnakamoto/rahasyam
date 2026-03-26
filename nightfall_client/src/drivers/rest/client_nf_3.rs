@@ -4,7 +4,7 @@ use crate::{
         entities::{
             CommitmentStatus, ERCAddress, Operation, OperationType, RequestStatus, Transport,
         },
-        error::TransactionHandlerError,
+        error::{DepositError, TokenContractError, TransactionHandlerError},
         notifications::NotificationPayload,
     },
     driven::{
@@ -95,10 +95,136 @@ where
         .and_then(queue_withdraw_request)
 }
 
+fn parse_token_type(token_type: &str) -> Result<TokenType, String> {
+    let normalized = token_type
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
+    let parsed = u8::from_str_radix(normalized, 16)
+        .map_err(|_| "Invalid tokenType: expected hex-encoded value".to_string())?;
+    match parsed {
+        0 => Ok(TokenType::ERC20),
+        1 => Ok(TokenType::ERC1155),
+        2 => Ok(TokenType::ERC721),
+        3 => Ok(TokenType::ERC3525),
+        4 => Ok(TokenType::FeeToken),
+        _ => Err("Unsupported tokenType".to_string()),
+    }
+}
+
+fn validate_asset_constraints(
+    token_type: TokenType,
+    value: Fr254,
+    token_id: BigInteger256,
+) -> Result<(), String> {
+    match token_type {
+        TokenType::ERC20 => {
+            if value.is_zero() {
+                return Err("ERC20 operations require value > 0".to_string());
+            }
+            if token_id != BigInteger256::zero() {
+                return Err("ERC20 operations require tokenId to be 0".to_string());
+            }
+            Ok(())
+        }
+        TokenType::ERC721 => {
+            if !value.is_zero() {
+                return Err("ERC721 operations require value to be 0".to_string());
+            }
+            Ok(())
+        }
+        TokenType::ERC1155 | TokenType::ERC3525 => {
+            if value.is_zero() {
+                return Err(match token_type {
+                    TokenType::ERC1155 => "ERC1155 operations require value > 0".to_string(),
+                    TokenType::ERC3525 => "ERC3525 operations require value > 0".to_string(),
+                    _ => unreachable!(),
+                });
+            }
+            Ok(())
+        }
+        TokenType::FeeToken => Err("FeeToken is not supported for this operation".to_string()),
+    }
+}
+
+fn validate_deposit_request_payload(req: &NF3DepositRequest) -> Result<(), String> {
+    ERCAddress::try_from_hex_string(&req.erc_address)
+        .map_err(|e| format!("Invalid ercAddress: {e}"))?;
+    let token_id = BigInteger256::from_hex_string(req.token_id.as_str())
+        .map_err(|e| format!("Invalid tokenId: {e}"))?;
+    let token_type = parse_token_type(req.token_type.as_str())?;
+    let value =
+        Fr254::from_hex_string(req.value.as_str()).map_err(|e| format!("Invalid value: {e}"))?;
+    Fr254::from_hex_string(req.fee.as_str()).map_err(|e| format!("Invalid fee: {e}"))?;
+    Fr254::from_hex_string(req.deposit_fee.as_str())
+        .map_err(|e| format!("Invalid deposit_fee: {e}"))?;
+    validate_asset_constraints(token_type, value, token_id)
+}
+
+fn validate_transfer_request_payload(req: &NF3TransferRequest) -> Result<(), String> {
+    to_nf_token_id_from_str(req.erc_address.as_str(), req.token_id.as_str())
+        .map_err(|e| format!("Invalid ercAddress/tokenId pair: {e}"))?;
+    Fr254::from_hex_string(req.fee.as_str()).map_err(|e| format!("Invalid fee: {e}"))?;
+
+    if req.recipient_data.values.len() != 1 {
+        return Err("Transfer currently supports exactly one recipient value".to_string());
+    }
+    if req
+        .recipient_data
+        .recipient_compressed_zkp_public_keys
+        .len()
+        != 1
+    {
+        return Err("Transfer currently supports exactly one recipient public key".to_string());
+    }
+
+    let value = Fr254::from_hex_string(req.recipient_data.values[0].as_str())
+        .map_err(|e| format!("Invalid transfer value: {e}"))?;
+    if value.is_zero() {
+        return Err("Transfer operations require value > 0".to_string());
+    }
+
+    let first_key = &req.recipient_data.recipient_compressed_zkp_public_keys[0];
+    let json_wrapped = format!("\"{first_key}\"");
+    let deserialized_public_key: JubJubPubKey = serde_json::from_str(&json_wrapped)
+        .map_err(|e| format!("Invalid recipient public key: {e}"))?;
+    if deserialized_public_key.0.is_zero() {
+        return Err("Recipient public key cannot be the identity point".to_string());
+    }
+
+    Ok(())
+}
+
+fn validate_withdraw_request_payload(req: &NF3WithdrawRequest) -> Result<(), String> {
+    ERCAddress::try_from_hex_string(&req.erc_address)
+        .map_err(|e| format!("Invalid ercAddress: {e}"))?;
+    let token_id = BigInteger256::from_hex_string(req.token_id.as_str())
+        .map_err(|e| format!("Invalid tokenId: {e}"))?;
+    let token_type = parse_token_type(req.token_type.as_str())?;
+    let value =
+        Fr254::from_hex_string(req.value.as_str()).map_err(|e| format!("Invalid value: {e}"))?;
+    Fr254::from_hex_string(req.fee.as_str()).map_err(|e| format!("Invalid fee: {e}"))?;
+    let recipient_address = Fr254::from_hex_string(req.recipient_address.as_str())
+        .map_err(|e| format!("Invalid recipientAddress: {e}"))?;
+    if recipient_address.is_zero() {
+        return Err("Withdraw operations require a non-zero recipientAddress".to_string());
+    }
+    validate_asset_constraints(token_type, value, token_id)
+}
+
 /// function to queue the deposit requests
 async fn queue_deposit_request(
     deposit_req: NF3DepositRequest,
-) -> Result<impl Reply, warp::Rejection> {
+) -> Result<warp::reply::Response, warp::Rejection> {
+    if let Err(message) = validate_deposit_request_payload(&deposit_req) {
+        error!("Rejecting invalid deposit request: {message}");
+        return Ok(reply::with_status(
+            json(&serde_json::json!({ "error": message })),
+            StatusCode::BAD_REQUEST,
+        )
+        .into_response());
+    }
+
     let transaction_request = TransactionRequest::Deposit(deposit_req);
     let uuid_string = Uuid::new_v4().to_string();
 
@@ -109,7 +235,16 @@ async fn queue_deposit_request(
 /// function to queue the transfer requests
 async fn queue_transfer_request(
     transfer_req: NF3TransferRequest,
-) -> Result<impl Reply, warp::Rejection> {
+) -> Result<warp::reply::Response, warp::Rejection> {
+    if let Err(message) = validate_transfer_request_payload(&transfer_req) {
+        error!("Rejecting invalid transfer request: {message}");
+        return Ok(reply::with_status(
+            json(&serde_json::json!({ "error": message })),
+            StatusCode::BAD_REQUEST,
+        )
+        .into_response());
+    }
+
     let transaction_request = TransactionRequest::Transfer(transfer_req);
     let uuid_string = Uuid::new_v4().to_string();
 
@@ -119,7 +254,16 @@ async fn queue_transfer_request(
 /// function to queue the withdraw requests
 async fn queue_withdraw_request(
     withdraw_req: NF3WithdrawRequest,
-) -> Result<impl Reply, warp::Rejection> {
+) -> Result<warp::reply::Response, warp::Rejection> {
+    if let Err(message) = validate_withdraw_request_payload(&withdraw_req) {
+        error!("Rejecting invalid withdraw request: {message}");
+        return Ok(reply::with_status(
+            json(&serde_json::json!({ "error": message })),
+            StatusCode::BAD_REQUEST,
+        )
+        .into_response());
+    }
+
     let transaction_request = TransactionRequest::Withdraw(withdraw_req);
     let uuid_string = Uuid::new_v4().to_string();
 
@@ -130,7 +274,7 @@ async fn queue_withdraw_request(
 async fn queue_request(
     transaction_request: TransactionRequest,
     request_id: String,
-) -> Result<impl Reply, warp::Rejection> {
+) -> Result<warp::reply::Response, warp::Rejection> {
     let settings = get_settings();
     let max_queue_size = settings
         .nightfall_client
@@ -153,12 +297,13 @@ async fn queue_request(
     if q.len() >= max_queue_size {
         return Ok(reply::with_header(
             reply::with_status(
-                json(&"Queue is full".to_string()),
+                json(&serde_json::json!({ "error": "Queue is full" })),
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             "X-Request-ID",
             request_id,
-        ));
+        )
+        .into_response());
     }
     debug!("got lock on queue");
     q.push_back(QueuedRequest {
@@ -182,10 +327,14 @@ async fn queue_request(
 
     // return a 202 Accepted response with the request ID
     Ok(reply::with_header(
-        reply::with_status(json(&"Request queued".to_string()), StatusCode::ACCEPTED),
+        reply::with_status(
+            json(&serde_json::json!({ "message": "Request queued" })),
+            StatusCode::ACCEPTED,
+        ),
         "X-Request-ID",
         request_id,
-    ))
+    )
+    .into_response())
 }
 
 /// This function wraps the various transaction handlers, so that the queue can call the correct handler
@@ -241,12 +390,10 @@ pub async fn handle_deposit<N: NightfallContract>(
             TransactionHandlerError::CustomError(err.to_string())
         })?;
 
-    let token_type: TokenType = u8::from_str_radix(&token_type, 16)
-        .map_err(|err| {
-            error!("{id} Could not convert token type");
-            TransactionHandlerError::CustomError(err.to_string())
-        })?
-        .into();
+    let token_type = parse_token_type(token_type.as_str()).map_err(|err| {
+        error!("{id} Could not convert token type");
+        TransactionHandlerError::CustomError(err)
+    })?;
 
     let fee: Fr254 = Fr254::from_hex_string(fee.as_str()).map_err(|err| {
         error!("{id} Could not convert fee");
@@ -335,7 +482,9 @@ pub async fn handle_deposit<N: NightfallContract>(
             )
             .await
         }
-        TokenType::FeeToken => todo!(),
+        TokenType::FeeToken => Err(DepositError::TokenError(
+            TokenContractError::TokenTypeError("FeeToken is not supported for deposit".to_string()),
+        )),
     }
     .map_err(TransactionHandlerError::DepositError)?;
 
@@ -456,11 +605,15 @@ where
         })?;
     let keys = get_zkp_keys().lock().expect("Poisoned Mutex lock").clone();
 
-    let value =
-        Fr254::from_hex_string(recipient_data.values.first().unwrap().as_str()).map_err(|e| {
-            error!("{id} Error when reading value: {e}");
-            TransactionHandlerError::CustomError(e.to_string())
-        })?;
+    let first_value = recipient_data.values.first().ok_or_else(|| {
+        error!("{id} No recipient value provided");
+        TransactionHandlerError::CustomError("missing recipient value".into())
+    })?;
+
+    let value = Fr254::from_hex_string(first_value.as_str()).map_err(|e| {
+        error!("{id} Error when reading value: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
 
     let fee: Fr254 = Fr254::from_hex_string(fee.as_str()).map_err(|e| {
         error!("{id} Error when reading fee: {e}");
@@ -974,11 +1127,137 @@ mod tests {
     use ark_serialize::{CanonicalSerialize, Compress};
     use ark_std::Zero;
     use lib::{
-        client_models::NF3RecipientData,
+        client_models::{
+            NF3DepositRequest, NF3RecipientData, NF3TransferRequest, NF3WithdrawRequest,
+        },
         plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
     };
     use nf_curves::ed_on_bn254::BabyJubjub;
     use nf_curves::ed_on_bn254::Fq;
+
+    fn sample_deposit_request() -> NF3DepositRequest {
+        NF3DepositRequest {
+            erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+            token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
+            value: "0x01".to_string(),
+            fee: "0x00".to_string(),
+            deposit_fee: "0x00".to_string(),
+        }
+    }
+
+    fn sample_withdraw_request() -> NF3WithdrawRequest {
+        NF3WithdrawRequest {
+            erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+            token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
+            value: "0x01".to_string(),
+            recipient_address: "0x01".to_string(),
+            fee: "0x00".to_string(),
+        }
+    }
+
+    fn sample_transfer_request() -> NF3TransferRequest {
+        NF3TransferRequest {
+            erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+            token_id: "0x00".to_string(),
+            recipient_data: NF3RecipientData {
+                values: vec!["0x01".to_string()],
+                recipient_compressed_zkp_public_keys: vec![
+                    "0x9ec770ecf98f013adf0f08944f91196fa7f3f6de5ea50cb9f7444f866eb95f5a"
+                        .to_string(),
+                ],
+            },
+            fee: "0x00".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_parse_token_type_accepts_hex_with_prefix() {
+        let parsed = parse_token_type("0x02").expect("should parse token type");
+        assert_eq!(parsed, TokenType::ERC721);
+    }
+
+    #[test]
+    fn test_parse_token_type_rejects_unsupported_value() {
+        let err = parse_token_type("0x09").expect_err("should reject unsupported token type");
+        assert_eq!(err, "Unsupported tokenType");
+    }
+
+    #[test]
+    fn test_validate_deposit_rejects_erc721_non_zero_value() {
+        let mut req = sample_deposit_request();
+        req.token_type = "02".to_string();
+        req.value = "0x01".to_string();
+        let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "ERC721 operations require value to be 0");
+    }
+
+    #[test]
+    fn test_validate_deposit_rejects_erc20_non_zero_token_id() {
+        let mut req = sample_deposit_request();
+        req.token_type = "00".to_string();
+        req.token_id = "0x2a".to_string();
+        let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "ERC20 operations require tokenId to be 0");
+    }
+
+    #[test]
+    fn test_validate_deposit_rejects_erc1155_zero_value() {
+        let mut req = sample_deposit_request();
+        req.token_type = "01".to_string();
+        req.value = "0x00".to_string();
+        let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "ERC1155 operations require value > 0");
+    }
+
+    #[test]
+    fn test_validate_deposit_rejects_erc3525_zero_value() {
+        let mut req = sample_deposit_request();
+        req.token_type = "03".to_string();
+        req.value = "0x00".to_string();
+        let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "ERC3525 operations require value > 0");
+    }
+
+    #[test]
+    fn test_validate_withdraw_rejects_erc721_non_zero_value() {
+        let mut req = sample_withdraw_request();
+        req.token_type = "02".to_string();
+        req.value = "0x01".to_string();
+        let err = validate_withdraw_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "ERC721 operations require value to be 0");
+    }
+
+    #[test]
+    fn test_validate_withdraw_rejects_zero_recipient() {
+        let mut req = sample_withdraw_request();
+        req.recipient_address = "0x00".to_string();
+        let err = validate_withdraw_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(
+            err,
+            "Withdraw operations require a non-zero recipientAddress"
+        );
+    }
+
+    #[test]
+    fn test_validate_transfer_rejects_empty_values() {
+        let mut req = sample_transfer_request();
+        req.recipient_data.values = vec![];
+        let err = validate_transfer_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(
+            err,
+            "Transfer currently supports exactly one recipient value"
+        );
+    }
+
+    #[test]
+    fn test_validate_transfer_rejects_zero_value() {
+        let mut req = sample_transfer_request();
+        req.recipient_data.values = vec!["0x00".to_string()];
+        let err = validate_transfer_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(err, "Transfer operations require value > 0");
+    }
 
     /// Tests that transfer API rejects invalid recipient public keys
     #[tokio::test]

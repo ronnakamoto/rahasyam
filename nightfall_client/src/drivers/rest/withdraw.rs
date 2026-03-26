@@ -6,7 +6,12 @@ use reqwest::StatusCode;
 use warp::{reject, Reply};
 
 pub async fn handle_de_escrow(data: DeEscrowDataReq) -> Result<impl Reply, warp::Rejection> {
-    let token_type = u8::from_str_radix(&data.token_type, 16)
+    let normalized_token_type = data
+        .token_type
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
+    let token_type = u8::from_str_radix(normalized_token_type, 16)
         .map_err(|_| {
             error!("Could not convert token type");
             reject::custom(crate::domain::error::ClientRejection::FailedDeEscrow)
