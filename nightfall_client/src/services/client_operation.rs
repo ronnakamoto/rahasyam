@@ -134,9 +134,9 @@ where
     let fixed_proofs: [MembershipProof<Fr254>; 4] = membership_proofs
         .try_into()
         .map_err(|_| "Could not convert membership proofs to fixed length array")?;
-    let fixed_roots: [Fr254; 4] = roots
-        .try_into()
-        .map_err(|_| "Could not convert roots into fixed length array")?;
+    let root = *roots
+        .first()
+        .ok_or("Could not extract first historic commitment root")?;
     let keys = ZKPKeys::new(root_key)
         .map_err(|_| "Transaction could not be completed due to an invalid root key.")?;
     // Construct Private Inputs [ Commitment value, salt, recipient public_key];
@@ -146,7 +146,7 @@ where
     let (mut public_inputs, mut private_inputs) = (
         PublicInputs::new()
             .fee(new_commitments[2].get_value())
-            .roots(&fixed_roots)
+            .root(root)
             .build(),
         PrivateInputs::new()
             .nf_address(nf_address)
@@ -188,7 +188,7 @@ where
     match wrapped_proof {
         Ok(proof) => Ok(ClientTransaction {
             fee: public_inputs.fee,
-            historic_commitment_roots: public_inputs.roots,
+            historic_commitment_root: public_inputs.root,
             commitments: public_inputs.commitments,
             nullifiers: public_inputs.nullifiers,
             compressed_secrets: CompressedSecrets {

@@ -50,15 +50,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // Nullifiers[2]: nullify fee token
         // Nullifiers[3]: nullify extra fee token (placeholder, can be zero)
         let fee = self.create_variable(public_inputs.fee)?;
-        let roots = public_inputs
-            .roots
-            .iter()
-            .map(|root| self.create_variable(*root))
-            .collect::<Result<Vec<Variable>, CircuitError>>()?
-            .try_into()
-            .map_err(|_| {
-                CircuitError::ParameterError("Couldn't convert to fixed length array".to_string())
-            })?;
+        let root = self.create_variable(public_inputs.root)?;
 
         let PrivateInputsVar {
             fee_token_id,
@@ -352,7 +344,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             nf_slot_id,
             nullifier_key,
             &public_keys,
-            &roots,
+            root,
             &nullifiers_values,
             &nullifiers_salts,
             &membership_proofs,
@@ -411,21 +403,10 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.set_variable_public(fee)?;
         let fee = self.witness(fee)?;
 
-        let roots_len_sep = self.create_constant_variable(Fr254::from(4u8))?;
+        let roots_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(roots_len_sep)?;
-        let roots: [Fr254; 4] = roots
-            .iter()
-            .map(|&root| {
-                self.set_variable_public(root)?;
-                self.witness(root)
-            })
-            .collect::<Result<Vec<Fr254>, CircuitError>>()?
-            .try_into()
-            .map_err(|_| {
-                CircuitError::ParameterError(
-                    "Could not convert roots to fixed length array".to_string(),
-                )
-            })?;
+        self.set_variable_public(root)?;
+        let root = self.witness(root)?;
 
         let comms_len_sep = self.create_constant_variable(Fr254::from(4u8))?;
         self.set_variable_public(comms_len_sep)?;
@@ -503,7 +484,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         Ok((
             PublicInputs::new()
                 .fee(fee)
-                .roots(&roots)
+                .root(root)
                 .commitments(&commitments)
                 .nullifiers(&nullifiers)
                 .compressed_secrets(&compressed_secrets)

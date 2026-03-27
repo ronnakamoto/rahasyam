@@ -252,7 +252,7 @@ fn build_valid_transfer_inputs() -> CircuitTestInfo {
     }
 
     let mem_proofs: [MembershipProof<Fr254>; 4] = membership_proofs.try_into().unwrap();
-    let roots: [Fr254; 4] = roots.try_into().unwrap();
+    let root = roots[0];
 
     // Work out what the change values will be
     let value_change = nullified_value_one + nullified_value_two - value;
@@ -261,7 +261,7 @@ fn build_valid_transfer_inputs() -> CircuitTestInfo {
     // Salts for new commitments
     let new_salts = [Salt::new_transfer_salt().get_salt(); 3];
 
-    let public_inputs = PublicInputs::new().fee(fee).roots(&roots).build();
+    let public_inputs = PublicInputs::new().fee(fee).root(root).build();
 
     let private_inputs = PrivateInputs::new()
         .fee_token_id(fee_token_id)
