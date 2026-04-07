@@ -90,7 +90,7 @@ where
         self.enforce_equal(salt_to_enforce, old_commitment_salts[0])?;
 
         // Check the second nullifier, nullify extra Withdrawn/Transferred token
-        let is_zero = self.is_zero(old_commitment_values[1])?;
+        let is_zero = self.is_zero(old_commitment_salts[1])?;
 
         let commitment_hash_2 = self.poseidon_hash(&[
             nf_token_id,
@@ -133,7 +133,7 @@ where
         self.enforce_equal(salt_to_enforce, old_commitment_salts[1])?;
 
         // Check the third nullifier, nullify fee token used to pay
-        let is_zero = self.is_zero(old_commitment_values[2])?;
+        let is_zero = self.is_zero(old_commitment_salts[2])?;
 
         let commitment_hash_3 = self.poseidon_hash(&[
             fee_token_id,
@@ -176,7 +176,7 @@ where
         self.enforce_equal(salt_to_enforce, old_commitment_salts[2])?;
 
         // Check the third nullifier
-        let is_zero = self.is_zero(old_commitment_values[3])?;
+        let is_zero = self.is_zero(old_commitment_salts[3])?;
 
         let commitment_hash_4 = self.poseidon_hash(&[
             fee_token_id,

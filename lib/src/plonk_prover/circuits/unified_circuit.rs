@@ -18,7 +18,7 @@ use jf_primitives::circuit::poseidon::PoseidonHashGadget;
 use jf_relation::{
     errors::CircuitError,
     gadgets::ecc::{Point, PointVariable},
-    Circuit, PlonkCircuit, Variable,
+    Circuit, PlonkCircuit,
 };
 use nf_curves::ed_on_bn254::Fr as BJJScalar;
 use nf_curves::ed_on_bn254::{BabyJubjub, Fq as Fr254};
