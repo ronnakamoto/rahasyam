@@ -385,7 +385,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // We set the relevant variables to be public here in the order:
         // hash initialisation (domain tag, version)
         // fee
-        // roots
+        // root
         // commitments
         // nullifiers
         // compressed_secrets
@@ -403,8 +403,8 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.set_variable_public(fee)?;
         let fee = self.witness(fee)?;
 
-        let roots_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
-        self.set_variable_public(roots_len_sep)?;
+        let root_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
+        self.set_variable_public(root_len_sep)?;
         self.set_variable_public(root)?;
         let root = self.witness(root)?;
 
@@ -497,7 +497,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
     }
 }
 
-/// This function takes mutable references to the public_input (only need fee and roots values)
+/// This function takes mutable references to the public_input (only need fee and root values)
 /// and private inputs and returns a PlonkCircuit
 /// It will modify public_input and fill correct values for the rest of public_input
 pub fn unified_circuit_builder(

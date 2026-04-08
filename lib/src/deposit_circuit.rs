@@ -133,7 +133,7 @@ impl DepositCircuitGadget<Fr254> for PlonkCircuit<Fr254> {
         // We set the relevant variables to be public here in the order:
         // hash initialisation (domain tag, version)
         // fee
-        // roots
+        // root
         // commitments
         // nullifiers
         // compressed_secrets

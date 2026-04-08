@@ -1745,7 +1745,7 @@ mod tests {
                     .is_err());
             }
 
-            //Incorrect roots
+            //Incorrect root
             let mut incorrect_root = build_valid_transfer_inputs();
             incorrect_root.public_inputs.root = Fr254::one();
 
@@ -1875,7 +1875,7 @@ mod tests {
                     .is_err());
             }
 
-            //Incorrect roots
+            //Incorrect root
             let mut incorrect_root = build_valid_withdraw_inputs();
             incorrect_root.public_inputs.root = Fr254::one();
 
