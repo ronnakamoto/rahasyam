@@ -1,6 +1,6 @@
 use crate::{
     domain::entities::{Block, ClientTransactionWithMetaData, DepositDatawithFee},
-    driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION},
+    driven::db::mongo_db::{DB, PROPOSED_BLOCKS_COLLECTION, StoredBlock},
     drivers::blockchain::block_assembly::BlockAssemblyError,
     initialisation::{get_blockchain_client_connection, get_db_connection},
     ports::{
@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use ark_bn254::Fr as Fr254;
-use ark_std::{collections::HashSet, Zero};
+use ark_std::{Zero, collections::HashSet};
 use bson::doc;
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
@@ -245,7 +245,7 @@ where
 
     info!("Found {} deposits in mempool", all_deposits.len());
 
-    // 4. Get client transactions from mempool
+    // 2. Get client transactions from mempool
     let current_client_transaction_meta_in_mempool = {
         let mempool_client_transactions: Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>> =
             db.get_all_mempool_client_transactions().await;
@@ -509,20 +509,27 @@ where
     let deposit_count = used_deposits_info.len();
     let mut reordered: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
     let mut normal_iter = normal_txs.into_iter();
-    let swap_iter = swap_pairs.into_iter();
     let mut global_idx = deposit_count;
 
     // Place swap pairs at even global indices, fill gaps with normal txs
-    for pair in swap_iter {
+    for pair in swap_pairs {
         // Pad with normal txs until global_idx is even
         while global_idx % 2 != 0 {
             if let Some(normal) = normal_iter.next() {
                 reordered.push(normal);
                 global_idx += 1;
             } else {
+                info!(
+                    "Skipping remaining swap pairs because global index {global_idx} is odd and no normal transactions are available for alignment"
+                );
                 break;
             }
         }
+
+        if global_idx % 2 != 0 {
+            break;
+        }
+
         reordered.push(pair.0);
         reordered.push(pair.1);
         global_idx += 2;
@@ -1216,6 +1223,80 @@ mod tests {
 
         // Total: 2 deposit slots + 6 client slots = 8
         assert_eq!(included_deposits.len() + selected.len(), block_size);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_swap_pair_skipped_when_no_alignment_tx_available() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 3;
+
+        let deposits: Vec<DepositDatawithFee> = (1..=4)
+            .map(|i| DepositDatawithFee {
+                fee: Fr254::from(100u64),
+                deposit_data: DepositData {
+                    nf_token_id: Fr254::from(i as u64),
+                    nf_slot_id: Fr254::from(i as u64),
+                    value: Fr254::from(100u64),
+                    secret_hash: Fr254::from(i as u64),
+                },
+            })
+            .collect();
+        <mongodb::Client as TransactionsDB<PlonkProof>>::set_mempool_deposits(&db, deposits).await;
+
+        let swap_txs: Vec<ClientTransactionWithMetaData<PlonkProof>> = (0..2)
+            .map(|i| ClientTransactionWithMetaData {
+                client_transaction: lib::shared_entities::ClientTransaction {
+                    fee: Fr254::from(50u64),
+                    swap_link: Fr254::from(199u64),
+                    deadline: Fr254::from(1000u64),
+                    swap_side: Fr254::from((i % 2) as u64),
+                    proof: PlonkProof::default(),
+                    ..Default::default()
+                },
+                block_l2: None,
+                in_mempool: true,
+                hash: vec![600 + i as u32],
+                historic_roots: vec![],
+            })
+            .collect();
+
+        for tx in swap_txs {
+            db.store_transaction(tx).await.unwrap();
+        }
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
+        assert!(result.is_ok());
+        let (included_deposits, selected) = result.unwrap();
+
+        assert_eq!(
+            included_deposits.len(),
+            1,
+            "Deposit group should still be selected"
+        );
+        assert!(
+            selected.is_empty(),
+            "Swap pair should be skipped when no alignment transaction is available"
+        );
+
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_swap_legs = remaining_client
+            .iter()
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(199u64))
+            .count();
+        assert_eq!(
+            remaining_swap_legs, 2,
+            "Misaligned swap pair should remain in mempool for a future block"
+        );
     }
 
     #[tokio::test]
