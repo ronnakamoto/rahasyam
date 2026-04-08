@@ -164,6 +164,7 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
     depends_on:
       db_proposer:
         condition: service_healthy
@@ -247,6 +248,7 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
     depends_on:
       db_proposer2:
         condition: service_healthy
@@ -395,6 +397,7 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: false
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
     depends_on:
       anvil:
         condition: service_healthy
