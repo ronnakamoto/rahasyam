@@ -98,7 +98,7 @@ where
                 }
             });
 
-     info!(
+    info!(
         "This block has {real_deposit_number} deposit(s), {transfer_count} transfer(s), \
         {withdraw_count} withdrawal(s), and {swap_count} swap transaction(s) ({} pair(s))",
         swap_count / 2
@@ -341,8 +341,10 @@ where
     for (_swap_link, txs) in swap_groups {
         // Group by deadline, then form as many complete pairs as possible.
         // This handles retries/multiple submissions sharing the same swap_link.
-        let mut by_deadline: std::collections::HashMap<String, Vec<ClientTransactionWithMetaData<P>>> =
-            std::collections::HashMap::new();
+        let mut by_deadline: std::collections::HashMap<
+            String,
+            Vec<ClientTransactionWithMetaData<P>>,
+        > = std::collections::HashMap::new();
         for tx in txs {
             let deadline_hex = tx.client_transaction.deadline.to_hex_string();
             by_deadline.entry(deadline_hex).or_default().push(tx);
@@ -539,6 +541,11 @@ where
     // 10b. Clear expired swaps from mempool
     if !expired_swaps.is_empty() {
         db.set_in_mempool(&expired_swaps, false).await;
+    }
+
+    if used_deposits_info.is_empty() && reordered.is_empty() {
+        warn!("No selectable transactions remain after swap filtering");
+        return Err(BlockAssemblyError::InsufficientTransactions);
     }
 
     Ok((used_deposits_info, reordered))
@@ -1083,11 +1090,10 @@ mod tests {
         }
 
         let result = prepare_block_data::<PlonkProof>(&db, block_size, 1).await;
-        // No valid transactions → InsufficientTransactions error
-        assert!(result.is_ok());
-        let (included_deposits, selected) = result.unwrap();
-        assert!(included_deposits.is_empty());
-        assert!(selected.is_empty(), "Expired swaps should not be selected");
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
 
         // Expired swap legs must be removed from mempool.
         let remaining_client = {
@@ -1241,14 +1247,30 @@ mod tests {
         }
 
         let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
-        assert!(result.is_ok());
-        let (_, selected) = result.unwrap();
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
 
-        let swap_count = selected
+        // Same-side swap legs should remain pending in mempool for future pairing.
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_same_side = remaining_client
             .iter()
-            .filter(|tx| !tx.client_transaction.swap_link.is_zero())
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(777u64))
             .count();
-        assert_eq!(swap_count, 0, "Same-side swap legs must not be paired");
+        assert_eq!(
+            remaining_same_side, 2,
+            "Same-side swap legs should remain pending in mempool"
+        );
     }
 
     #[tokio::test]
@@ -1381,13 +1403,81 @@ mod tests {
         }
 
         let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
-        assert!(result.is_ok());
-        let (_, selected) = result.unwrap();
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
 
-        let swap_count = selected
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_invalid_side = remaining_client
             .iter()
-            .filter(|tx| !tx.client_transaction.swap_link.is_zero())
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(999u64))
             .count();
-        assert_eq!(swap_count, 0, "Invalid-side swap legs must not be paired");
+        assert_eq!(
+            remaining_invalid_side, 2,
+            "Invalid-side swap legs should remain pending in mempool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_swap_pair_not_selected_when_block_size_is_one() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 1;
+
+        let swap_txs: Vec<ClientTransactionWithMetaData<PlonkProof>> = (0..2)
+            .map(|i| ClientTransactionWithMetaData {
+                client_transaction: lib::shared_entities::ClientTransaction {
+                    fee: Fr254::from(100u64),
+                    swap_link: Fr254::from(123u64),
+                    deadline: Fr254::from(1000u64),
+                    swap_side: Fr254::from((i % 2) as u64),
+                    proof: PlonkProof::default(),
+                    ..Default::default()
+                },
+                block_l2: None,
+                in_mempool: true,
+                hash: vec![500 + i as u32],
+                historic_roots: vec![],
+            })
+            .collect();
+
+        for tx in swap_txs {
+            db.store_transaction(tx).await.unwrap();
+        }
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
+
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_swap_legs = remaining_client
+            .iter()
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(123u64))
+            .count();
+        assert_eq!(
+            remaining_swap_legs, 2,
+            "A valid non-expired swap pair should remain in mempool if it does not fit"
+        );
     }
 }
