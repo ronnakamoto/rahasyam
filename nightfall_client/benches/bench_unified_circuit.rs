@@ -243,16 +243,16 @@ fn build_valid_transfer_inputs() -> CircuitTestInfo {
         nullified_three,
         nullified_four,
     ];
-    let mut membership_proofs = vec![];
-    let mut roots = vec![];
-    for nullifier in spend_commitments.iter() {
-        let (membership_proof, root) = generate_random_path(nullifier.hash().unwrap(), &mut rng);
+    let mut spend_commitments_iter = spend_commitments.iter();
+    let (first_membership_proof, root) =
+        generate_random_path(spend_commitments_iter.next().unwrap().hash().unwrap(), &mut rng);
+    let mut membership_proofs = vec![first_membership_proof];
+    for nullifier in spend_commitments_iter {
+        let (membership_proof, _) = generate_random_path(nullifier.hash().unwrap(), &mut rng);
         membership_proofs.push(membership_proof);
-        roots.push(root);
     }
 
     let mem_proofs: [MembershipProof<Fr254>; 4] = membership_proofs.try_into().unwrap();
-    let root = roots[0];
 
     // Work out what the change values will be
     let value_change = nullified_value_one + nullified_value_two - value;
