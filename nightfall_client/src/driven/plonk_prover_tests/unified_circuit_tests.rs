@@ -1746,17 +1746,19 @@ mod tests {
             }
 
             //Incorrect roots
-            let mut incorrect_roots = build_valid_transfer_inputs();
-            incorrect_roots.public_inputs.root = Fr254::one();
+            let mut incorrect_root = build_valid_transfer_inputs();
+            incorrect_root.public_inputs.root = Fr254::one();
 
             let circuit = unified_circuit_builder(
-                &mut incorrect_roots.public_inputs,
-                &mut incorrect_roots.private_inputs,
+                &mut incorrect_root.public_inputs,
+                &mut incorrect_root.private_inputs,
             )
             .unwrap();
 
             assert!(circuit
-                .check_circuit_satisfiability(Vec::from(&incorrect_roots.public_inputs).as_slice(),)
+                .check_circuit_satisfiability(
+                    Vec::from(&incorrect_root.public_inputs).as_slice(),
+                )
                 .is_err());
 
             // If the wirthdraw address is non-zero we should fail
@@ -1874,17 +1876,19 @@ mod tests {
             }
 
             //Incorrect roots
-            let mut incorrect_roots = build_valid_withdraw_inputs();
-            incorrect_roots.public_inputs.root = Fr254::one();
+            let mut incorrect_root = build_valid_withdraw_inputs();
+            incorrect_root.public_inputs.root = Fr254::one();
 
             let circuit = unified_circuit_builder(
-                &mut incorrect_roots.public_inputs,
-                &mut incorrect_roots.private_inputs,
+                &mut incorrect_root.public_inputs,
+                &mut incorrect_root.private_inputs,
             )
             .unwrap();
 
             assert!(circuit
-                .check_circuit_satisfiability(Vec::from(&incorrect_roots.public_inputs).as_slice(),)
+                .check_circuit_satisfiability(
+                    Vec::from(&incorrect_root.public_inputs).as_slice(),
+                )
                 .is_err());
 
             // If the wirthdraw address is zero we should fail
