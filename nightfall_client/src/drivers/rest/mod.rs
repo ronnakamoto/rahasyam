@@ -58,7 +58,7 @@ where
         .or(get_balance())
         .or(get_fee_balance())
         .or(synchronisation::<N>())
-        .or(get_request_status())
+        .or(get_request_status::<N>())
         .or(get_queue_length())
         .or(get_token_info::<N>())
         .or(get_l1_balance())

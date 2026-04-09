@@ -28,7 +28,9 @@ use ark_std::{rand::thread_rng, UniformRand};
 use configuration::{addresses::get_addresses, settings::get_settings};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
-    client_models::{DeEscrowDataReq, NF3DepositRequest, NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest},
+    client_models::{
+        DeEscrowDataReq, NF3DepositRequest, NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest,
+    },
     commitments::{Commitment, Nullifiable},
     contract_conversions::FrBn254,
     derive_key::ZKPKeys,
@@ -57,6 +59,13 @@ pub struct WithdrawResponse {
     message: String,
     pub withdraw_fund_salt: String, // Return the withdraw_fund_salt
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SwapChildRequestArgs {
+    #[serde(default)]
+    pub deadline: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct JubJubPubKey(#[serde(deserialize_with = "ark_de_hex")] JubJub);
 // A simplified client interface, which provides Deposit, Transfer and Withdraw operations,
@@ -690,7 +699,7 @@ where
         transport: Transport::OffChain,
         operation_type: OperationType::Transfer,
     };
-        match handle_client_operation::<P, E, N>(
+    match handle_client_operation::<P, E, N>(
         op,
         spend_commitments,
         new_commitments,
@@ -701,9 +710,9 @@ where
         id,
     )
     .await
-        {
-            Ok(res) => Ok(res),
-            Err(e) => {
+    {
+        Ok(res) => Ok(res),
+        Err(e) => {
             //  rollback to UNSPENT status if handle_client_operation fails
             let db = get_db_connection().await;
 
@@ -994,33 +1003,38 @@ where
         fee,
     } = swap_req;
 
-    let _token_type_a: TokenType = u8::from_str_radix(party_a.token_type.trim_start_matches("0x"), 16)
-        .map_err(|e| {
-            error!("{id} Error when reading party_a token_type: {e}");
-            TransactionHandlerError::CustomError(e.to_string())
-        })?
-        .into();
+    let _token_type_a: TokenType =
+        u8::from_str_radix(party_a.token_type.trim_start_matches("0x"), 16)
+            .map_err(|e| {
+                error!("{id} Error when reading party_a token_type: {e}");
+                TransactionHandlerError::CustomError(e.to_string())
+            })?
+            .into();
 
-    let _token_type_b: TokenType = u8::from_str_radix(party_b.token_type.trim_start_matches("0x"), 16)
-        .map_err(|e| {
-            error!("{id} Error when reading party_b token_type: {e}");
-            TransactionHandlerError::CustomError(e.to_string())
-        })?
-        .into();
-
+    let _token_type_b: TokenType =
+        u8::from_str_radix(party_b.token_type.trim_start_matches("0x"), 16)
+            .map_err(|e| {
+                error!("{id} Error when reading party_b token_type: {e}");
+                TransactionHandlerError::CustomError(e.to_string())
+            })?
+            .into();
 
     // Convert request fields to appropriate types
-    let nf_token_a_id = to_nf_token_id_from_str(party_a.erc_address.as_str(), party_a.token_id.as_str())
-        .map_err(|e| {
-            error!("{id} Error when retrieving the Nightfall token id for token A: {e}");
-            TransactionHandlerError::CustomError(e.to_string())
-        })?;
+    let nf_token_a_id =
+        to_nf_token_id_from_str(party_a.erc_address.as_str(), party_a.token_id.as_str()).map_err(
+            |e| {
+                error!("{id} Error when retrieving the Nightfall token id for token A: {e}");
+                TransactionHandlerError::CustomError(e.to_string())
+            },
+        )?;
 
-    let nf_token_b_id = to_nf_token_id_from_str(party_b.erc_address.as_str(), party_b.token_id.as_str())
-        .map_err(|e| {
-            error!("{id} Error when retrieving the Nightfall token id for token B: {e}");
-            TransactionHandlerError::CustomError(e.to_string())
-        })?;
+    let nf_token_b_id =
+        to_nf_token_id_from_str(party_b.erc_address.as_str(), party_b.token_id.as_str()).map_err(
+            |e| {
+                error!("{id} Error when retrieving the Nightfall token id for token B: {e}");
+                TransactionHandlerError::CustomError(e.to_string())
+            },
+        )?;
 
     let keys = get_zkp_keys().lock().expect("Poisoned Mutex lock").clone();
 
@@ -1313,7 +1327,29 @@ where
     )
     .await
     {
-        Ok(res) => Ok(res),
+        Ok(res) => {
+            let child_args = SwapChildRequestArgs {
+                deadline: Some(deadline_fr.to_hex_string()),
+            };
+
+            match serde_json::to_string(&child_args) {
+                Ok(child_args_json) => {
+                    let db = get_db_connection().await;
+                    if db
+                        .update_request_child_args(id, &child_args_json)
+                        .await
+                        .is_none()
+                    {
+                        error!("{id} Failed to store swap child_request_args in database");
+                    }
+                }
+                Err(e) => {
+                    error!("{id} Failed to serialize swap child_request_args: {e}");
+                }
+            }
+
+            Ok(res)
+        }
         Err(e) => {
             // Rollback on failure
             let db = get_db_connection().await;
@@ -1334,8 +1370,8 @@ where
             let _ = db.update_request(id, RequestStatus::Failed).await;
 
             Err(TransactionHandlerError::CustomError(e.to_string()))
-            }
         }
+    }
 }
 
 #[cfg(test)]
@@ -1603,7 +1639,8 @@ mod tests {
         let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
             req,
             "test-swap-nonce-over-64",
-        ).await;
+        )
+        .await;
 
         assert!(res.is_err());
         if let Err(TransactionHandlerError::CustomError(msg)) = res {
@@ -1695,7 +1732,10 @@ mod tests {
 
         assert!(res.is_err());
         if let Err(TransactionHandlerError::CustomError(msg)) = res {
-            assert!(msg.contains("party_a.value must fit in 96 bits"), "got: {msg}");
+            assert!(
+                msg.contains("party_a.value must fit in 96 bits"),
+                "got: {msg}"
+            );
         } else {
             panic!("Expected CustomError");
         }
@@ -1739,7 +1779,10 @@ mod tests {
 
         assert!(res.is_err());
         if let Err(TransactionHandlerError::CustomError(msg)) = res {
-            assert!(msg.contains("party_b.value must fit in 96 bits"), "got: {msg}");
+            assert!(
+                msg.contains("party_b.value must fit in 96 bits"),
+                "got: {msg}"
+            );
         } else {
             panic!("Expected CustomError");
         }
@@ -1833,7 +1876,10 @@ mod tests {
             )
             .await;
 
-            assert!(res.is_err(), "expected validation error for token_type_a={token_type_a}");
+            assert!(
+                res.is_err(),
+                "expected validation error for token_type_a={token_type_a}"
+            );
             if let Err(TransactionHandlerError::CustomError(msg)) = res {
                 assert!(
                     msg.contains("Party A and party B cannot be the same"),
@@ -1887,7 +1933,10 @@ mod tests {
             )
             .await;
 
-            assert!(res.is_err(), "expected validation error for token_type_b={token_type_b}");
+            assert!(
+                res.is_err(),
+                "expected validation error for token_type_b={token_type_b}"
+            );
             if let Err(TransactionHandlerError::CustomError(msg)) = res {
                 assert!(
                     msg.contains("Party A and party B cannot be the same"),

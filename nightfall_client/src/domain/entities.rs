@@ -41,6 +41,7 @@ pub enum RequestStatus {
     Processing, // This is for tx_request status associated with the X-Request-ID for a request with status: The Client has taken the transaction out of the queue and is actively working on it, but has not yet completed the hand-off to the next stage.
     ProposerUnreachable, // This is for transfer and withdraw tx_request status when the Client was unable to reach the Proposer at the URL provided in the request.
     Confirmed, // This is for tx_request status associated with the X-Request-ID for a request with status: The life cycle of this tx is finished, aka, commitments are all onchain.
+    Expired, // This is for swap tx_request status when its deadline has passed without onchain confirmation.
 }
 
 impl Display for RequestStatus {
@@ -52,6 +53,7 @@ impl Display for RequestStatus {
             RequestStatus::Processing => write!(f, "Processing"),
             RequestStatus::ProposerUnreachable => write!(f, "ProposerUnreachable"),
             RequestStatus::Confirmed => write!(f, "Confirmed"),
+            RequestStatus::Expired => write!(f, "Expired"),
         }
     }
 }
