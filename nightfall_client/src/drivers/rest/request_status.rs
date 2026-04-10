@@ -1,6 +1,7 @@
 use crate::{
     domain::entities::{Request, RequestStatus},
     driven::queue::get_queue,
+    drivers::blockchain::nightfall_event_listener::get_synchronisation_status,
     drivers::rest::client_nf_3::SwapChildRequestArgs,
     initialisation::get_db_connection,
     ports::{contracts::NightfallContract, db::RequestDB},
@@ -62,20 +63,40 @@ pub async fn handle_get_request_status<N: NightfallContract>(
     debug! {"Request status: {request:?}"};
 
     if let Some(existing_request) = request.as_mut() {
-        match N::get_current_layer2_blocknumber().await {
-            Ok(current_l2_block) if should_expire_request(existing_request, current_l2_block) => {
-                if db
-                    .update_request(&id, RequestStatus::Expired)
-                    .await
-                    .is_none()
-                {
-                    warn!("{id} Failed to persist Expired status after swap deadline");
+        if matches!(existing_request.status, RequestStatus::Submitted) {
+            match get_synchronisation_status::<N>().await {
+                Ok(sync_status) if sync_status.is_synchronised() => {
+                    match N::get_current_layer2_blocknumber().await {
+                        Ok(current_l2_block)
+                            if should_expire_request(existing_request, current_l2_block) =>
+                        {
+                            if db
+                                .update_request(&id, RequestStatus::Expired)
+                                .await
+                                .is_none()
+                            {
+                                warn!("{id} Failed to persist Expired status after swap deadline");
+                            }
+                            existing_request.status = RequestStatus::Expired;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(
+                                "{id} Failed to read current L2 block while reconciling request status: {e}"
+                            );
+                        }
+                    }
                 }
-                existing_request.status = RequestStatus::Expired;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!("{id} Failed to read current L2 block while reconciling request status: {e}");
+                Ok(_) => {
+                    debug!(
+                        "{id} Skipping swap expiry reconciliation while client is not synchronized"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "{id} Failed to read synchronisation status while reconciling request status: {e}"
+                    );
+                }
             }
         }
     }
@@ -162,6 +183,16 @@ mod tests {
             RequestStatus::Confirmed,
             Some(r#"{"deadline":"0x10"}"#.to_string()),
         );
+
+        assert!(!should_expire_request(
+            &request,
+            I256::try_from(17u64).unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_should_not_expire_without_deadline_metadata() {
+        let request = make_request(RequestStatus::Submitted, None);
 
         assert!(!should_expire_request(
             &request,
