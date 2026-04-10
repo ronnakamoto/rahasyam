@@ -491,6 +491,31 @@ fn fits_in_bits_fr254(value: Fr254, bits: usize) -> bool {
     }
 }
 
+fn parse_supported_swap_token_type(
+    party: &str,
+    token_type_hex: &str,
+    id: &str,
+) -> Result<TokenType, TransactionHandlerError> {
+    let token_type_value = u8::from_str_radix(token_type_hex.trim_start_matches("0x"), 16)
+        .map_err(|e| {
+            error!("{id} Error when reading {party} token_type: {e}");
+            TransactionHandlerError::CustomError(e.to_string())
+        })?;
+
+    match token_type_value {
+        0 => Ok(TokenType::ERC20),
+        1 => Ok(TokenType::ERC1155),
+        2 => Ok(TokenType::ERC721),
+        3 => Ok(TokenType::ERC3525),
+        _ => {
+            error!("{id} Invalid swap request: unsupported {party} token_type {token_type_hex}");
+            Err(TransactionHandlerError::CustomError(format!(
+                "{party}.token_type must be one of 0x00, 0x01, 0x02, or 0x03"
+            )))
+        }
+    }
+}
+
 async fn handle_transfer<P, E, N>(
     transfer_req: NF3TransferRequest,
     id: &str,
@@ -1003,21 +1028,8 @@ where
         fee,
     } = swap_req;
 
-    let _token_type_a: TokenType =
-        u8::from_str_radix(party_a.token_type.trim_start_matches("0x"), 16)
-            .map_err(|e| {
-                error!("{id} Error when reading party_a token_type: {e}");
-                TransactionHandlerError::CustomError(e.to_string())
-            })?
-            .into();
-
-    let _token_type_b: TokenType =
-        u8::from_str_radix(party_b.token_type.trim_start_matches("0x"), 16)
-            .map_err(|e| {
-                error!("{id} Error when reading party_b token_type: {e}");
-                TransactionHandlerError::CustomError(e.to_string())
-            })?
-            .into();
+    let _token_type_a = parse_supported_swap_token_type("party_a", &party_a.token_type, id)?;
+    let _token_type_b = parse_supported_swap_token_type("party_b", &party_b.token_type, id)?;
 
     // Convert request fields to appropriate types
     let nf_token_a_id =
@@ -1945,6 +1957,104 @@ mod tests {
             } else {
                 panic!("Expected TransactionHandlerError::CustomError");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_unsupported_token_type_for_party_a() {
+        let my_public_key_hex = {
+            let my_key = crate::get_zkp_keys()
+                .lock()
+                .expect("Poisoned Mutex lock")
+                .zkp_public_key;
+            let mut bytes = Vec::new();
+            my_key
+                .serialize_with_mode(&mut bytes, Compress::Yes)
+                .unwrap();
+            bytes.reverse();
+            format!("0x{}", hex::encode(bytes))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x09".to_string(),
+                value: "0x04".to_string(),
+                public_key: my_public_key_hex.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x05".to_string(),
+                public_key: my_public_key_hex,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-invalid-token-type-party-a",
+        )
+        .await;
+
+        match res {
+            Err(TransactionHandlerError::CustomError(msg)) => {
+                assert!(msg.contains("party_a.token_type"));
+            }
+            other => panic!("Expected unsupported token_type error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_swap_api_rejects_unsupported_token_type_for_party_b() {
+        let my_public_key_hex = {
+            let my_key = crate::get_zkp_keys()
+                .lock()
+                .expect("Poisoned Mutex lock")
+                .zkp_public_key;
+            let mut bytes = Vec::new();
+            my_key
+                .serialize_with_mode(&mut bytes, Compress::Yes)
+                .unwrap();
+            bytes.reverse();
+            format!("0x{}", hex::encode(bytes))
+        };
+
+        let req = NF3SwapRequest {
+            party_a: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x00".to_string(),
+                value: "0x04".to_string(),
+                public_key: my_public_key_hex.clone(),
+            },
+            party_b: SwapParty {
+                erc_address: "0x1234567890123456789012345678901234567891".to_string(),
+                token_id: "0x00".to_string(),
+                token_type: "0x09".to_string(),
+                value: "0x05".to_string(),
+                public_key: my_public_key_hex,
+            },
+            swap_nonce: "0x01".to_string(),
+            deadline: "0x1000".to_string(),
+            fee: "0x00".to_string(),
+        };
+
+        let res = handle_swap::<PlonkProof, PlonkProvingEngine, Nightfall::NightfallCalls>(
+            req,
+            "test-swap-invalid-token-type-party-b",
+        )
+        .await;
+
+        match res {
+            Err(TransactionHandlerError::CustomError(msg)) => {
+                assert!(msg.contains("party_b.token_type"));
+            }
+            other => panic!("Expected unsupported token_type error, got {other:?}"),
         }
     }
 }
