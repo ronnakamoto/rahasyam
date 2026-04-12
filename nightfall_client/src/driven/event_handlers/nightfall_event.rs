@@ -373,13 +373,19 @@ async fn process_propose_block_event<N: NightfallContract>(
                                     error!("{request_id} De-escrow operation failed: {e:?}");
                                 }
                             }
-                        } else if serde_json::from_str::<SwapChildRequestArgs>(&child_args_json)
-                            .is_ok()
+                        } else if let Ok(swap_args) =
+                            serde_json::from_str::<SwapChildRequestArgs>(&child_args_json)
                         {
-                            debug!(
-                                "{request_id} Clearing swap child_request_args after confirmation"
-                            );
-                            db.clear_request_child_args(&request_id).await;
+                            if swap_args.deadline.is_some() {
+                                debug!(
+                                    "{request_id} Clearing swap child_request_args after confirmation"
+                                );
+                                db.clear_request_child_args(&request_id).await;
+                            } else {
+                                error!(
+                                    "{request_id} Swap child_request_args missing deadline; refusing to clear ambiguous metadata"
+                                );
+                            }
                         } else {
                             error!(
                                 "{request_id} Failed to deserialize child_request_args as de-escrow or swap metadata"
