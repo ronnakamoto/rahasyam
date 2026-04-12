@@ -516,6 +516,34 @@ fn parse_supported_swap_token_type(
     }
 }
 
+async fn store_swap_child_request_args(
+    id: &str,
+    deadline: Fr254,
+) -> Result<(), TransactionHandlerError> {
+    let child_args = SwapChildRequestArgs {
+        deadline: Some(deadline.to_hex_string()),
+    };
+
+    let child_args_json = serde_json::to_string(&child_args).map_err(|e| {
+        error!("{id} Failed to serialize swap child_request_args: {e}");
+        TransactionHandlerError::CustomError("failed to persist swap request metadata".to_string())
+    })?;
+
+    let db = get_db_connection().await;
+    if db
+        .update_request_child_args(id, &child_args_json)
+        .await
+        .is_none()
+    {
+        error!("{id} Failed to store swap child_request_args in database");
+        return Err(TransactionHandlerError::CustomError(
+            "failed to persist swap request metadata".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 async fn handle_transfer<P, E, N>(
     transfer_req: NF3TransferRequest,
     id: &str,
@@ -1317,6 +1345,16 @@ where
         operation_type: OperationType::Swap,
     };
 
+    if let Err(e) = store_swap_child_request_args(id, deadline_fr).await {
+        let db = get_db_connection().await;
+        let commitment_ids = spend_commitments
+            .iter()
+            .filter_map(|c| c.hash().ok())
+            .collect::<Vec<_>>();
+        rollback_commitments(db, &commitment_ids, id).await;
+        return Err(e);
+    }
+
     // Call handle_client_operation_swap with swap parameters
     match handle_client_operation::<P, E, N>(
         op,
@@ -1339,29 +1377,7 @@ where
     )
     .await
     {
-        Ok(res) => {
-            let child_args = SwapChildRequestArgs {
-                deadline: Some(deadline_fr.to_hex_string()),
-            };
-
-            match serde_json::to_string(&child_args) {
-                Ok(child_args_json) => {
-                    let db = get_db_connection().await;
-                    if db
-                        .update_request_child_args(id, &child_args_json)
-                        .await
-                        .is_none()
-                    {
-                        error!("{id} Failed to store swap child_request_args in database");
-                    }
-                }
-                Err(e) => {
-                    error!("{id} Failed to serialize swap child_request_args: {e}");
-                }
-            }
-
-            Ok(res)
-        }
+        Ok(res) => Ok(res),
         Err(e) => {
             // Rollback on failure
             let db = get_db_connection().await;
@@ -1379,6 +1395,7 @@ where
 
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
             let _ = db.delete_commitments(new_commitment_ids).await;
+            let _ = db.clear_request_child_args(id).await;
             let _ = db.update_request(id, RequestStatus::Failed).await;
 
             Err(TransactionHandlerError::CustomError(e.to_string()))
