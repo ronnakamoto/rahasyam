@@ -1,5 +1,5 @@
 use crate::{
-    domain::entities::RequestStatus,
+    domain::entities::{Request, RequestStatus},
     driven::notifier::webhook_notifier::WebhookNotifier,
     drivers::{
         blockchain::{
@@ -23,6 +23,13 @@ use tokio::{
     sync::{OnceCell, RwLock},
     time::sleep,
 };
+
+fn should_update_queue_terminal_status(request: Option<&Request>) -> bool {
+    match request {
+        Some(request) => matches!(request.status, RequestStatus::Processing),
+        None => true,
+    }
+}
 /// This module implements a queue of received requests. Requests can be added to the queue
 /// asynchronously but are executed with a concurrency of 1.
 pub struct QueuedRequest {
@@ -104,14 +111,44 @@ where
                 Err(e) => {
                     // Handle the error here
                     let db = get_db_connection().await;
-                    let _ = db
-                        .update_request(&request.uuid, RequestStatus::Failed)
-                        .await;
+                    let existing_request = db.get_request(&request.uuid).await;
+                    if should_update_queue_terminal_status(existing_request.as_ref()) {
+                        let _ = db
+                            .update_request(&request.uuid, RequestStatus::Failed)
+                            .await;
+                    }
                     warn!("{} Error processing request: {:?}", request.uuid, e);
                 }
             }
         }
         // If the queue is empty, wait a bit then try again
         sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_request(status: RequestStatus) -> Request {
+        Request {
+            status,
+            uuid: "test-request".to_string(),
+            child_request_args: None,
+        }
+    }
+
+    #[test]
+    fn queue_terminal_status_update_only_overwrites_processing_requests() {
+        assert!(should_update_queue_terminal_status(None));
+        assert!(should_update_queue_terminal_status(Some(&make_request(
+            RequestStatus::Processing
+        ))));
+        assert!(!should_update_queue_terminal_status(Some(&make_request(
+            RequestStatus::ProposerUnreachable
+        ))));
+        assert!(!should_update_queue_terminal_status(Some(&make_request(
+            RequestStatus::Failed
+        ))));
     }
 }
