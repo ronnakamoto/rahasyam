@@ -72,15 +72,12 @@ where
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .find(filter)
             .await
-            .expect("Database error"); // we can't really proceed at this point
+            .ok()?;// propagate DB error as None so the caller can handle it explicitly
         let mut result: Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)> = Vec::new();
         while cursor.advance().await.ok()? {
             let v: ClientTransactionWithMetaData<P> = cursor.deserialize_current().ok()?;
             result.push((v.hash.clone(), v));
         }
-        if result.is_empty() {
-            return None;
-        };
         Some(result)
     }
 
@@ -107,7 +104,7 @@ where
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .update_many(filter, update)
             .await
-            .ok()?;// propagate DB error as None so the caller can handle it explicitly
+            .ok()?; // propagate DB error as None so the caller can handle it explicitly
         Some(result.modified_count)
     }
 
