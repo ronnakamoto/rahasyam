@@ -1133,6 +1133,7 @@ mod tests {
     };
     use nf_curves::ed_on_bn254::BabyJubjub;
     use nf_curves::ed_on_bn254::Fq;
+    use serde_json::{Value, json};
 
     fn sample_deposit_request() -> NF3DepositRequest {
         NF3DepositRequest {
@@ -1290,6 +1291,66 @@ mod tests {
 
         let body = serde_json::from_slice::<String>(res.body()).expect("body should be JSON");
         assert_eq!(body, "Request queued");
+    }
+
+    #[tokio::test]
+    async fn test_deposit_route_rejects_invalid_payload_with_bad_request() {
+        let mut req = sample_deposit_request();
+        req.token_id = "0x2a".to_string();
+
+        let filter = deposit_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/deposit")
+            .json(&req)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = serde_json::from_slice::<Value>(res.body()).expect("body should be JSON");
+        assert_eq!(body, json!({ "error": "ERC20 operations require tokenId to be 0" }));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_route_rejects_invalid_payload_with_bad_request() {
+        let mut req = sample_transfer_request();
+        req.recipient_data.values = vec![];
+
+        let filter = transfer_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/transfer")
+            .json(&req)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = serde_json::from_slice::<Value>(res.body()).expect("body should be JSON");
+        assert_eq!(
+            body,
+            json!({ "error": "Transfer currently supports exactly one recipient value" })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_invalid_payload_with_bad_request() {
+        let mut req = sample_withdraw_request();
+        req.recipient_address = "0x00".to_string();
+
+        let filter = withdraw_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .json(&req)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = serde_json::from_slice::<Value>(res.body()).expect("body should be JSON");
+        assert_eq!(
+            body,
+            json!({ "error": "Withdraw operations require a non-zero recipientAddress" })
+        );
     }
 
     /// Tests that transfer API rejects invalid recipient public keys

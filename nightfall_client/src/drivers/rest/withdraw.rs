@@ -43,3 +43,51 @@ pub async fn handle_de_escrow(data: DeEscrowDataReq) -> Result<impl Reply, warp:
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_de_escrow_request() -> DeEscrowDataReq {
+        DeEscrowDataReq {
+            token_id: "0x00".to_string(),
+            erc_address: "0x1234567890123456789012345678901234567890".to_string(),
+            recipient_address: "0x01".to_string(),
+            value: "0x01".to_string(),
+            token_type: "00".to_string(),
+            withdraw_fund_salt: "0x01".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_de_escrow_rejects_invalid_token_type_before_contract_calls() {
+        let mut req = sample_de_escrow_request();
+        req.token_type = "zz".to_string();
+
+        let err = match handle_de_escrow(req).await {
+            Ok(_) => panic!("invalid token type should be rejected"),
+            Err(err) => err,
+        };
+        let rejection = err
+            .find::<crate::domain::error::ClientRejection>()
+            .expect("expected client rejection");
+
+        assert_eq!(rejection.to_string(), "Failed to de-escrow funds");
+    }
+
+    #[tokio::test]
+    async fn test_handle_de_escrow_rejects_malformed_payload_before_contract_calls() {
+        let mut req = sample_de_escrow_request();
+        req.recipient_address = "not-hex".to_string();
+
+        let err = match handle_de_escrow(req).await {
+            Ok(_) => panic!("malformed payload should be rejected"),
+            Err(err) => err,
+        };
+        let rejection = err
+            .find::<crate::domain::error::ClientRejection>()
+            .expect("expected client rejection");
+
+        assert_eq!(rejection.to_string(), "Failed to de-escrow funds");
+    }
+}
