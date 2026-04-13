@@ -454,6 +454,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_proposer_route_rejects_non_string_json() {
+        let filter = add_proposer();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/register")
+            .header("content-type", "application/json")
+            .body("{}")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_withdraw_route_rejects_zero_amount() {
         let filter = withdraw();
         let res = warp::test::request()
@@ -479,6 +493,48 @@ mod tests {
             .path("/v1/withdraw")
             .header("content-type", "application/json")
             .body("{")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_negative_amount() {
+        let filter = withdraw();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .header("content-type", "application/json")
+            .body("-1")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_non_numeric_json() {
+        let filter = withdraw();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .header("content-type", "application/json")
+            .body(r#""10""#)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_u64_overflow() {
+        let filter = withdraw();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .header("content-type", "application/json")
+            .body("18446744073709551616")
             .reply(&filter)
             .await;
 
