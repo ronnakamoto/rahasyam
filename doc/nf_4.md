@@ -818,6 +818,18 @@ Returns: on success `200 OK` with a body containing the current Layer 2 block nu
 
 ***
 
+GET /v1/synchronisation
+
+```sh
+curl -i 'http://localhost:3001/v1/synchronisation'
+```
+
+Returns: on success `200 OK` with a body containing either `"Synchronised"` or `"Not synchronised"`.
+
+This endpoint reports whether the proposer believes it is currently synchronised with the blockchain and ready to assemble blocks from an up-to-date view of the Layer 2 state.
+
+***
+
 POST /v1/transaction
 
 This URL is used by clients to send a JSON encoded `ClientTransaction<P>` struct to a Proposer. It is not described in detail here because an example of the struct is very long, and the URL is only intended for accepting `client` connections.
@@ -845,6 +857,42 @@ curl -i 'http://localhost:3001/v1/rotate'
 Returns: on success `200 OK` if the active `proposer` was rotated, `423 LOCKED` if proposer rotation was not allowed by the smart contract.
 
 This endpoint will rotate the proposers if the current `proposer` has been active for more than the number of Layer 1 blocks that a `proposer` is allowed to propose for (ROTATION_BlOCKS). This value is set in the construction of RoundRobin.sol.
+
+***
+
+GET /v1/pause
+
+```sh
+curl -i 'http://localhost:3001/v1/pause'
+```
+
+Returns: on success `200 OK`.
+
+This endpoint pauses proposer block assembly. Incoming client transactions may still be received, but the proposer will stop assembling new Layer 2 blocks until block assembly is resumed.
+
+***
+
+GET /v1/resume
+
+```sh
+curl -i 'http://localhost:3001/v1/resume'
+```
+
+Returns: on success `200 OK`.
+
+This endpoint resumes proposer block assembly after a previous pause.
+
+***
+
+GET /v1/status
+
+```sh
+curl -i 'http://localhost:3001/v1/status'
+```
+
+Returns: on success `200 OK` with a JSON string body containing either `"Reunning"` or `"Paused"`.
+
+This endpoint reports whether block assembly is currently active inside the proposer. Note that the returned `"Reunning"` string reflects the current implementation spelling.
 
 ***
 
@@ -877,7 +925,7 @@ Removes (de-registers) a proposer. Only the proposer itself can successfully cal
 POST /v1/withdraw
 
 ```sh
-curl -i --request POST 'http://localhost:3000/v1/withdraw' \
+curl -i --request POST 'http://localhost:3001/v1/withdraw' \
     --header 'Content-Type: application/json' \
     --data '20'
 ```
