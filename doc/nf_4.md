@@ -596,6 +596,30 @@ Returns all the commitment entries in the database. Use with care!
 
 ***
 
+GET /v1/commitments/token_type/:token_type
+
+```sh
+curl -i 'http://localhost:3000/v1/commitments/token_type/ERC20'
+```
+
+Returns: on success `200 OK` with a JSON array of CommitmentEntry objects filtered by token type. Returns `400 BAD REQUEST` if `:token_type` is not a supported Nightfall token type.
+
+Use this endpoint to inspect only the commitments matching a given asset class such as `ERC20`, `ERC721`, `ERC1155`, or `ERC3525`.
+
+***
+
+GET /v1/commitments/max_transferable_amount/:token_type/:nf_token_id
+
+```sh
+curl -i 'http://localhost:3000/v1/commitments/max_transferable_amount/ERC20/0x1234abcd...'
+```
+
+Returns: on success `200 OK` with the maximum transferable amount encoded as a big-endian hex string. Returns `400 BAD REQUEST` if either `:token_type` or `:nf_token_id` is invalid.
+
+For fungible assets this value is computed from the two largest available commitments for that token. For ERC721 it returns `01` when at least one matching commitment exists, otherwise `00`.
+
+***
+
 GET /v1/health
 
 ```sh
@@ -620,6 +644,18 @@ This is to obtain a list of proposers from their on-chain registrations. The Pro
 
 ***
 
+GET /v1/synchronisation
+
+```sh
+curl -i 'http://localhost:3000/v1/synchronisation'
+```
+
+Returns: on success `200 OK` with a JSON object describing whether the client is synchronised with the chain. Returns `503 SERVICE UNAVAILABLE` if the synchronisation status cannot be determined.
+
+The response contains the current synchronisation phase, for example `Synchronized`, `Desynchronized`, or `AheadOfChain`.
+
+***
+
 POST /v1/deriveKey
 
 ```sh
@@ -630,6 +666,20 @@ curl -i --request POST 'http://localhost:3000/v1/deriveKey' \
 Returns: on success `200 OK` and a JSON encoded hex string encoding the spending key in compressed and big-endian form.
 
 This is a convenience function for generating a set of ZKP keys. They are generated from the input path and mnemonic using the BIP32 protocol.
+
+***
+
+POST /v1/keys_validation
+
+```sh
+curl -i --request POST 'http://localhost:3000/v1/keys_validation' \
+    --header 'Content-Type: application/json' \
+    --json '{ "configuration_url": "http://configuration:80", "concurrency": 2 }'
+```
+
+Returns: on success `200 OK` with a JSON report covering downloaded key hashes, regenerated key hashes, and the on-chain decider verification key comparison. Returns `400 BAD REQUEST` when the JSON body is malformed or required fields are missing.
+
+Use this endpoint to verify that the proving and verification keys served by the configuration service and published on-chain are consistent with locally regenerated keys.
 
 ***
 
@@ -687,6 +737,18 @@ Note that internal failures of the client will cause the request state to be unr
 
 ***
 
+GET /v1/queue
+
+```sh
+curl -i 'http://localhost:3000/v1/queue'
+```
+
+Returns: on success `200 OK` with a JSON encoded integer representing the current number of transaction requests waiting in the client queue.
+
+This is useful for operational monitoring when the client is receiving deposit, transfer, and withdraw requests concurrently.
+
+***
+
 GET /v1/token/:nf_token_id
 
 ```sh
@@ -706,6 +768,7 @@ This endpoint allows you to retrieve detailed information about a token using it
 - `200 OK`: Returns a JSON object with token information, derived from the `TokenData` struct:
     - `erc_address`: The ERC contract address for the token, as a hex string.
     - `token_id`: The token ID (for ERC721/1155/3525), as a hex string.
+    - `token_type`: The token standard as a string such as `ERC20`, `ERC721`, `ERC1155`, or `ERC3525`.
 - `400 BAD REQUEST`: Returned if the provided token ID is not a valid field element.
 - `404 NOT FOUND`: Returned if no token exists for the given ID.
 
@@ -714,7 +777,8 @@ This endpoint allows you to retrieve detailed information about a token using it
 ```json
 {
   "erc_address": "0x6fcb6af7f7947f8480c36e8ffca0c66f6f2be32b",
-  "token_id": "0x00"
+  "token_id": "0x00",
+  "token_type": "ERC20"
 }
 ```
 
@@ -734,8 +798,8 @@ POST /v1/certification
 ```sh
 curl -i --request POST 'http://localhost:3001/v1/certification' \
     --header 'Content-Type: multipart/form-data' \
-    --form 'file=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.der' \
-    --form 'file=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.priv_key'
+    --form 'certificate=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.der' \
+    --form 'priv_key=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.priv_key'
 ```
 
 Returns: `StatusCode: Accepted` on success.

@@ -1443,6 +1443,66 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_deposit_route_rejects_malformed_hex_with_bad_request() {
+        let mut req = sample_deposit_request();
+        req.value = "not-hex".to_string();
+
+        let filter = deposit_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/deposit")
+            .json(&req)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = serde_json::from_slice::<Value>(res.body()).expect("body should be JSON");
+        assert_eq!(body, json!({ "error": "Invalid value: Invalid hex format" }));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_route_rejects_missing_required_fields() {
+        let filter = transfer_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/transfer")
+            .body(
+                r#"{
+                    "ercAddress":"0x1234567890123456789012345678901234567890",
+                    "tokenId":"0x00",
+                    "tokenType":"00",
+                    "fee":"0x00"
+                }"#,
+            )
+            .header("content-type", "application/json")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_missing_required_fields() {
+        let filter = withdraw_request::<PlonkProof>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .body(
+                r#"{
+                    "ercAddress":"0x1234567890123456789012345678901234567890",
+                    "tokenId":"0x00",
+                    "tokenType":"00",
+                    "value":"0x01"
+                }"#,
+            )
+            .header("content-type", "application/json")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
     /// Tests that transfer API rejects invalid recipient public keys
     #[tokio::test]
     async fn test_transfer_api_rejects_invalid_recipient_keys() {
