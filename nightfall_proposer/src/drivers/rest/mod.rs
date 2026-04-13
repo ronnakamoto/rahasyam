@@ -3,7 +3,7 @@ use crate::drivers::rest::{
     block_data::get_block_data, client_transactions::client_transaction,
     proposers::rotate_proposer, synchronisation::synchronisation,
 };
-use block_assembly::{pause_block_assembly, resume_block_assembly};
+use block_assembly::{get_block_assembly_status_route, pause_block_assembly, resume_block_assembly};
 use lib::{
     health_check::health_route,
     nf_client_proof::{Proof, ProvingEngine},
@@ -40,6 +40,7 @@ where
         .or(synchronisation())
         .or(pause_block_assembly())
         .or(resume_block_assembly())
+        .or(get_block_assembly_status_route())
         .recover(handle_rejection)
 }
 
