@@ -133,7 +133,15 @@ fn validate_asset_constraints(
             }
             Ok(())
         }
-       TokenType::ERC1155 | TokenType::ERC3525 => {
+        TokenType::ERC1155 => {
+            if value.is_zero() && token_id == BigInteger256::zero() {
+                return Err(
+                    "ERC1155 operations require either value > 0 or tokenId > 0".to_string(),
+                );
+            }
+            Ok(())
+        }
+        TokenType::ERC3525 => {
             if value.is_zero() {
                 return Err(format!("{token_type:?} operations require value > 0"));
             }
@@ -1213,12 +1221,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_deposit_rejects_erc1155_zero_value() {
+    fn test_validate_deposit_accepts_non_fungible_erc1155_zero_value() {
         let mut req = sample_deposit_request();
         req.token_type = "01".to_string();
         req.value = "0x00".to_string();
+        req.token_id = "0x2a".to_string();
+        validate_deposit_request_payload(&req).expect("validation should pass");
+    }
+
+    #[test]
+    fn test_validate_deposit_rejects_erc1155_when_value_and_token_id_are_zero() {
+        let mut req = sample_deposit_request();
+        req.token_type = "01".to_string();
+        req.value = "0x00".to_string();
+        req.token_id = "0x00".to_string();
         let err = validate_deposit_request_payload(&req).expect_err("validation should fail");
-        assert_eq!(err, "ERC1155 operations require value > 0");
+        assert_eq!(
+            err,
+            "ERC1155 operations require either value > 0 or tokenId > 0"
+        );
     }
 
     #[test]
@@ -1247,6 +1268,28 @@ mod tests {
         assert_eq!(
             err,
             "Withdraw operations require a non-zero recipientAddress"
+        );
+    }
+
+    #[test]
+    fn test_validate_withdraw_accepts_non_fungible_erc1155_zero_value() {
+        let mut req = sample_withdraw_request();
+        req.token_type = "01".to_string();
+        req.value = "0x00".to_string();
+        req.token_id = "0x2a".to_string();
+        validate_withdraw_request_payload(&req).expect("validation should pass");
+    }
+
+    #[test]
+    fn test_validate_withdraw_rejects_erc1155_when_value_and_token_id_are_zero() {
+        let mut req = sample_withdraw_request();
+        req.token_type = "01".to_string();
+        req.value = "0x00".to_string();
+        req.token_id = "0x00".to_string();
+        let err = validate_withdraw_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(
+            err,
+            "ERC1155 operations require either value > 0 or tokenId > 0"
         );
     }
 
