@@ -8,6 +8,15 @@ use lib::{
     nf_token_id::to_nf_token_id_from_str,
 };
 use warp::{http::StatusCode, path, reply::Reply, Filter};
+
+fn encode_balance_hex(balance: ark_bn254::Fr) -> String {
+    let encoded = hex::encode(balance.into_bigint().to_bytes_be());
+    if encoded.is_empty() || encoded.chars().all(|ch| ch == '0') {
+        "00".to_string()
+    } else {
+        encoded
+    }
+}
 /// Endpoint to get a token balance
 /// NB for consistency with the rest of the API,
 /// the value is returned as a *hex* string.
@@ -28,7 +37,7 @@ pub async fn handle_get_balance(
         let balance = db.get_balance(&nf_token_id).await;
         if let Some(balance) = balance {
             Ok(warp::reply::with_status(
-                hex::encode(balance.into_bigint().to_bytes_be()),
+                encode_balance_hex(balance),
                 StatusCode::OK,
             ))
         } else {
@@ -56,7 +65,7 @@ pub async fn handle_get_fee_balance() -> Result<impl Reply, warp::Rejection> {
     let balance = db.get_balance(&fee_token_id).await;
     if let Some(balance) = balance {
         Ok(warp::reply::with_status(
-            hex::encode(balance.into_bigint().to_bytes_be()),
+            encode_balance_hex(balance),
             StatusCode::OK,
         ))
     } else {
