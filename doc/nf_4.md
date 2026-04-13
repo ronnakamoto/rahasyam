@@ -858,14 +858,14 @@ curl -i -X POST http://localhost:3001/v1/register \
 
 Returns: on success `200 OK`
 
-Adds (registers) a new proposer. The URL, at which clients can reach the proposer, should be provided.
+Adds (registers) a new proposer. The request body must be a JSON string containing the absolute proposer URL, and the URL must use the `http` or `https` scheme. Invalid, empty, or malformed JSON bodies return `400 BAD REQUEST`.
 
 ***
 
 GET /v1/deregister
 
 ```sh
-curl -i 'http://localhost:3000/v1/deregister'
+curl -i 'http://localhost:3001/v1/deregister'
 ```
 
 Returns: on success `200 OK`
@@ -878,12 +878,13 @@ POST /v1/withdraw
 
 ```sh
 curl -i --request POST 'http://localhost:3000/v1/withdraw' \
-    --json '{ "amount": 20 }'
+    --header 'Content-Type: application/json' \
+    --data '20'
 ```
 
 Returns: on success `200 OK`
 
-Withdraws the stake of a de-registered proposer, actually, the amount withdrawn can be up to the amount of the stake. This can only be called by the de-registered proposer, otherwise the withdraw will fail.
+Withdraws the stake of a de-registered proposer, actually, the amount withdrawn can be up to the amount of the stake. This can only be called by the de-registered proposer, otherwise the withdraw will fail. The request body must be a positive JSON integer amount. Zero or malformed JSON bodies return `400 BAD REQUEST`.
 
 ***
 

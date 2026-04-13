@@ -6,8 +6,9 @@ use lib::{
     verify_contract::VerifiedContracts,
 };
 use log::{info, warn};
+use url::Url;
 /// APIs for managing proposers
-use warp::{hyper::StatusCode, path, reply::Reply, Filter};
+use warp::{hyper::StatusCode, path, reply, reply::Reply, Filter};
 
 /// Get request for proposer rotation
 pub fn rotate_proposer() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone
@@ -113,6 +114,9 @@ pub fn add_proposer() -> impl Filter<Extract = impl warp::Reply, Error = warp::R
 }
 
 async fn handle_add_proposer(url: String) -> Result<impl Reply, warp::Rejection> {
+    if let Err(message) = validate_proposer_url(&url) {
+        return Ok(reply::with_status(message, StatusCode::BAD_REQUEST));
+    }
     // get a ManageProposers instance
     let read_connection = get_blockchain_client_connection().await.read().await;
     let blockchain_client = read_connection.get_client();
@@ -172,7 +176,7 @@ async fn handle_add_proposer(url: String) -> Result<impl Reply, warp::Rejection>
         })?;
     if tx.status() {
         info!("Registered proposer with address: {:?}", tx.from);
-        Ok(StatusCode::OK)
+        Ok(reply::with_status("OK", StatusCode::OK))
     } else {
         warn!("Failed to add proposer with address: {:?}", tx.from);
         Err(warp::reject::custom(ProposerRejection::FailedToAddProposer))
@@ -284,6 +288,12 @@ pub fn withdraw() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejec
 }
 
 async fn handle_withdraw(amount: u64) -> Result<impl Reply, warp::Rejection> {
+    if amount == 0 {
+        return Ok(reply::with_status(
+            "Withdraw amount must be greater than zero",
+            StatusCode::BAD_REQUEST,
+        ));
+    }
     // get a ManageProposers instance
     let read_connection = get_blockchain_client_connection().await.read().await;
     let blockchain_client = read_connection.get_client();
@@ -342,11 +352,136 @@ async fn handle_withdraw(amount: u64) -> Result<impl Reply, warp::Rejection> {
         })?;
     if tx.status() {
         info!("Withdrew {} to address: {:?}", amount, tx.from);
-        Ok(StatusCode::OK)
+        Ok(reply::with_status("OK", StatusCode::OK))
     } else {
         warn!("Failed to withdraw funds");
         Err(warp::reject::custom(
             ProposerRejection::FailedToWithdrawStake,
         ))
+    }
+}
+
+fn validate_proposer_url(url: &str) -> Result<(), &'static str> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Proposer URL must not be empty");
+    }
+
+    let parsed = Url::parse(trimmed).map_err(|_| "Proposer URL must be a valid absolute URL")?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(()),
+        _ => Err("Proposer URL must use http or https"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_proposer_url_rejects_empty_string() {
+        let err = validate_proposer_url("   ").expect_err("empty URL should be rejected");
+        assert_eq!(err, "Proposer URL must not be empty");
+    }
+
+    #[test]
+    fn test_validate_proposer_url_rejects_invalid_url() {
+        let err =
+            validate_proposer_url("not-a-url").expect_err("invalid URL should be rejected");
+        assert_eq!(err, "Proposer URL must be a valid absolute URL");
+    }
+
+    #[test]
+    fn test_validate_proposer_url_rejects_unsupported_scheme() {
+        let err =
+            validate_proposer_url("ftp://example.com").expect_err("FTP URL should be rejected");
+        assert_eq!(err, "Proposer URL must use http or https");
+    }
+
+    #[test]
+    fn test_validate_proposer_url_accepts_http_url() {
+        validate_proposer_url("http://example.com").expect("HTTP URL should be accepted");
+    }
+
+    #[tokio::test]
+    async fn test_add_proposer_route_rejects_empty_url() {
+        let filter = add_proposer();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/register")
+            .header("content-type", "application/json")
+            .body(r#""""#)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::str::from_utf8(res.body()).unwrap(),
+            "Proposer URL must not be empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_proposer_route_rejects_invalid_url() {
+        let filter = add_proposer();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/register")
+            .header("content-type", "application/json")
+            .body(r#""not-a-url""#)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::str::from_utf8(res.body()).unwrap(),
+            "Proposer URL must be a valid absolute URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_proposer_route_rejects_malformed_json() {
+        let filter = add_proposer();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/register")
+            .header("content-type", "application/json")
+            .body("{")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_zero_amount() {
+        let filter = withdraw();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .header("content-type", "application/json")
+            .body("0")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::str::from_utf8(res.body()).unwrap(),
+            "Withdraw amount must be greater than zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_route_rejects_malformed_json() {
+        let filter = withdraw();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/withdraw")
+            .header("content-type", "application/json")
+            .body("{")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }

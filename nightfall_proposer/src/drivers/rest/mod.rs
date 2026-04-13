@@ -82,3 +82,56 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::In
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_handle_rejection_maps_rotate_failure_to_locked() {
+        let response = handle_rejection(warp::reject::custom(
+            ProposerRejection::FailedToRotateProposer,
+        ))
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), warp::http::StatusCode::LOCKED);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rejection_maps_add_failure_to_bad_request() {
+        let response = handle_rejection(warp::reject::custom(
+            ProposerRejection::FailedToAddProposer,
+        ))
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rejection_maps_remove_failure_to_bad_request() {
+        let response = handle_rejection(warp::reject::custom(
+            ProposerRejection::FailedToRemoveProposer,
+        ))
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rejection_maps_withdraw_failure_to_bad_request() {
+        let response = handle_rejection(warp::reject::custom(
+            ProposerRejection::FailedToWithdrawStake,
+        ))
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+    }
+}
