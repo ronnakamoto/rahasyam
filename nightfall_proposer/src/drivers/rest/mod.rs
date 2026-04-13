@@ -1,6 +1,6 @@
 use crate::domain::error::ProposerRejection;
 use crate::drivers::rest::{
-    block_data::get_block_data, client_transactions::client_transaction,
+    block_data::get_block_data, client_transactions::{cancel_swap, client_transaction},
     proposers::rotate_proposer, synchronisation::synchronisation,
 };
 use block_assembly::{
@@ -32,6 +32,7 @@ where
 {
     health_route()
         .or(client_transaction::<P, E>())
+        .or(cancel_swap::<P>())
         .or(rotate_proposer())
         .or(get_block_data())
         .or(add_proposer())

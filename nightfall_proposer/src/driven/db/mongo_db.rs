@@ -107,7 +107,7 @@ where
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .update_many(filter, update)
             .await
-            .expect("Database error"); // we can't really proceed at this point
+            .ok()?;// propagate DB error as None so the caller can handle it explicitly
         Some(result.modified_count)
     }
 
