@@ -506,6 +506,7 @@ curl -i \
   --data-raw '{
     "ercAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     "tokenId": "0x00",
+    "tokenType": "0",
     "recipientData": {
       "values": ["0x01"],
       "recipientCompressedZkpPublicKeys": ["0572aa70f4e62bcb8f53a28a1c259bd6d3538818afcccc0d8598486973ec2f2a"]
@@ -525,8 +526,9 @@ The components of the JSON object have the following meaning:
 
 - ercAddress: The Ethereum address of the ERC20|721|1155|3525 contract that we are using as a source of funds to move into Layer 2.
 - tokenId: The token ID of the token, for a 721|1155|3525 contract. It should be set to "0x00" for an ERC20 contract.
+- tokenType: The type of token being transacted: 0 => ERC20, 1 => ERC1155, 2 => ERC721, 3 => ERC3525. This field defaults to ERC20 for backwards compatibility, but should be provided explicitly for NFT and semi-fungible transfers.
 - recipientData: information about the owner(s) of the commitment(s) that will be created.
-- recipientData.values: values of the commitments for ERC20 tokens
+- recipientData.values: values of the commitments for the transfer. For ERC20 and fungible ERC1155 transfers this should be greater than zero. For ERC721 and non-fungible ERC1155 transfers, use "0x00".
 - recipientData.recipientCompressedZkpPublic: The ZKP public keys of the recipients. This acts as their Layer 2 addresses. See the section on key derivation for more details.
 - fee: The amount that will be paid to the `proposer` which processes this transaction.
 

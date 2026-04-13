@@ -168,6 +168,9 @@ fn validate_deposit_request_payload(req: &NF3DepositRequest) -> Result<(), Strin
 fn validate_transfer_request_payload(req: &NF3TransferRequest) -> Result<(), String> {
     to_nf_token_id_from_str(req.erc_address.as_str(), req.token_id.as_str())
         .map_err(|e| format!("Invalid ercAddress/tokenId pair: {e}"))?;
+    let token_id = BigInteger256::from_hex_string(req.token_id.as_str())
+        .map_err(|e| format!("Invalid tokenId: {e}"))?;
+    let token_type = parse_token_type(req.token_type.as_str())?;
     Fr254::from_hex_string(req.fee.as_str()).map_err(|e| format!("Invalid fee: {e}"))?;
 
     if req.recipient_data.values.len() != 1 {
@@ -184,9 +187,7 @@ fn validate_transfer_request_payload(req: &NF3TransferRequest) -> Result<(), Str
 
     let value = Fr254::from_hex_string(req.recipient_data.values[0].as_str())
         .map_err(|e| format!("Invalid transfer value: {e}"))?;
-    if value.is_zero() {
-        return Err("Transfer operations require value > 0".to_string());
-    }
+    validate_asset_constraints(token_type, value, token_id)?;
 
     let first_key = &req.recipient_data.recipient_compressed_zkp_public_keys[0];
     let json_wrapped = format!("\"{first_key}\"");
@@ -596,6 +597,7 @@ where
     let NF3TransferRequest {
         erc_address,
         token_id,
+        token_type,
         recipient_data,
         fee,
         ..
@@ -619,6 +621,21 @@ where
     let value = Fr254::from_hex_string(first_value.as_str()).map_err(|e| {
         error!("{id} Error when reading value: {e}");
         TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let token_id_bigint = BigInteger256::from_hex_string(token_id.as_str()).map_err(|e| {
+        error!("{id} Error when reading token id: {e}");
+        TransactionHandlerError::CustomError(e.to_string())
+    })?;
+
+    let parsed_token_type = parse_token_type(token_type.as_str()).map_err(|e| {
+        error!("{id} Error when reading token type: {e}");
+        TransactionHandlerError::CustomError(e)
+    })?;
+
+    validate_asset_constraints(parsed_token_type, value, token_id_bigint).map_err(|e| {
+        error!("{id} Transfer asset constraint validation failed: {e}");
+        TransactionHandlerError::CustomError(e)
     })?;
 
     let fee: Fr254 = Fr254::from_hex_string(fee.as_str()).map_err(|e| {
@@ -1137,6 +1154,7 @@ mod tests {
         client_models::{
             NF3DepositRequest, NF3RecipientData, NF3TransferRequest, NF3WithdrawRequest,
         },
+        derive_key::ZKPKeys,
         plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
     };
     use nf_curves::ed_on_bn254::BabyJubjub;
@@ -1166,15 +1184,22 @@ mod tests {
     }
 
     fn sample_transfer_request() -> NF3TransferRequest {
+        let mut compressed_public_key = ZKPKeys::new(Fr254::one())
+            .expect("should derive zkp keys")
+            .compressed_public_key()
+            .expect("should compress zkp public key");
+        compressed_public_key.reverse(); // Convert to big-endian to match ark_de_hex format
+
         NF3TransferRequest {
             erc_address: "0x1234567890123456789012345678901234567890".to_string(),
             token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
             recipient_data: NF3RecipientData {
                 values: vec!["0x01".to_string()],
-                recipient_compressed_zkp_public_keys: vec![
-                    "0x9ec770ecf98f013adf0f08944f91196fa7f3f6de5ea50cb9f7444f866eb95f5a"
-                        .to_string(),
-                ],
+                recipient_compressed_zkp_public_keys: vec![format!(
+                    "0x{}",
+                    hex::encode(compressed_public_key)
+                )],
             },
             fee: "0x00".to_string(),
         }
@@ -1309,7 +1334,29 @@ mod tests {
         let mut req = sample_transfer_request();
         req.recipient_data.values = vec!["0x00".to_string()];
         let err = validate_transfer_request_payload(&req).expect_err("validation should fail");
-        assert_eq!(err, "Transfer operations require value > 0");
+        assert_eq!(err, "ERC20 operations require value > 0");
+    }
+
+    #[test]
+    fn test_validate_transfer_accepts_non_fungible_erc1155_zero_value() {
+        let mut req = sample_transfer_request();
+        req.token_type = "01".to_string();
+        req.token_id = "0x2a".to_string();
+        req.recipient_data.values = vec!["0x00".to_string()];
+        validate_transfer_request_payload(&req).expect("validation should pass");
+    }
+
+    #[test]
+    fn test_validate_transfer_rejects_erc1155_when_value_and_token_id_are_zero() {
+        let mut req = sample_transfer_request();
+        req.token_type = "01".to_string();
+        req.token_id = "0x00".to_string();
+        req.recipient_data.values = vec!["0x00".to_string()];
+        let err = validate_transfer_request_payload(&req).expect_err("validation should fail");
+        assert_eq!(
+            err,
+            "ERC1155 operations require either value > 0 or tokenId > 0"
+        );
     }
 
     #[tokio::test]
@@ -1403,6 +1450,7 @@ mod tests {
         let invalid_transfer_req = NF3TransferRequest {
             erc_address: "0x1234567890123456789012345678901234567890".to_string(),
             token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
             recipient_data: NF3RecipientData {
                 values: vec!["0x04".to_string()],
                 recipient_compressed_zkp_public_keys: vec![
@@ -1448,6 +1496,7 @@ mod tests {
         let identity_point_transfer_req = NF3TransferRequest {
             erc_address: "0x1234567890123456789012345678901234567890".to_string(),
             token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
             recipient_data: NF3RecipientData {
                 values: vec!["0x04".to_string()],
                 recipient_compressed_zkp_public_keys: vec![identity_point_hex],
@@ -1494,6 +1543,7 @@ mod tests {
         let low_order_transfer_req = NF3TransferRequest {
             erc_address: "0x1234567890123456789012345678901234567890".to_string(),
             token_id: "0x00".to_string(),
+            token_type: "00".to_string(),
             recipient_data: NF3RecipientData {
                 values: vec!["0x04".to_string()],
                 recipient_compressed_zkp_public_keys: vec![low_order_hex],
