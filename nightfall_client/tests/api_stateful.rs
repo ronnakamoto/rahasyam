@@ -3,6 +3,7 @@ use ark_bn254::Fr as Fr254;
 use ark_ff::BigInteger256;
 use lib::{
     error::NightfallContractError,
+    hex_conversion::HexConvertible,
     nf_token_id::to_nf_token_id_from_str,
     plonk_prover::plonk_proof::PlonkProof,
     shared_entities::{Preimage, TokenType, WithdrawData},
@@ -179,4 +180,83 @@ async fn test_request_status_and_balance_routes_cover_stateful_sanity_cases() {
         .await;
     assert_eq!(erc721_balance.status(), reqwest::StatusCode::OK);
     assert_eq!(std::str::from_utf8(erc721_balance.body()).unwrap(), "00");
+
+    let erc20_address = "0x2222222222222222222222222222222222222222";
+    let erc20_token_id = "0x00";
+    let erc20_nf_token_id =
+        to_nf_token_id_from_str(erc20_address, erc20_token_id).expect("valid ERC20 nf token id");
+
+    let deposited_commitment = CommitmentEntry::new(
+        Preimage {
+            value: Fr254::from(10u64),
+            nf_token_id: erc20_nf_token_id,
+            ..Default::default()
+        },
+        Fr254::from(101u64),
+        CommitmentStatus::Unspent,
+        TokenType::ERC20,
+        None,
+        None,
+    );
+    let deposited_nullifier = deposited_commitment.nullifier;
+    db.store_commitment(deposited_commitment)
+        .await
+        .expect("store deposited ERC20 commitment");
+
+    let post_deposit_balance = warp::test::request()
+        .method("GET")
+        .path(&format!("/v1/balance/{erc20_address}/{erc20_token_id}"))
+        .reply(&filter)
+        .await;
+    assert_eq!(post_deposit_balance.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        Fr254::from_hex_string(std::str::from_utf8(post_deposit_balance.body()).unwrap())
+            .expect("deposit balance should be valid hex"),
+        Fr254::from(10u64)
+    );
+
+    db.mark_commitments_spent(vec![deposited_nullifier])
+        .await
+        .expect("mark deposited commitment spent after transfer");
+    db.store_commitment(CommitmentEntry::new(
+        Preimage {
+            value: Fr254::from(6u64),
+            nf_token_id: erc20_nf_token_id,
+            ..Default::default()
+        },
+        Fr254::from(202u64),
+        CommitmentStatus::Unspent,
+        TokenType::ERC20,
+        None,
+        None,
+    ))
+    .await
+    .expect("store ERC20 change commitment after transfer");
+
+    let post_transfer_balance = warp::test::request()
+        .method("GET")
+        .path(&format!("/v1/balance/{erc20_address}/{erc20_token_id}"))
+        .reply(&filter)
+        .await;
+    assert_eq!(post_transfer_balance.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        Fr254::from_hex_string(std::str::from_utf8(post_transfer_balance.body()).unwrap())
+            .expect("post-transfer balance should be valid hex"),
+        Fr254::from(6u64)
+    );
+
+    db.mark_commitments_spent(vec![Fr254::from(202u64)])
+        .await
+        .expect("mark change commitment spent after withdraw");
+
+    let post_withdraw_balance = warp::test::request()
+        .method("GET")
+        .path(&format!("/v1/balance/{erc20_address}/{erc20_token_id}"))
+        .reply(&filter)
+        .await;
+    assert_eq!(post_withdraw_balance.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        std::str::from_utf8(post_withdraw_balance.body()).unwrap(),
+        "No such token"
+    );
 }
