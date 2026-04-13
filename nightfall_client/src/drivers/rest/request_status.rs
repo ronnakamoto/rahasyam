@@ -21,14 +21,14 @@ pub fn get_request_status<N: NightfallContract>(
         .and_then(handle_get_request_status::<N>)
 }
 
-fn extract_swap_deadline(request: &Request) -> Option<Fr254> {
+pub(crate) fn extract_swap_deadline(request: &Request) -> Option<Fr254> {
     let child_args = request.child_request_args.as_ref()?;
     let swap_args = serde_json::from_str::<SwapChildRequestArgs>(child_args).ok()?;
     let deadline_hex = swap_args.deadline?;
     Fr254::from_hex_string(&deadline_hex).ok()
 }
 
-fn should_expire_request(request: &Request, current_l2_block: I256) -> bool {
+pub(crate) fn should_expire_request(request: &Request, current_l2_block: I256) -> bool {
     if !matches!(request.status, RequestStatus::Submitted) {
         return false;
     }

@@ -32,7 +32,7 @@ pub mod client_operation;
 mod commitment;
 mod keys;
 pub mod proposers;
-mod request_status;
+pub(crate) mod request_status;
 mod synchronisation;
 mod token_info;
 pub mod withdraw;
