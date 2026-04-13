@@ -291,15 +291,7 @@ async fn queue_request(
     let mut q = get_queue().await.write().await;
     // check if the queue is full
     if q.len() >= max_queue_size {
-        return Ok(reply::with_header(
-            reply::with_status(
-                json(&serde_json::json!({ "error": "Queue is full" })),
-                StatusCode::SERVICE_UNAVAILABLE,
-            ),
-            "X-Request-ID",
-            request_id,
-        )
-        .into_response());
+        return Ok(queue_full_response(request_id));
     }
     debug!("got lock on queue");
     q.push_back(QueuedRequest {
@@ -322,15 +314,25 @@ async fn queue_request(
     debug!("Stored request status in database");
 
     // return a 202 Accepted response with the request ID
-    Ok(reply::with_header(
-        reply::with_status(
-            json(&serde_json::json!({ "message": "Request queued" })),
-            StatusCode::ACCEPTED,
-        ),
+    Ok(queue_accepted_response(request_id))
+}
+
+fn queue_full_response(request_id: String) -> warp::reply::Response {
+    reply::with_header(
+        reply::with_status(json(&"Queue is full".to_string()), StatusCode::SERVICE_UNAVAILABLE),
         "X-Request-ID",
         request_id,
     )
-    .into_response())
+    .into_response()
+}
+
+fn queue_accepted_response(request_id: String) -> warp::reply::Response {
+    reply::with_header(
+        reply::with_status(json(&"Request queued".to_string()), StatusCode::ACCEPTED),
+        "X-Request-ID",
+        request_id,
+    )
+    .into_response()
 }
 
 /// This function wraps the various transaction handlers, so that the queue can call the correct handler
@@ -1264,6 +1266,30 @@ mod tests {
         req.recipient_data.values = vec!["0x00".to_string()];
         let err = validate_transfer_request_payload(&req).expect_err("validation should fail");
         assert_eq!(err, "Transfer operations require value > 0");
+    }
+
+    #[tokio::test]
+    async fn test_queue_full_response_preserves_legacy_json_string_shape() {
+        let filter = warp::any().map(|| queue_full_response("req-123".to_string()));
+        let res = warp::test::request().reply(&filter).await;
+
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.headers()["x-request-id"], "req-123");
+
+        let body = serde_json::from_slice::<String>(res.body()).expect("body should be JSON");
+        assert_eq!(body, "Queue is full");
+    }
+
+    #[tokio::test]
+    async fn test_queue_accepted_response_preserves_legacy_json_string_shape() {
+        let filter = warp::any().map(|| queue_accepted_response("req-456".to_string()));
+        let res = warp::test::request().reply(&filter).await;
+
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        assert_eq!(res.headers()["x-request-id"], "req-456");
+
+        let body = serde_json::from_slice::<String>(res.body()).expect("body should be JSON");
+        assert_eq!(body, "Request queued");
     }
 
     /// Tests that transfer API rejects invalid recipient public keys
