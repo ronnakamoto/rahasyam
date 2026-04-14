@@ -890,9 +890,9 @@ GET /v1/status
 curl -i 'http://localhost:3001/v1/status'
 ```
 
-Returns: on success `200 OK` with a JSON string body containing either `"Reunning"` or `"Paused"`.
+Returns: on success `200 OK` with a JSON string body containing either `"Running"` or `"Paused"`.
 
-This endpoint reports whether block assembly is currently active inside the proposer. Note that the returned `"Reunning"` string reflects the current implementation spelling.
+This endpoint reports whether block assembly is currently active inside the proposer.
 
 ***
 

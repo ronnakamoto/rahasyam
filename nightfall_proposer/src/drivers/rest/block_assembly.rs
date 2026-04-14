@@ -38,7 +38,7 @@ pub fn get_block_assembly_status_route(
 
 pub async fn handle_get_block_assembly_status() -> Result<impl warp::Reply, warp::Rejection> {
     let status = get_block_assembly_status().await.read().await.is_running();
-    let response = if status { "Reunning" } else { "Paused" };
+    let response = if status { "Running" } else { "Paused" };
     Ok(warp::reply::json(&response))
 }
 
@@ -83,6 +83,6 @@ mod tests {
         assert_eq!(running_status.status(), StatusCode::OK);
         let running_body =
             serde_json::from_slice::<String>(running_status.body()).expect("status JSON");
-        assert_eq!(running_body, "Reunning");
+        assert_eq!(running_body, "Running");
     }
 }

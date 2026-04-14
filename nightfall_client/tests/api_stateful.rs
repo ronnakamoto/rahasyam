@@ -145,6 +145,17 @@ async fn test_request_status_and_balance_routes_cover_stateful_sanity_cases() {
         assert_eq!(body["status"], expected_status.to_string());
     }
 
+    let empty_commitments = warp::test::request()
+        .method("GET")
+        .path("/v1/commitments")
+        .reply(&filter)
+        .await;
+    assert_eq!(empty_commitments.status(), reqwest::StatusCode::OK);
+    let empty_commitments_body =
+        serde_json::from_slice::<Vec<serde_json::Value>>(empty_commitments.body())
+            .expect("commitments body should be JSON");
+    assert!(empty_commitments_body.is_empty());
+
     let erc_address = "0x1111111111111111111111111111111111111111";
     let erc721_token_id = "0x01";
 
@@ -154,7 +165,10 @@ async fn test_request_status_and_balance_routes_cover_stateful_sanity_cases() {
         .reply(&filter)
         .await;
     assert_eq!(empty_wallet.status(), reqwest::StatusCode::NOT_FOUND);
-    assert_eq!(std::str::from_utf8(empty_wallet.body()).unwrap(), "No such token");
+    assert_eq!(
+        std::str::from_utf8(empty_wallet.body()).unwrap(),
+        "No such token"
+    );
 
     let nf_token_id =
         to_nf_token_id_from_str(erc_address, erc721_token_id).expect("valid nf token id");
@@ -254,9 +268,23 @@ async fn test_request_status_and_balance_routes_cover_stateful_sanity_cases() {
         .path(&format!("/v1/balance/{erc20_address}/{erc20_token_id}"))
         .reply(&filter)
         .await;
-    assert_eq!(post_withdraw_balance.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        post_withdraw_balance.status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
     assert_eq!(
         std::str::from_utf8(post_withdraw_balance.body()).unwrap(),
         "No such token"
     );
+
+    let all_commitments = warp::test::request()
+        .method("GET")
+        .path("/v1/commitments")
+        .reply(&filter)
+        .await;
+    assert_eq!(all_commitments.status(), reqwest::StatusCode::OK);
+    let all_commitments_body =
+        serde_json::from_slice::<Vec<serde_json::Value>>(all_commitments.body())
+            .expect("all commitments body should be JSON");
+    assert_eq!(all_commitments_body.len(), 3);
 }
