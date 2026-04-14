@@ -161,11 +161,12 @@ pub async fn handle_get_l1_balance() -> Result<impl Reply, warp::Rejection> {
 mod test_support {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+    use tokio::sync::Mutex as AsyncMutex;
 
     static L1_BALANCE_FETCHER_OVERRIDE: OnceLock<Mutex<Option<L1BalanceFetcher>>> = OnceLock::new();
     static FEE_BALANCE_FETCHER_OVERRIDE: OnceLock<Mutex<Option<FeeBalanceFetcher>>> = OnceLock::new();
-    static L1_BALANCE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    static FEE_BALANCE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static L1_BALANCE_TEST_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+    static FEE_BALANCE_TEST_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 
     pub(super) fn get_l1_balance_fetcher_override() -> &'static Mutex<Option<L1BalanceFetcher>> {
         L1_BALANCE_FETCHER_OVERRIDE.get_or_init(|| Mutex::new(None))
@@ -175,12 +176,12 @@ mod test_support {
         FEE_BALANCE_FETCHER_OVERRIDE.get_or_init(|| Mutex::new(None))
     }
 
-    pub(super) fn get_l1_balance_test_lock() -> &'static Mutex<()> {
-        L1_BALANCE_TEST_LOCK.get_or_init(|| Mutex::new(()))
+    pub(super) fn get_l1_balance_test_lock() -> &'static AsyncMutex<()> {
+        L1_BALANCE_TEST_LOCK.get_or_init(|| AsyncMutex::new(()))
     }
 
-    pub(super) fn get_fee_balance_test_lock() -> &'static Mutex<()> {
-        FEE_BALANCE_TEST_LOCK.get_or_init(|| Mutex::new(()))
+    pub(super) fn get_fee_balance_test_lock() -> &'static AsyncMutex<()> {
+        FEE_BALANCE_TEST_LOCK.get_or_init(|| AsyncMutex::new(()))
     }
 }
 
@@ -210,7 +211,7 @@ mod tests {
     async fn test_handle_l1_balance_returns_hex_balance() {
         let _guard = test_support::get_l1_balance_test_lock()
             .lock()
-            .expect("test lock should not be poisoned");
+            .await;
         *test_support::get_l1_balance_fetcher_override()
             .lock()
             .expect("test fetcher lock should not be poisoned") = Some(fetch_some_balance);
@@ -235,7 +236,7 @@ mod tests {
     async fn test_handle_l1_balance_returns_not_found_when_balance_unavailable() {
         let _guard = test_support::get_l1_balance_test_lock()
             .lock()
-            .expect("test lock should not be poisoned");
+            .await;
         *test_support::get_l1_balance_fetcher_override()
             .lock()
             .expect("test fetcher lock should not be poisoned") = Some(fetch_no_balance);
@@ -266,7 +267,7 @@ mod tests {
     async fn test_handle_fee_balance_returns_hex_balance() {
         let _guard = test_support::get_fee_balance_test_lock()
             .lock()
-            .expect("test lock should not be poisoned");
+            .await;
         *test_support::get_fee_balance_fetcher_override()
             .lock()
             .expect("test fetcher lock should not be poisoned") = Some(fetch_some_fee_balance);
@@ -291,7 +292,7 @@ mod tests {
     async fn test_handle_fee_balance_returns_not_found_when_balance_unavailable() {
         let _guard = test_support::get_fee_balance_test_lock()
             .lock()
-            .expect("test lock should not be poisoned");
+            .await;
         *test_support::get_fee_balance_fetcher_override()
             .lock()
             .expect("test fetcher lock should not be poisoned") = Some(fetch_no_fee_balance);
