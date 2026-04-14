@@ -67,6 +67,11 @@ where
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {
     if err.is_not_found() {
         Ok(reply::with_status("NOT_FOUND", StatusCode::NOT_FOUND))
+    } else if err
+        .find::<warp::filters::body::BodyDeserializeError>()
+        .is_some()
+    {
+        Ok(reply::with_status("BAD_REQUEST", StatusCode::BAD_REQUEST))
     } else if let Some(e) = err.find::<crate::domain::error::ClientRejection>() {
         use crate::domain::error::ClientRejection::*;
         match e {
@@ -392,7 +397,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_synchronisation_route_returns_service_unavailable_on_contract_error() {
+    async fn test_health_route_is_wired_in_client_router() {
+        let filter = routes::<PlonkProof, MockNightfall>();
+        let res = warp::test::request()
+            .method("GET")
+            .path("/v1/health")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(std::str::from_utf8(res.body()).unwrap(), "Healthy");
+    }
+
+    #[tokio::test]
+    async fn test_certification_route_is_wired_in_client_router() {
+        let boundary = "x-boundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"certificate\"; filename=\"cert.der\"\r\nContent-Type: application/octet-stream\r\n\r\nabc\r\n--{boundary}--\r\n"
+        );
+        let filter = routes::<PlonkProof, MockNightfall>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/certification")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = serde_json::from_slice::<Value>(res.body()).unwrap();
+        assert_eq!(body["message"], "Missing 'priv_key' field or empty file");
+    }
+
+    #[tokio::test]
+    async fn test_keys_validation_route_is_wired_in_client_router() {
+        let filter = routes::<PlonkProof, MockNightfall>();
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/keys_validation")
+            .header("content-type", "application/json")
+            .body(r#"{"concurrency":2}"#)
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(std::str::from_utf8(res.body()).unwrap(), "BAD_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn test_synchronisation_route_is_wired_in_client_router() {
         let filter = routes::<PlonkProof, MockNightfallSyncError>();
         let res = warp::test::request()
             .method("GET")

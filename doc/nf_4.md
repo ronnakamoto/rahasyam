@@ -848,15 +848,25 @@ This is just a health-check, useful for finding out if the application is runnin
 
 ***
 
-GET v1/rotate
+### GET /v1/rotate
+
+Rotates the active proposer if it has exceeded its allowed proposal window.
+
+The rotation is permitted only when the current `proposer` has been active for more
+than `ROTATION_BLOCKS` Layer 1 blocks, as configured in `RoundRobin.sol`.
 
 ```sh
 curl -i 'http://localhost:3001/v1/rotate'
 ```
 
-Returns: on success `200 OK` if the active `proposer` was rotated, `423 LOCKED` if proposer rotation was not allowed by the smart contract.
+**Responses**
 
-This endpoint will rotate the proposers if the current `proposer` has been active for more than the number of Layer 1 blocks that a `proposer` is allowed to propose for (ROTATION_BlOCKS). This value is set in the construction of RoundRobin.sol.
+| Status | Condition |
+|--------|-----------|
+| `200 OK` | Rotation succeeded |
+| `423 Locked` | Rotation rejected by the smart contract because the proposer is still within its allowed window |
+
+**Response body**: empty
 
 ***
 
