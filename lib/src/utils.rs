@@ -83,14 +83,14 @@ impl KeyDownloader {
         }
     }
 
-    async fn download(&self, key_name: &str) -> Result<Bytes, KeyDownloadError> {
+    async fn download_from_path(&self, key_path: &str) -> Result<Bytes, KeyDownloadError> {
         let url = self
             .base_url
-            .join(key_name)
+            .join(key_path)
             .expect("Failed to combine key path on to configuration_url");
-        info!("Downloading key '{key_name}' from {url}");
+        info!("Downloading key from {url}");
 
-        let res = self.client.get(url).send().await?;
+        let res = self.client.get(url.clone()).send().await?;
         let status = res.status();
         if !status.is_success() {
             warn!("Key download failed with HTTP status {status}");
@@ -123,8 +123,29 @@ impl KeyDownloader {
             }
             buf.extend_from_slice(&chunk);
         }
-        info!("Downloaded key '{key_name}': {total} bytes");
+        info!("Downloaded key from {url}: {total} bytes");
         Ok(buf.freeze())
+    }
+
+    async fn download(&self, key_name: &str) -> Result<Bytes, KeyDownloadError> {
+        let candidate_paths = [
+            key_name.to_string(),
+            format!("bin/keys/{key_name}"),
+            format!("configuration/bin/keys/{key_name}"),
+        ];
+
+        let mut last_error = None;
+        for key_path in candidate_paths {
+            match self.download_from_path(&key_path).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => {
+                    debug!("Failed to download key '{key_name}' from '{key_path}': {error}");
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.expect("Key download candidates should not be empty"))
     }
 }
 
