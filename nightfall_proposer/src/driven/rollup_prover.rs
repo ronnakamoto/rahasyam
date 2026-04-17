@@ -636,7 +636,9 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
         for pi in public_inputs.iter() {
             let mut m_proofs = Vec::<Fr254>::new();
             let root = pi.root;
-            if !root_proofs.contains_key(&root) {
+            if let Some(proof_vec) = root_proofs.get(&root).cloned() {
+                m_proofs.extend(proof_vec.iter());
+            } else {
                 let proof = <Client as HistoricRootTree<Fr254>>::get_membership_proof(
                     db,
                     Some(&root),
@@ -647,14 +649,6 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
                 root_m_proof_len = proof_vec.len();
                 proof_vec.push(current_historic_root);
                 root_proofs.insert(root, proof_vec.clone());
-                m_proofs.extend(proof_vec.iter());
-            } else {
-                let proof_vec = root_proofs
-                    .get(&root)
-                    .ok_or(RollupProofError::ParameterError(
-                        "Error retrieving Historic root Membership proof from temporary DB"
-                            .to_string(),
-                    ))?;
                 m_proofs.extend(proof_vec.iter());
             }
             root_membership_proofs.push(m_proofs);
