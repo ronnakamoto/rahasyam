@@ -129,7 +129,7 @@ mod tests {
     fn sample_transaction() -> ClientTransaction<MockProof> {
         ClientTransaction {
             fee: Fr254::from(2u64),
-            historic_commitment_roots: [Fr254::from(0u64); 4],
+            historic_commitment_root: Fr254::from(0u64),
             commitments: [
                 Fr254::from(10u64),
                 Fr254::from(0u64),
