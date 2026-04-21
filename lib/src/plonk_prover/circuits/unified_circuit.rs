@@ -1,7 +1,7 @@
 use super::verify::verify_duplicates_gadgets::VerifyDuplicatesCircuit;
 use super::DOMAIN_SHARED_SALT;
 use crate::{
-    deposit_circuit::DepositDataVar,
+    deposit_witness::DepositDataVar,
     derive_key::{NULLIFIER_PREFIX, PRIVATE_KEY_PREFIX},
     nf_client_proof::{PrivateInputs, PrivateInputsVar, PublicInputs},
     plonk_prover::circuits::verify::{
