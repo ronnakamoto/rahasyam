@@ -12,8 +12,7 @@ use lib::{
     build_transfer_inputs::build_valid_transfer_inputs,
     circuit_key_generation::{generate_rollup_keys_for_production, universal_setup_for_production},
     constants::MAX_KZG_DEGREE,
-    deposit_circuit::deposit_circuit_builder,
-    nf_client_proof::PublicInputs,
+    nf_client_proof::{PrivateInputs, PublicInputs},
     plonk_prover::circuits::unified_circuit::unified_circuit_builder,
     shared_entities::DepositData,
 };
@@ -45,8 +44,10 @@ pub fn generate_proving_keys(settings: &Settings) -> Result<(), PlonkError> {
     circuit.finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()?;
 
     let deposit_data = [DepositData::default(); 4];
-    let mut deposit_public_inputs = PublicInputs::new();
-    let mut deposit_circuit = deposit_circuit_builder(&deposit_data, &mut deposit_public_inputs)?;
+    let mut deposit_public_inputs = PublicInputs::for_deposit();
+    let mut deposit_private_inputs = PrivateInputs::for_deposit(&deposit_data);
+    let mut deposit_circuit =
+        unified_circuit_builder(&mut deposit_public_inputs, &mut deposit_private_inputs)?;
     deposit_circuit.finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()?;
     let mut rng = rand::thread_rng();
 
@@ -76,7 +77,7 @@ pub fn generate_proving_keys(settings: &Settings) -> Result<(), PlonkError> {
     // deposit pk vk
     let (deposit_pk, _) = FFTPlonk::<UnivariateKzgPCS<Bn254>>::preprocess(
         &kzg_srs,
-        Some(VerificationKeyId::Deposit),
+        Some(VerificationKeyId::Client),
         &deposit_circuit,
         true,
     )?;
@@ -99,7 +100,12 @@ pub fn generate_proving_keys(settings: &Settings) -> Result<(), PlonkError> {
     // if we're using a mock prover, we don't need an IPA proof at all, if we are using a real prover then we'll generate a real IPA SRS
     if !settings.mock_prover {
         // this part will generate base_grumpkin_pk, base_bn254_pk, merge_grumpkin_pk, merge_bn254_pk, decider_vk, decider_pk in fn preprocess() located in nightfall_proposer/src/driven/rollup_prover.rs
-        generate_rollup_keys_for_production(deposit_circuit, deposit_pk_path, &kzg_srs)?;
+        generate_rollup_keys_for_production(
+            deposit_circuit,
+            deposit_public_inputs,
+            deposit_pk_path,
+            &kzg_srs,
+        )?;
     }
     Ok(())
 }
