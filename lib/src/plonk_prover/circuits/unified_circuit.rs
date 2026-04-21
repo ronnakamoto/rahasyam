@@ -1,6 +1,7 @@
 use super::verify::verify_duplicates_gadgets::VerifyDuplicatesCircuit;
 use super::DOMAIN_SHARED_SALT;
 use crate::{
+    deposit_circuit::DepositDataVar,
     derive_key::{NULLIFIER_PREFIX, PRIVATE_KEY_PREFIX},
     nf_client_proof::{PrivateInputs, PrivateInputsVar, PublicInputs},
     plonk_prover::circuits::verify::{
@@ -23,6 +24,20 @@ use jf_relation::{
 use nf_curves::ed_on_bn254::Fr as BJJScalar;
 use nf_curves::ed_on_bn254::{BabyJubjub, Fq as Fr254};
 use num_bigint::BigUint;
+
+fn deposit_witness_vars_from_private_inputs(
+    deposit_token_ids: &[jf_relation::Variable; 4],
+    deposit_slot_ids: &[jf_relation::Variable; 4],
+    deposit_values: &[jf_relation::Variable; 4],
+    deposit_secret_hashes: &[jf_relation::Variable; 4],
+) -> [DepositDataVar; 4] {
+    std::array::from_fn(|i| DepositDataVar {
+        nf_token_id: deposit_token_ids[i],
+        nf_slot_id: deposit_slot_ids[i],
+        value: deposit_values[i],
+        secret_hash: deposit_secret_hashes[i],
+    })
+}
 
 /// This trait is used to construct a circuit to verify the integrity of transfer, withdraw and swap operations
 pub trait UnifiedCircuit {
@@ -67,10 +82,10 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             withdraw_address,
             withdraw_flag,
             secret_preimages,
-            deposit_token_ids: _,
-            deposit_slot_ids: _,
-            deposit_values: _,
-            deposit_secret_hashes: _,
+            deposit_token_ids,
+            deposit_slot_ids,
+            deposit_values,
+            deposit_secret_hashes,
             party_a_public_key,
             party_b_public_key,
             nf_token_a_id,
@@ -139,6 +154,14 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         let swap_nonce_is_zero = self.is_zero(swap_nonce)?;
         let is_swap = self.logic_neg(swap_nonce_is_zero)?;
+        let is_deposit = self.is_zero(nullifiers_values[0])?;
+        let _deposit_data_vars = deposit_witness_vars_from_private_inputs(
+            &deposit_token_ids,
+            &deposit_slot_ids,
+            &deposit_values,
+            &deposit_secret_hashes,
+        );
+
         // ROLE DETECTION & DERIVED VALUES
         // Determines caller's role and derives value, nf_token_id,
         // and recipient_public_key from swap parameters.
@@ -157,7 +180,9 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.mul_gate(swap_nonce_is_zero.into(), nf_token_b_id, self.zero())?;
         self.mul_gate(swap_nonce_is_zero.into(), value_b, self.zero())?;
         let not_party_a = self.logic_neg(is_party_a)?;
-        let invalid_non_swap_party_a = self.logic_and(swap_nonce_is_zero, not_party_a)?;
+        let is_non_deposit = self.logic_neg(is_deposit)?;
+        let non_swap_and_non_deposit = self.logic_and(swap_nonce_is_zero, is_non_deposit)?;
+        let invalid_non_swap_party_a = self.logic_and(non_swap_and_non_deposit, not_party_a)?;
         self.enforce_false(invalid_non_swap_party_a.into())?;
 
         // Swap-specific: derive from role
