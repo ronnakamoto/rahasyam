@@ -155,13 +155,18 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         let swap_nonce_is_zero = self.is_zero(swap_nonce)?;
         let is_swap = self.logic_neg(swap_nonce_is_zero)?;
-        let is_deposit = self.is_zero(nullifiers_values[0])?;
         let deposit_data_vars = deposit_witness_vars_from_private_inputs(
             &deposit_token_ids,
             &deposit_slot_ids,
             &deposit_values,
             &deposit_secret_hashes,
         );
+        // Deposit mode is determined by whether the deposit witness is populated.
+        // We cannot infer it from the first nullifier value because NFT-style
+        // transfers legitimately carry a zero value while still nullifying a real
+        // spend commitment.
+        let deposit_witness_token_zero = self.is_zero(deposit_data_vars[0].nf_token_id)?;
+        let is_deposit = self.logic_neg(deposit_witness_token_zero)?;
 
         // ROLE DETECTION & DERIVED VALUES
         // Determines caller's role and derives value, nf_token_id,
