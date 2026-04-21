@@ -16,6 +16,7 @@ use ark_ff::{One, PrimeField, Zero};
 use jf_plonk::errors::PlonkError;
 use jf_primitives::circuit::poseidon::sponge::{PoseidonStateVar, SpongePoseidonHashGadget};
 use jf_primitives::circuit::poseidon::PoseidonHashGadget;
+use jf_primitives::circuit::sha256::Sha256HashGadget;
 use jf_relation::{
     errors::CircuitError,
     gadgets::ecc::{Point, PointVariable},
@@ -408,6 +409,14 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             withdraw_address,
             withdraw_flag,
         )?;
+        let mut deposit_lookup_vars = Vec::<(jf_relation::Variable, jf_relation::Variable, jf_relation::Variable)>::new();
+        let mut deposit_public_data = deposit_data_vars
+            .iter()
+            .zip(deposit_commitment_flags.iter())
+            .map(|(deposit, &flag)| deposit.sha256_and_shift(self, &mut deposit_lookup_vars, flag))
+            .collect::<Result<Vec<_>, CircuitError>>()?;
+        deposit_public_data.push(self.zero());
+        self.finalize_for_sha256_hash(&mut deposit_lookup_vars)?;
 
         // If withdrawing, the recipient public key should be the neutral point
         let is_neutral = self.is_neutral_point::<BabyJubjub>(&recipient_public_key)?;
@@ -491,9 +500,11 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.set_variable_public(comp_secs_len_sep)?;
         let compressed_secrets: [Fr254; 5] = public_data
             .iter()
-            .map(|&pd| {
-                self.set_variable_public(pd)?;
-                self.witness(pd)
+            .zip(deposit_public_data.iter())
+            .map(|(&pd, &deposit_pd)| {
+                let final_public_data = self.conditional_select(is_deposit, pd, deposit_pd)?;
+                self.set_variable_public(final_public_data)?;
+                self.witness(final_public_data)
             })
             .collect::<Result<Vec<Fr254>, CircuitError>>()?
             .try_into()
