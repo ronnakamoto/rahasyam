@@ -1673,6 +1673,35 @@ mod tests {
         )
     }
 
+    fn assert_unified_deposit_matches_legacy(deposit_data: [DepositData; 4]) {
+        let mut legacy_public_inputs = PublicInputs::default();
+        let legacy_circuit = deposit_circuit_builder(&deposit_data, &mut legacy_public_inputs)
+            .expect("legacy deposit circuit should build");
+        legacy_circuit
+            .check_circuit_satisfiability(Vec::from(&legacy_public_inputs).as_slice())
+            .expect("legacy deposit circuit should be satisfiable");
+
+        let (mut unified_public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        let unified_circuit =
+            unified_circuit_builder(&mut unified_public_inputs, &mut private_inputs)
+                .expect("unified deposit circuit should build");
+        unified_circuit
+            .check_circuit_satisfiability(Vec::from(&unified_public_inputs).as_slice())
+            .expect("unified deposit circuit should be satisfiable");
+
+        assert_eq!(unified_public_inputs.fee, legacy_public_inputs.fee);
+        assert_eq!(unified_public_inputs.root, legacy_public_inputs.root);
+        assert_eq!(unified_public_inputs.commitments, legacy_public_inputs.commitments);
+        assert_eq!(unified_public_inputs.nullifiers, legacy_public_inputs.nullifiers);
+        assert_eq!(
+            unified_public_inputs.compressed_secrets,
+            legacy_public_inputs.compressed_secrets
+        );
+        assert_eq!(unified_public_inputs.swap_link, legacy_public_inputs.swap_link);
+        assert_eq!(unified_public_inputs.deadline, legacy_public_inputs.deadline);
+        assert_eq!(unified_public_inputs.swap_side, legacy_public_inputs.swap_side);
+    }
+
     #[test]
     fn test_transfer() {
         for _ in 0..10 {
@@ -1840,6 +1869,52 @@ mod tests {
         circuit
             .check_circuit_satisfiability(Vec::from(&public_inputs).as_slice())
             .expect("default unified deposit circuit should be satisfiable");
+    }
+
+    #[test]
+    fn test_unified_deposit_matches_legacy_with_one_real_entry() {
+        let mut rng = jf_utils::test_rng();
+        let deposit_secret = DepositSecret::new(
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+        );
+        let deposit_data = [
+            DepositData {
+                nf_token_id: Fr254::from(101u64),
+                nf_slot_id: Fr254::from(202u64),
+                value: Fr254::from(303u64),
+                secret_hash: deposit_secret.hash().expect("deposit secret hash"),
+            },
+            DepositData::default(),
+            DepositData::default(),
+            DepositData::default(),
+        ];
+        assert_unified_deposit_matches_legacy(deposit_data);
+    }
+
+    #[test]
+    fn test_unified_deposit_matches_legacy_with_full_batch() {
+        let mut rng = jf_utils::test_rng();
+        let deposit_data = std::array::from_fn(|i| {
+            let deposit_secret = DepositSecret::new(
+                Fr254::rand(&mut rng),
+                Fr254::rand(&mut rng),
+                Fr254::rand(&mut rng),
+            );
+            DepositData {
+                nf_token_id: Fr254::from((i + 1) as u64),
+                nf_slot_id: Fr254::from((i + 11) as u64),
+                value: Fr254::from((i as u64 + 1) * 100u64),
+                secret_hash: deposit_secret.hash().expect("deposit secret hash"),
+            }
+        });
+        assert_unified_deposit_matches_legacy(deposit_data);
+    }
+
+    #[test]
+    fn test_unified_deposit_matches_legacy_with_all_default_entries() {
+        assert_unified_deposit_matches_legacy([DepositData::default(); 4]);
     }
 
     #[test]
