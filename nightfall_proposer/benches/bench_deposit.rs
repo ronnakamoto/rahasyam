@@ -19,7 +19,7 @@ use lib::{
 use nf_curves::ed_on_bn254::Fq as Fr254;
 use std::time::{Duration, Instant};
 
-fn benchmark_deposit_circuit(c: &mut Criterion) {
+fn benchmark_unified_deposit(c: &mut Criterion) {
     let rng = &mut test_rng();
     let token_id = Fr254::rand(rng);
     let erc_address = Fr254::rand(rng);
@@ -114,6 +114,6 @@ fn benchmark_deposit_circuit(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10).measurement_time(Duration::from_secs(2)).warm_up_time(Duration::from_secs(1));
-    targets = benchmark_deposit_circuit
+    targets = benchmark_unified_deposit
 }
 criterion_main!(benches);
