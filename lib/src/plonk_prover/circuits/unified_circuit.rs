@@ -155,7 +155,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let swap_nonce_is_zero = self.is_zero(swap_nonce)?;
         let is_swap = self.logic_neg(swap_nonce_is_zero)?;
         let is_deposit = self.is_zero(nullifiers_values[0])?;
-        let _deposit_data_vars = deposit_witness_vars_from_private_inputs(
+        let deposit_data_vars = deposit_witness_vars_from_private_inputs(
             &deposit_token_ids,
             &deposit_slot_ids,
             &deposit_values,
@@ -365,6 +365,21 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             &sender_commitment_salts,
             withdraw_flag,
         )?;
+        let deposit_commitment_flags = deposit_data_vars
+            .iter()
+            .map(|deposit| deposit.is_real(self))
+            .collect::<Result<Vec<_>, CircuitError>>()?;
+        let deposit_commitments: [jf_relation::Variable; 4] = deposit_data_vars
+            .iter()
+            .zip(deposit_commitment_flags.iter())
+            .map(|(deposit, &flag)| deposit.to_commitment(self, flag))
+            .collect::<Result<Vec<_>, CircuitError>>()?
+            .try_into()
+            .map_err(|_| {
+                CircuitError::ParameterError(
+                    "Could not convert deposit commitments to fixed length array".to_string(),
+                )
+            })?;
 
         // Calculate nullifiers
         let nullifiers = self.verify_nullifiers::<BabyJubjub>(
@@ -441,9 +456,12 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         self.set_variable_public(comms_len_sep)?;
         let commitments: [Fr254; 4] = commitments
             .iter()
-            .map(|&commitment| {
-                self.set_variable_public(commitment)?;
-                self.witness(commitment)
+            .zip(deposit_commitments.iter())
+            .map(|(&commitment, &deposit_commitment)| {
+                let final_commitment =
+                    self.conditional_select(is_deposit, commitment, deposit_commitment)?;
+                self.set_variable_public(final_commitment)?;
+                self.witness(final_commitment)
             })
             .collect::<Result<Vec<Fr254>, CircuitError>>()?
             .try_into()
