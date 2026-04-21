@@ -4,20 +4,17 @@ pub mod drivers;
 pub mod ports;
 pub mod services;
 
-use ark_bn254::{Bn254, Fr as Fr254};
-use jf_plonk::nightfall::ipa_structs::ProvingKey;
+use ark_bn254::Fr as Fr254;
 use jf_primitives::{
-    pcs::prelude::UnivariateKzgPCS,
     poseidon::Poseidon,
     trees::{
         imt::{IndexedMerkleTree, LeafDBEntry},
         timber::Timber,
     },
 };
-use lib::plonk_prover::get_client_proving_key;
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{OnceLock, RwLock},
 };
 type AppendOnlyTree = Timber<Fr254, Poseidon<Fr254>>;
 
@@ -42,11 +39,6 @@ pub fn get_historic_root_tree() -> &'static RwLock<AppendOnlyTree> {
             .expect("Couldn't insert zero leaf into the tree");
         RwLock::new(tree)
     })
-}
-
-/// This function is used to retrieve the deposit proving key.
-pub fn get_deposit_proving_key() -> &'static Arc<ProvingKey<UnivariateKzgPCS<Bn254>>> {
-    get_client_proving_key()
 }
 
 pub mod initialisation {
