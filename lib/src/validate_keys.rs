@@ -430,11 +430,6 @@ fn build_key_specs(configuration_url: &str, out_dir: &Path) -> anyhow::Result<Ve
             out_path: out_dir.join("base_grumpkin_pk"),
         },
         KeySpec {
-            name: "deposit_proving_key".into(),
-            url: format!("{configuration_url}/bin/keys/deposit_proving_key"),
-            out_path: out_dir.join("deposit_proving_key"),
-        },
-        KeySpec {
             name: "proving_key".into(),
             url: format!("{configuration_url}/bin/keys/proving_key"),
             out_path: out_dir.join("proving_key"),
@@ -981,7 +976,6 @@ mod tests {
             "base_grumpkin_pk".to_string(),
             "base_bn254_pk".to_string(),
             "decider_pk".to_string(),
-            "deposit_proving_key".to_string(),
             "proving_key".to_string(),
         ];
         // Add merge_bn254_pk_0 .. merge_bn254_pk_{bn254_count-1}
@@ -1184,18 +1178,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("Failed to build key specs: {e:?}"));
 
         // Should contain client keys with correct URLs and paths
-        let deposit_proving_key = specs
-            .iter()
-            .find(|s| s.name == "deposit_proving_key")
-            .unwrap_or_else(|| panic!("Should have deposit_proving_key in specs: {specs:?}"));
-        assert_eq!(
-            deposit_proving_key.url,
-            format!("{config_url}/bin/keys/deposit_proving_key")
-        );
-        assert_eq!(
-            deposit_proving_key.out_path,
-            out_dir.join("deposit_proving_key")
-        );
         let proving_key = specs
             .iter()
             .find(|s| s.name == "proving_key")
