@@ -1702,6 +1702,25 @@ mod tests {
         assert_eq!(unified_public_inputs.swap_side, legacy_public_inputs.swap_side);
     }
 
+    fn assert_rejected_unified_deposit(
+        mut public_inputs: PublicInputs,
+        mut private_inputs: PrivateInputs,
+    ) {
+        match unified_circuit_builder(&mut public_inputs, &mut private_inputs) {
+            Ok(circuit) => {
+                assert!(
+                    circuit
+                        .check_circuit_satisfiability(Vec::from(&public_inputs).as_slice())
+                        .is_err(),
+                    "invalid deposit inputs should not satisfy the unified circuit"
+                );
+            }
+            Err(_) => {
+                // Invalid deposit inputs can be rejected during circuit construction.
+            }
+        }
+    }
+
     #[test]
     fn test_transfer() {
         for _ in 0..10 {
@@ -1915,6 +1934,68 @@ mod tests {
     #[test]
     fn test_unified_deposit_matches_legacy_with_all_default_entries() {
         assert_unified_deposit_matches_legacy([DepositData::default(); 4]);
+    }
+
+    #[test]
+    fn test_unified_deposit_rejects_tampered_public_outputs() {
+        let mut rng = jf_utils::test_rng();
+        let deposit_secret = DepositSecret::new(
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+        );
+        let deposit_data = [
+            DepositData {
+                nf_token_id: Fr254::from(77u64),
+                nf_slot_id: Fr254::from(88u64),
+                value: Fr254::from(99u64),
+                secret_hash: deposit_secret.hash().expect("deposit secret hash"),
+            },
+            DepositData::default(),
+            DepositData::default(),
+            DepositData::default(),
+        ];
+        let (mut public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        let circuit = unified_circuit_builder(&mut public_inputs, &mut private_inputs)
+            .expect("unified deposit circuit should build");
+        circuit
+            .check_circuit_satisfiability(Vec::from(&public_inputs).as_slice())
+            .expect("unified deposit circuit should be satisfiable");
+
+        let mut tampered_fee = public_inputs;
+        tampered_fee.fee += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered_fee).as_slice())
+                .is_err(),
+            "tampered deposit fee should be rejected"
+        );
+
+        let mut tampered_root = public_inputs;
+        tampered_root.root += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered_root).as_slice())
+                .is_err(),
+            "tampered deposit root should be rejected"
+        );
+
+        let mut tampered_swap_link = public_inputs;
+        tampered_swap_link.swap_link += Fr254::one();
+        assert!(
+            circuit
+                .check_circuit_satisfiability(Vec::from(&tampered_swap_link).as_slice())
+                .is_err(),
+            "tampered deposit swap_link should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_unified_deposit_rejects_non_zero_first_nullifier_salt() {
+        let deposit_data = [DepositData::default(); 4];
+        let (public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        private_inputs.nullifiers_salts[0] = Fr254::one();
+        assert_rejected_unified_deposit(public_inputs, private_inputs);
     }
 
     #[test]
