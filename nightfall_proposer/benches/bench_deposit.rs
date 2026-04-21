@@ -8,10 +8,12 @@ use jf_plonk::{
     transcript::StandardTranscript,
 };
 use jf_primitives::pcs::prelude::UnivariateKzgPCS;
-use jf_relation::{Arithmetization, Circuit, PlonkCircuit};
+use jf_relation::{Arithmetization, Circuit};
 use jf_utils::test_rng;
 use lib::{
-    deposit_circuit::DepositCircuitGadget, nf_token_id::to_nf_token_id_from_fr254,
+    nf_client_proof::{PrivateInputs, PublicInputs},
+    nf_token_id::to_nf_token_id_from_fr254,
+    plonk_prover::circuits::unified_circuit::unified_circuit_builder,
     shared_entities::DepositData,
 };
 use nf_curves::ed_on_bn254::Fq as Fr254;
@@ -19,7 +21,6 @@ use std::time::{Duration, Instant};
 
 fn benchmark_deposit_circuit(c: &mut Criterion) {
     let rng = &mut test_rng();
-    let mut circuit: PlonkCircuit<Fr254> = PlonkCircuit::new_ultra_plonk(8);
     let token_id = Fr254::rand(rng);
     let erc_address = Fr254::rand(rng);
     let nf_token_id = to_nf_token_id_from_fr254(erc_address, token_id);
@@ -44,7 +45,10 @@ fn benchmark_deposit_circuit(c: &mut Criterion) {
         .try_into()
         .unwrap();
 
-    let public_input = circuit.build_deposit_circuit(&deposit_data).unwrap();
+    let mut public_input = PublicInputs::for_deposit();
+    let mut private_inputs = PrivateInputs::for_deposit(&deposit_data);
+    let mut circuit =
+        unified_circuit_builder(&mut public_input, &mut private_inputs).unwrap();
 
     println!(
         "Deposit: {} constraints before padding",
@@ -60,7 +64,7 @@ fn benchmark_deposit_circuit(c: &mut Criterion) {
         .unwrap();
     let (pk, vk) = FFTPlonk::<UnivariateKzgPCS<Bn254>>::preprocess(
         &srs,
-        Some(VerificationKeyId::Deposit),
+        Some(VerificationKeyId::Client),
         &circuit,
         true,
     )
