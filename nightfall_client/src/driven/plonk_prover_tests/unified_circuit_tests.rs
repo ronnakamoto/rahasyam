@@ -1666,6 +1666,13 @@ mod tests {
         info.public_inputs.root = root;
     }
 
+    fn build_unified_deposit_inputs(deposit_data: [DepositData; 4]) -> (PublicInputs, PrivateInputs) {
+        (
+            PublicInputs::for_deposit(),
+            PrivateInputs::for_deposit(&deposit_data),
+        )
+    }
+
     #[test]
     fn test_transfer() {
         for _ in 0..10 {
@@ -1795,6 +1802,44 @@ mod tests {
                 .check_circuit_satisfiability(Vec::from(&incorrect_value.public_inputs).as_slice(),)
                 .is_err());
         }
+    }
+
+    #[test]
+    fn test_unified_deposit_with_one_real_entry() {
+        let mut rng = jf_utils::test_rng();
+        let deposit_secret = DepositSecret::new(
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+            Fr254::rand(&mut rng),
+        );
+        let deposit_data = [
+            DepositData {
+                nf_token_id: Fr254::from(11u64),
+                nf_slot_id: Fr254::from(22u64),
+                value: Fr254::from(33u64),
+                secret_hash: deposit_secret.hash().expect("deposit secret hash"),
+            },
+            DepositData::default(),
+            DepositData::default(),
+            DepositData::default(),
+        ];
+        let (mut public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        let circuit = unified_circuit_builder(&mut public_inputs, &mut private_inputs)
+            .expect("unified deposit circuit should build");
+        circuit
+            .check_circuit_satisfiability(Vec::from(&public_inputs).as_slice())
+            .expect("unified deposit circuit should be satisfiable");
+    }
+
+    #[test]
+    fn test_unified_deposit_with_all_default_entries() {
+        let deposit_data = [DepositData::default(); 4];
+        let (mut public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        let circuit = unified_circuit_builder(&mut public_inputs, &mut private_inputs)
+            .expect("default unified deposit circuit should build");
+        circuit
+            .check_circuit_satisfiability(Vec::from(&public_inputs).as_slice())
+            .expect("default unified deposit circuit should be satisfiable");
     }
 
     #[test]
