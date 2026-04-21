@@ -75,13 +75,6 @@ pub fn get_client_proving_key_locally() -> Result<ProvingKey<UnivariateKzgPCS<Bn
         .map_err(|e| anyhow::anyhow!("Could not deserialize proving key: {e}"))
 }
 
-/// Function that retrieves the deposit proving key from a local file.
-pub fn get_deposit_proving_key_locally() -> Result<ProvingKey<UnivariateKzgPCS<Bn254>>> {
-    // Deposits are now proved with the unified/client circuit.
-    // Keep this compatibility function until the legacy deposit key path is deleted.
-    get_client_proving_key_locally()
-}
-
 /// Function that searches for a file starting from the current working directory and moving up the directory tree.
 pub fn find_file_with_path(path: &Path) -> Option<std::path::PathBuf> {
     if path.is_absolute() {

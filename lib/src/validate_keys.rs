@@ -813,10 +813,10 @@ fn regenerate_keys_for_production() -> Result<(), warp::Rejection> {
     let deposit_data = [DepositData::default(); 4];
     let mut deposit_public_inputs = PublicInputs::for_deposit();
     let mut deposit_private_inputs = PrivateInputs::for_deposit(&deposit_data);
-    let mut deposit_circuit =
+    let mut deposit_base_circuit =
         unified_circuit_builder(&mut deposit_public_inputs, &mut deposit_private_inputs)
             .map_err(|e| warp::reject::custom(KeyVerificationError::from(e)))?;
-    deposit_circuit
+    deposit_base_circuit
         .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
         .map_err(|e| warp::reject::custom(KeyVerificationError::from(e)))?;
 
@@ -840,15 +840,8 @@ fn regenerate_keys_for_production() -> Result<(), warp::Rejection> {
             "Error preprocessing unified circuit",
         ))
     })?;
-    let deposit_pk_path = path.join("bin/keys/deposit_proving_key");
     let pk_path = path.join("bin/keys/proving_key");
 
-    let mut deposit_file = File::create(deposit_pk_path.clone()).map_err(|e| {
-        error!("Failed to create deposit proving key file: {e}");
-        warp::reject::custom(KeyVerificationError::new(
-            "Error creating deposit proving key file",
-        ))
-    })?;
     let mut unified_file = File::create(pk_path.clone()).map_err(|e| {
         error!("Failed to create proving key file: {e}");
         warp::reject::custom(KeyVerificationError::new("Error creating proving key file"))
@@ -870,17 +863,9 @@ fn regenerate_keys_for_production() -> Result<(), warp::Rejection> {
                 "Error writing unified_compressed_bytes to file",
             ))
         })?;
-    deposit_file
-        .write_all(&unified_compressed_bytes)
-        .map_err(|e| {
-            error!("Failed to write unified_compressed_bytes to deposit key file: {e}");
-            warp::reject::custom(KeyVerificationError::new(
-                "Error writing unified_compressed_bytes to deposit key file",
-            ))
-        })?;
 
     generate_rollup_keys_for_production(
-        deposit_circuit,
+        deposit_base_circuit,
         deposit_public_inputs,
         pk_path,
         &kzg_srs,
