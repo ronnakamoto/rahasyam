@@ -47,7 +47,8 @@ use lib::{
     deposit_circuit::deposit_circuit_builder,
     error::ConversionError,
     merkle_trees::trees::{MerkleTreeError, MutableTree, TreeMetadata},
-    nf_client_proof::PublicInputs,
+    nf_client_proof::{PrivateInputs, PublicInputs},
+    plonk_prover::circuits::unified_circuit::unified_circuit_builder,
     plonk_prover::{get_client_proving_key, plonk_proof::PlonkProof},
     rollup_circuit_checks::get_configuration_keys_path,
     rollup_circuit_checks::RollupKeyGenerator,
@@ -259,6 +260,30 @@ pub fn get_decider_proving_key() -> &'static Arc<PlonkProvingKey<Bn254>> {
 #[derive(Debug, Clone)]
 /// The prover struct for the rollup prover. It contains the vk_hash_list and the key_store.
 pub struct RollupProver;
+
+impl RollupProver {
+    #[allow(dead_code)]
+    fn create_unified_deposit_proof(
+        deposit_data: &[DepositData; 4],
+        public_inputs: &mut PublicInputs,
+    ) -> Result<PlonkProof, RollupProofError> {
+        let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
+        *public_inputs = PublicInputs::for_deposit();
+        let mut circuit =
+            unified_circuit_builder(public_inputs, &mut private_inputs).map_err(PlonkError::from)?;
+        circuit
+            .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
+            .map_err(PlonkError::from)?;
+        let pk = get_client_proving_key();
+
+        let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
+            _,
+            _,
+            RescueTranscript<Fr254>,
+        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)?;
+        Ok(PlonkProof::from_recursive_output(output, &pk.vk))
+    }
+}
 
 impl RecursiveProver for RollupProver {
     // these checks are implementation of RecursiveProver in Nightfish and will be called by each corresponding circuit
