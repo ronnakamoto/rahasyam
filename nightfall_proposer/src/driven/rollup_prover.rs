@@ -9,8 +9,6 @@ use crate::{
         trees::{CommitmentTree, HistoricRootTree, NullifierTree},
     },
 };
-#[cfg(test)]
-use crate::get_deposit_proving_key;
 use ark_bn254::{Bn254, Fq as Fq254, Fr as Fr254};
 
 use ark_ff::{BigInteger, PrimeField};
@@ -57,8 +55,6 @@ use lib::{
     utils::load_key_from_server,
     utils::load_key_locally,
 };
-#[cfg(test)]
-use lib::deposit_circuit::deposit_circuit_builder;
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
@@ -877,27 +873,29 @@ mod tests {
 
         let mut d_proofs = Vec::new();
         let mut public_input_vec = Vec::new();
-        let mut public_inputs = PublicInputs::new();
         let deposit_array = [DepositData::default(); 4];
+        let mut public_inputs = PublicInputs::for_deposit();
+        let mut private_inputs = PrivateInputs::for_deposit(&deposit_array);
 
-        let mut circuit = deposit_circuit_builder(&deposit_array, &mut public_inputs).unwrap();
+        let mut circuit =
+            unified_circuit_builder(&mut public_inputs, &mut private_inputs).unwrap();
         circuit
             .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
             .unwrap();
-        let deposit_pk = get_deposit_proving_key();
+        let client_pk = get_client_proving_key();
 
         let output =
             FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<_, _, RescueTranscript<Fr254>>(
                 &mut ark_std::rand::thread_rng(),
                 &circuit,
-                deposit_pk,
+                client_pk,
                 None,
                 true,
             )
             .unwrap();
 
         (0..64).for_each(|_| {
-            d_proofs.push((output.clone(), deposit_pk.vk.clone()));
+            d_proofs.push((output.clone(), client_pk.vk.clone()));
             public_input_vec.push(public_inputs);
         });
         // We need to make dummy trees for to build circuit insertion info.
