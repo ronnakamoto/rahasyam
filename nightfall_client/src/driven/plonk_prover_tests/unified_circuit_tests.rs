@@ -424,6 +424,7 @@ mod tests {
                 nullified_three.get_secret_preimage().to_array(),
                 nullified_four.get_secret_preimage().to_array(),
             ])
+            .deposit_data(&[DepositData::default(); 4])
             .root_key(keys.root_key)
             .public_keys(&[
                 nullified_one.get_public_key(),
@@ -694,6 +695,7 @@ mod tests {
                 nullified_three.get_secret_preimage().to_array(),
                 nullified_four.get_secret_preimage().to_array(),
             ])
+            .deposit_data(&[DepositData::default(); 4])
             .root_key(keys.root_key)
             .public_keys(&[
                 nullified_one.get_public_key(),
@@ -949,6 +951,7 @@ mod tests {
                 nullified_three.get_secret_preimage().to_array(),
                 nullified_four.get_secret_preimage().to_array(),
             ])
+            .deposit_data(&[DepositData::default(); 4])
             .root_key(keys.root_key)
             .public_keys(&[
                 nullified_one.get_public_key(),
@@ -1233,6 +1236,7 @@ mod tests {
                 nullified_three.get_secret_preimage().to_array(),
                 nullified_four.get_secret_preimage().to_array(),
             ])
+            .deposit_data(&[DepositData::default(); 4])
             .root_key(keys_b.root_key)
             .public_keys(&[
                 nullified_one.get_public_key(),
