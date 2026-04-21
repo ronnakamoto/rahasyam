@@ -13,7 +13,6 @@ use jf_plonk::{
 use jf_primitives::{pcs::prelude::UnivariateKzgPCS, rescue::sponge::RescueCRHF};
 use jf_utils::fr_to_fq;
 use lib::{
-    deposit_circuit::deposit_circuit_builder,
     merkle_trees::trees::{MerkleTreeError, MutableTree, TreeMetadata},
     nf_client_proof::{PrivateInputs, PublicInputs},
     plonk_prover::{get_client_proving_key, plonk_proof::PlonkProof},
@@ -281,18 +280,6 @@ impl RecursiveProvingEngine<PlonkProof> for MockProver {
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
     ) -> Result<PlonkProof, Self::Error> {
-        let mut circuit =
-            deposit_circuit_builder(deposit_data, public_inputs).map_err(PlonkError::from)?;
-        circuit
-            .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
-            .map_err(PlonkError::from)?;
-        let pk = get_deposit_proving_key();
-
-        let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
-            _,
-            _,
-            RescueTranscript<Fr254>,
-        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)?;
-        Ok(PlonkProof::from_recursive_output(output, &pk.vk))
+        Self::create_unified_deposit_proof(deposit_data, public_inputs)
     }
 }
