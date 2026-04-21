@@ -74,6 +74,10 @@ impl PublicInputs {
         Default::default()
     }
 
+    pub fn for_deposit() -> Self {
+        Self::new().fee(Fr254::zero()).root(Fr254::zero()).build()
+    }
+
     pub fn fee(&mut self, fee: Fr254) -> &mut Self {
         self.fee = fee;
         self
@@ -251,6 +255,12 @@ impl Default for PrivateInputs {
 impl PrivateInputs {
     pub fn new() -> Self {
         Default::default()
+    }
+
+    pub fn for_deposit(deposit_data: &[DepositData; 4]) -> Self {
+        let mut private_inputs = Self::new();
+        private_inputs.deposit_data = *deposit_data;
+        private_inputs
     }
 
     pub fn fee_token_id(&mut self, fee_token_id: Fr254) -> &mut Self {
