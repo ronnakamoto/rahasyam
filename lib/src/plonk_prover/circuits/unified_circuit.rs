@@ -453,13 +453,15 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
 
         let fee_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(fee_len_sep)?;
-        self.set_variable_public(fee)?;
-        let fee = self.witness(fee)?;
+        let final_fee = self.conditional_select(is_deposit, fee, self.zero())?;
+        self.set_variable_public(final_fee)?;
+        let fee = self.witness(final_fee)?;
 
         let root_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(root_len_sep)?;
-        self.set_variable_public(root)?;
-        let root = self.witness(root)?;
+        let final_root = self.conditional_select(is_deposit, root, self.zero())?;
+        self.set_variable_public(final_root)?;
+        let root = self.witness(final_root)?;
 
         let comms_len_sep = self.create_constant_variable(Fr254::from(4u8))?;
         self.set_variable_public(comms_len_sep)?;
@@ -485,8 +487,9 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let nullifiers: [Fr254; 4] = nullifiers
             .iter()
             .map(|&nullifier| {
-                self.set_variable_public(nullifier)?;
-                self.witness(nullifier)
+                let final_nullifier = self.conditional_select(is_deposit, nullifier, self.zero())?;
+                self.set_variable_public(final_nullifier)?;
+                self.witness(final_nullifier)
             })
             .collect::<Result<Vec<Fr254>, CircuitError>>()?
             .try_into()
@@ -517,6 +520,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         // === Swap link ===
         let swap_link_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(swap_link_len_sep)?;
+        let final_swap_link = self.conditional_select(is_deposit, final_swap_link, self.zero())?;
         self.set_variable_public(final_swap_link)?;
         let swap_link_out = self.witness(final_swap_link)?;
 
@@ -524,6 +528,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let deadline_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(deadline_len_sep)?;
         let final_deadline = self.conditional_select(is_swap, self.zero(), deadline)?;
+        let final_deadline = self.conditional_select(is_deposit, final_deadline, self.zero())?;
         self.set_variable_public(final_deadline)?;
         let deadline_out = self.witness(final_deadline)?;
 
@@ -535,6 +540,7 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let swap_side_len_sep = self.create_constant_variable(Fr254::from(1u8))?;
         self.set_variable_public(swap_side_len_sep)?;
         let final_side = self.conditional_select(is_swap, self.zero(), is_party_a.into())?;
+        let final_side = self.conditional_select(is_deposit, final_side, self.zero())?;
         self.set_variable_public(final_side)?;
         let swap_side_out = self.witness(final_side)?;
 
