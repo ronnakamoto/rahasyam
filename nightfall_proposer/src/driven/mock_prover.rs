@@ -30,7 +30,6 @@ use super::rollup_prover::RollupProofError;
 use crate::{
     domain::entities::ClientTransactionWithMetaData,
     driven::rollup_prover::Bn254Output,
-    get_deposit_proving_key,
     initialisation::get_db_connection,
     ports::proving::RecursiveProvingEngine,
     ports::trees::{CommitmentTree, HistoricRootTree, NullifierTree},
@@ -77,7 +76,6 @@ impl RecursiveProvingEngine<PlonkProof> for MockProver {
             .iter()
             .fold(Fr254::zero(), |acc, tx| acc + tx.client_transaction.fee);
         // We retrieve both types of proving keys
-        let deposit_pk = get_deposit_proving_key();
         let client_pk = get_client_proving_key();
 
         // First lets get all the public inputs from the deposit transactions and the client transactions
@@ -87,7 +85,7 @@ impl RecursiveProvingEngine<PlonkProof> for MockProver {
         ) = cfg_iter!(deposit_transactions)
             .map(|(proof, pi)| {
                 let output = RecursiveOutput::try_from(proof.clone())?;
-                Result::<_, PlonkError>::Ok((output, deposit_pk.vk.clone(), *pi))
+                Result::<_, PlonkError>::Ok((output, client_pk.vk.clone(), *pi))
             })
             .chain(cfg_iter!(transactions).map(|tx| {
                 let output = RecursiveOutput::try_from(tx.client_transaction.proof.clone())?;

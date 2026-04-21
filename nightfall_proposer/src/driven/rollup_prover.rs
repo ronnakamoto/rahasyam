@@ -3,13 +3,14 @@
 use crate::{
     domain::entities::ClientTransactionWithMetaData,
     drivers::blockchain::block_assembly::BlockAssemblyError,
-    get_deposit_proving_key,
     initialisation::get_db_connection,
     ports::{
         proving::RecursiveProvingEngine,
         trees::{CommitmentTree, HistoricRootTree, NullifierTree},
     },
 };
+#[cfg(test)]
+use crate::get_deposit_proving_key;
 use ark_bn254::{Bn254, Fq as Fq254, Fr as Fr254};
 
 use ark_ff::{BigInteger, PrimeField};
@@ -576,7 +577,6 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
         transactions: &[ClientTransactionWithMetaData<PlonkProof>],
     ) -> Result<(Self::PreppedInfo, [Fr254; 3]), Self::Error> {
         // We retrieve both types of proving keys
-        let deposit_pk = get_deposit_proving_key();
         let client_pk = get_client_proving_key();
 
         // First lets get all the public inputs from the deposit transactions and the client transactions
@@ -592,7 +592,7 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
         ) = cfg_iter!(deposit_transactions)
             .map(|(proof, pi)| {
                 let output = RecursiveOutput::try_from(proof.clone())?;
-                Result::<_, PlonkError>::Ok((output, deposit_pk.vk.clone(), *pi))
+                Result::<_, PlonkError>::Ok((output, client_pk.vk.clone(), *pi))
             })
             .chain(cfg_iter!(transactions).map(|tx| {
                 let output = RecursiveOutput::try_from(tx.client_transaction.proof.clone())?;
