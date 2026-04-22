@@ -2,6 +2,7 @@
 
 use crate::{
     domain::entities::ClientTransactionWithMetaData,
+    driven::unified_deposit_prover::create_unified_deposit_proof,
     drivers::blockchain::block_assembly::BlockAssemblyError,
     initialisation::get_db_connection,
     ports::{
@@ -26,7 +27,7 @@ use jf_plonk::{
     },
     proof_system::{
         structs::{ProvingKey as PlonkProvingKey, VerifyingKey as PlonkVerifyingKey},
-        RecursiveOutput, UniversalRecursiveSNARK,
+        RecursiveOutput,
     },
     recursion::{
         circuits::{Kzg, Zmorph},
@@ -34,10 +35,7 @@ use jf_plonk::{
     },
     transcript::RescueTranscript,
 };
-use jf_primitives::{
-    pcs::prelude::{expected_sha256_for_label, UnivariateKzgPCS},
-    rescue::sponge::RescueCRHF,
-};
+use jf_primitives::pcs::prelude::expected_sha256_for_label;
 use jf_relation::{errors::CircuitError, PlonkCircuit, Variable};
 use log::{debug, warn};
 use mongodb::{bson::doc, Client};
@@ -45,8 +43,7 @@ use mongodb::{bson::doc, Client};
 use lib::{
     error::{ConversionError, UnifiedProofError},
     merkle_trees::trees::{MerkleTreeError, MutableTree, TreeMetadata},
-    nf_client_proof::{PrivateInputs, PublicInputs},
-    plonk_prover::circuits::unified_circuit::unified_circuit_builder,
+    nf_client_proof::PublicInputs,
     plonk_prover::{get_client_proving_key, plonk_proof::PlonkProof},
     rollup_circuit_checks::get_configuration_keys_path,
     rollup_circuit_checks::RollupKeyGenerator,
@@ -267,30 +264,7 @@ pub fn get_decider_proving_key() -> &'static Arc<PlonkProvingKey<Bn254>> {
 /// The prover struct for the rollup prover. It contains the vk_hash_list and the key_store.
 pub struct RollupProver;
 
-impl RollupProver {
-    #[allow(dead_code)]
-    fn create_unified_deposit_proof(
-        deposit_data: &[DepositData; 4],
-        public_inputs: &mut PublicInputs,
-    ) -> Result<PlonkProof, UnifiedProofError> {
-        let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
-        *public_inputs = PublicInputs::for_deposit();
-        let mut circuit = unified_circuit_builder(public_inputs, &mut private_inputs)
-            .map_err(UnifiedProofError::from)?;
-        circuit
-            .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
-            .map_err(UnifiedProofError::from)?;
-        let pk = get_client_proving_key();
-
-        let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
-            _,
-            _,
-            RescueTranscript<Fr254>,
-        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)
-        .map_err(UnifiedProofError::from)?;
-        Ok(PlonkProof::from_recursive_output(output, &pk.vk))
-    }
-}
+impl RollupProver {}
 
 impl RecursiveProver for RollupProver {
     // these checks are implementation of RecursiveProver in Nightfish and will be called by each corresponding circuit
@@ -852,7 +826,7 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
     ) -> Result<PlonkProof, Self::Error> {
-        Self::create_unified_deposit_proof(deposit_data, public_inputs).map_err(Self::Error::from)
+        create_unified_deposit_proof(deposit_data, public_inputs).map_err(Self::Error::from)
     }
 }
 
@@ -862,7 +836,7 @@ mod tests {
     use ark_std::Zero;
     use jf_plonk::{
         nightfall::{ipa_structs::VerificationKeyId, mle::MLEPlonk, FFTPlonk},
-        proof_system::UniversalSNARK,
+        proof_system::{UniversalRecursiveSNARK, UniversalSNARK},
         transcript::RescueTranscript,
     };
     use jf_primitives::{
@@ -876,6 +850,10 @@ mod tests {
         },
     };
     use jf_relation::{Arithmetization, Circuit};
+    use lib::{
+        nf_client_proof::PrivateInputs,
+        plonk_prover::circuits::unified_circuit::unified_circuit_builder,
+    };
     use std::collections::HashMap;
 
     fn create_deposit_proof_with_generated_key(
@@ -912,7 +890,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Expensive proof-generation regression test"]
     fn test_create_deposit_proof_with_all_default_deposits() {
         let deposit_array = [DepositData::default(); 4];
         let mut public_inputs = PublicInputs::new();
