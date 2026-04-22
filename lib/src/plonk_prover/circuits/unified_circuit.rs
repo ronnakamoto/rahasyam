@@ -161,12 +161,12 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             &deposit_values,
             &deposit_secret_hashes,
         );
-        // Deposit mode is determined by whether the deposit witness is populated.
-        // We cannot infer it from the first nullifier value because NFT-style
-        // transfers legitimately carry a zero value while still nullifying a real
-        // spend commitment.
-        let deposit_witness_token_zero = self.is_zero(deposit_data_vars[0].nf_token_id)?;
-        let is_deposit = self.logic_neg(deposit_witness_token_zero)?;
+        // Deposit mode is determined by the absence of a first spend commitment.
+        // We key this off the first nullifier salt rather than the first value:
+        // NFT-style transfers can legitimately carry value=0, but their first
+        // spend salt is still non-zero. Default-padded deposit blocks have no
+        // spend commitments at all, so the salt remains zero.
+        let is_deposit = self.is_zero(nullifiers_salts[0])?;
 
         // ROLE DETECTION & DERIVED VALUES
         // Determines caller's role and derives value, nf_token_id,

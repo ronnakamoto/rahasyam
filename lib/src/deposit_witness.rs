@@ -28,7 +28,7 @@ impl DepositDataVar {
             self.secret_hash,
         ])?;
 
-        circuit.conditional_select(flag, calculated_hash, circuit.zero())
+        circuit.conditional_select(flag, circuit.zero(), calculated_hash)
     }
 
     /// Schedules the deposit sha256 output used in public inputs.
@@ -48,14 +48,15 @@ impl DepositDataVar {
             lookup_vars,
         )?;
 
-        circuit.conditional_select(flag, sha256_var, circuit.zero())
+        circuit.conditional_select(flag, circuit.zero(), sha256_var)
     }
 
-    /// Returns whether this deposit entry is a dummy entry.
+    /// Returns whether this deposit entry is a real deposit entry.
     pub fn is_real(&self, circuit: &mut PlonkCircuit<Fr254>) -> Result<BoolVar, CircuitError> {
         let value_zero = circuit.is_zero(self.value)?;
         let id_zero = circuit.is_zero(self.nf_token_id)?;
-        circuit.logic_and(value_zero, id_zero)
+        let is_dummy = circuit.logic_and(value_zero, id_zero)?;
+        circuit.logic_neg(is_dummy)
     }
 
     /// Creates a new instance of [`DepositDataVar`] from a [`DepositData`].
