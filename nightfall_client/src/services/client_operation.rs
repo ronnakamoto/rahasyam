@@ -21,8 +21,7 @@ use lib::{
     nf_client_proof::{PrivateInputs, Proof, ProvingEngine, PublicInputs},
     secret_hash::SecretHash,
     shared_entities::{
-        ClientTransaction, CompressedSecrets, DepositData, DepositSecret, Preimage, Salt,
-        TokenType,
+        ClientTransaction, CompressedSecrets, DepositData, DepositSecret, Preimage, Salt, TokenType,
     },
 };
 use log::{debug, error, info, warn};

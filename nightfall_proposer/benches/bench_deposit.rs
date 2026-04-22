@@ -47,8 +47,7 @@ fn benchmark_unified_deposit(c: &mut Criterion) {
 
     let mut public_input = PublicInputs::for_deposit();
     let mut private_inputs = PrivateInputs::for_deposit(&deposit_data);
-    let mut circuit =
-        unified_circuit_builder(&mut public_input, &mut private_inputs).unwrap();
+    let mut circuit = unified_circuit_builder(&mut public_input, &mut private_inputs).unwrap();
 
     println!(
         "Deposit: {} constraints before padding",

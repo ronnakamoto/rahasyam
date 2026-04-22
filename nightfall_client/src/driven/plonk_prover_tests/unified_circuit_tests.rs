@@ -379,7 +379,8 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
         let (mem_proofs, root) =
             generate_random_paths_with_shared_root(spend_commitment_hashes, &mut rng);
 
@@ -590,7 +591,8 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
         let (mem_proofs, root) =
             generate_random_paths_with_shared_root(spend_commitment_hashes, &mut rng);
 
@@ -824,7 +826,8 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
         let (mem_proofs, root) =
             generate_random_paths_with_shared_root(spend_commitment_hashes, &mut rng);
 
@@ -1079,7 +1082,8 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
         let (mem_proofs, root) =
             generate_random_paths_with_shared_root(spend_commitment_hashes, &mut rng);
 
@@ -1365,7 +1369,8 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
         let (mem_proofs, root) =
             generate_random_paths_with_shared_root(spend_commitment_hashes, &mut rng);
 
@@ -1630,8 +1635,10 @@ mod tests {
             nullified_three,
             nullified_four,
         ];
-        let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
-        let (mem_proofs, root) = generate_random_paths_with_shared_root(spend_commitment_hashes, rng);
+        let spend_commitment_hashes =
+            spend_commitments.map(|commitment| commitment.hash().unwrap());
+        let (mem_proofs, root) =
+            generate_random_paths_with_shared_root(spend_commitment_hashes, rng);
 
         let new_salts = [Salt::new_transfer_salt().get_salt(); 3];
         let ephemeral_key = BJJScalar::rand(rng);
@@ -1823,7 +1830,8 @@ mod tests {
             info.private_inputs.membership_proofs[2].node_value,
             info.private_inputs.membership_proofs[3].node_value,
         ];
-        let (membership_proofs, root) = generate_random_paths_with_shared_root(leaf_values, &mut rng);
+        let (membership_proofs, root) =
+            generate_random_paths_with_shared_root(leaf_values, &mut rng);
 
         info.private_inputs.public_keys[0] = Affine::<BabyJubjub>::zero();
         info.private_inputs.nullifiers_values[0] = deposit_data[0].value;
@@ -1833,7 +1841,9 @@ mod tests {
         info.public_inputs.root = root;
     }
 
-    fn build_unified_deposit_inputs(deposit_data: [DepositData; 4]) -> (PublicInputs, PrivateInputs) {
+    fn build_unified_deposit_inputs(
+        deposit_data: [DepositData; 4],
+    ) -> (PublicInputs, PrivateInputs) {
         (
             PublicInputs::for_deposit(),
             PrivateInputs::for_deposit(&deposit_data),
@@ -1898,7 +1908,8 @@ mod tests {
     fn assert_unified_deposit_matches_expected(deposit_data: [DepositData; 4]) {
         let expected_public_inputs = expected_deposit_public_inputs(&deposit_data);
 
-        let (mut unified_public_inputs, mut private_inputs) = build_unified_deposit_inputs(deposit_data);
+        let (mut unified_public_inputs, mut private_inputs) =
+            build_unified_deposit_inputs(deposit_data);
         let unified_circuit =
             unified_circuit_builder(&mut unified_public_inputs, &mut private_inputs)
                 .expect("unified deposit circuit should build");
@@ -1908,15 +1919,30 @@ mod tests {
 
         assert_eq!(unified_public_inputs.fee, expected_public_inputs.fee);
         assert_eq!(unified_public_inputs.root, expected_public_inputs.root);
-        assert_eq!(unified_public_inputs.commitments, expected_public_inputs.commitments);
-        assert_eq!(unified_public_inputs.nullifiers, expected_public_inputs.nullifiers);
+        assert_eq!(
+            unified_public_inputs.commitments,
+            expected_public_inputs.commitments
+        );
+        assert_eq!(
+            unified_public_inputs.nullifiers,
+            expected_public_inputs.nullifiers
+        );
         assert_eq!(
             unified_public_inputs.compressed_secrets,
             expected_public_inputs.compressed_secrets
         );
-        assert_eq!(unified_public_inputs.swap_link, expected_public_inputs.swap_link);
-        assert_eq!(unified_public_inputs.deadline, expected_public_inputs.deadline);
-        assert_eq!(unified_public_inputs.swap_side, expected_public_inputs.swap_side);
+        assert_eq!(
+            unified_public_inputs.swap_link,
+            expected_public_inputs.swap_link
+        );
+        assert_eq!(
+            unified_public_inputs.deadline,
+            expected_public_inputs.deadline
+        );
+        assert_eq!(
+            unified_public_inputs.swap_side,
+            expected_public_inputs.swap_side
+        );
     }
 
     fn assert_rejected_unified_deposit(
@@ -2032,9 +2058,7 @@ mod tests {
             .unwrap();
 
             assert!(circuit
-                .check_circuit_satisfiability(
-                    Vec::from(&incorrect_root.public_inputs).as_slice(),
-                )
+                .check_circuit_satisfiability(Vec::from(&incorrect_root.public_inputs).as_slice(),)
                 .is_err());
 
             // If the wirthdraw address is non-zero we should fail
@@ -2328,9 +2352,7 @@ mod tests {
             .unwrap();
 
             assert!(circuit
-                .check_circuit_satisfiability(
-                    Vec::from(&incorrect_root.public_inputs).as_slice(),
-                )
+                .check_circuit_satisfiability(Vec::from(&incorrect_root.public_inputs).as_slice(),)
                 .is_err());
 
             // If the wirthdraw address is zero we should fail

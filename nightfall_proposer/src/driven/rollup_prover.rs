@@ -43,7 +43,7 @@ use log::{debug, warn};
 use mongodb::{bson::doc, Client};
 
 use lib::{
-    error::ConversionError,
+    error::{ConversionError, UnifiedProofError},
     merkle_trees::trees::{MerkleTreeError, MutableTree, TreeMetadata},
     nf_client_proof::{PrivateInputs, PublicInputs},
     plonk_prover::circuits::unified_circuit::unified_circuit_builder,
@@ -113,6 +113,14 @@ impl From<PlonkError> for RollupProofError {
 impl From<MerkleTreeError<mongodb::error::Error>> for RollupProofError {
     fn from(e: MerkleTreeError<mongodb::error::Error>) -> Self {
         RollupProofError::MerkleTreeError(e)
+    }
+}
+
+impl From<UnifiedProofError> for RollupProofError {
+    fn from(e: UnifiedProofError) -> Self {
+        match e {
+            UnifiedProofError::ProvingError(e) => RollupProofError::ProvingError(e),
+        }
     }
 }
 
@@ -264,21 +272,22 @@ impl RollupProver {
     fn create_unified_deposit_proof(
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
-    ) -> Result<PlonkProof, RollupProofError> {
+    ) -> Result<PlonkProof, UnifiedProofError> {
         let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
         *public_inputs = PublicInputs::for_deposit();
-        let mut circuit =
-            unified_circuit_builder(public_inputs, &mut private_inputs).map_err(PlonkError::from)?;
+        let mut circuit = unified_circuit_builder(public_inputs, &mut private_inputs)
+            .map_err(UnifiedProofError::from)?;
         circuit
             .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
-            .map_err(PlonkError::from)?;
+            .map_err(UnifiedProofError::from)?;
         let pk = get_client_proving_key();
 
         let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
             _,
             _,
             RescueTranscript<Fr254>,
-        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)?;
+        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)
+        .map_err(UnifiedProofError::from)?;
         Ok(PlonkProof::from_recursive_output(output, &pk.vk))
     }
 }
@@ -843,7 +852,7 @@ impl RecursiveProvingEngine<PlonkProof> for RollupProver {
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
     ) -> Result<PlonkProof, Self::Error> {
-        Self::create_unified_deposit_proof(deposit_data, public_inputs)
+        Self::create_unified_deposit_proof(deposit_data, public_inputs).map_err(Self::Error::from)
     }
 }
 
@@ -875,8 +884,7 @@ mod tests {
     ) -> Result<PlonkProof, RollupProofError> {
         let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
         *public_inputs = PublicInputs::for_deposit();
-        let mut circuit =
-            unified_circuit_builder(public_inputs, &mut private_inputs).map_err(PlonkError::from)?;
+        let mut circuit = unified_circuit_builder(public_inputs, &mut private_inputs)?;
         circuit
             .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
             .map_err(PlonkError::from)?;
@@ -887,23 +895,18 @@ mod tests {
 
         let mut rng = ark_std::rand::thread_rng();
         let srs_size = circuit.srs_size(true).map_err(PlonkError::from)?;
-        let srs = FFTPlonk::<UnivariateKzgPCS<Bn254>>::universal_setup_for_testing(
-            srs_size, &mut rng,
-        )
-        .map_err(PlonkError::from)?;
+        let srs =
+            FFTPlonk::<UnivariateKzgPCS<Bn254>>::universal_setup_for_testing(srs_size, &mut rng)?;
         let (pk, _) = FFTPlonk::<UnivariateKzgPCS<Bn254>>::preprocess(
             &srs,
             Some(VerificationKeyId::Client),
             &circuit,
             true,
-        )
-        .map_err(PlonkError::from)?;
-        let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
-            _,
-            _,
-            RescueTranscript<Fr254>,
-        >(&mut rng, &circuit, &pk, None, true)
-        .map_err(PlonkError::from)?;
+        )?;
+        let output =
+            FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<_, _, RescueTranscript<Fr254>>(
+                &mut rng, &circuit, &pk, None, true,
+            )?;
 
         Ok(PlonkProof::from_recursive_output(output, &pk.vk))
     }
@@ -924,7 +927,10 @@ mod tests {
         );
         assert_eq!(public_inputs.fee, expected_public_inputs.fee);
         assert_eq!(public_inputs.root, expected_public_inputs.root);
-        assert_eq!(public_inputs.commitments, expected_public_inputs.commitments);
+        assert_eq!(
+            public_inputs.commitments,
+            expected_public_inputs.commitments
+        );
         assert_eq!(public_inputs.nullifiers, expected_public_inputs.nullifiers);
         assert_eq!(
             public_inputs.compressed_secrets,
@@ -951,8 +957,7 @@ mod tests {
         let mut public_inputs = PublicInputs::for_deposit();
         let mut private_inputs = PrivateInputs::for_deposit(&deposit_array);
 
-        let mut circuit =
-            unified_circuit_builder(&mut public_inputs, &mut private_inputs).unwrap();
+        let mut circuit = unified_circuit_builder(&mut public_inputs, &mut private_inputs).unwrap();
         circuit
             .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
             .unwrap();

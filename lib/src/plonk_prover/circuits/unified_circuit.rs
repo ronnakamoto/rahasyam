@@ -414,7 +414,11 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
             withdraw_address,
             withdraw_flag,
         )?;
-        let mut deposit_lookup_vars = Vec::<(jf_relation::Variable, jf_relation::Variable, jf_relation::Variable)>::new();
+        let mut deposit_lookup_vars = Vec::<(
+            jf_relation::Variable,
+            jf_relation::Variable,
+            jf_relation::Variable,
+        )>::new();
         let mut deposit_public_data = deposit_data_vars
             .iter()
             .zip(deposit_commitment_flags.iter())
@@ -492,7 +496,8 @@ impl UnifiedCircuit for PlonkCircuit<Fr254> {
         let nullifiers: [Fr254; 4] = nullifiers
             .iter()
             .map(|&nullifier| {
-                let final_nullifier = self.conditional_select(is_deposit, nullifier, self.zero())?;
+                let final_nullifier =
+                    self.conditional_select(is_deposit, nullifier, self.zero())?;
                 self.set_variable_public(final_nullifier)?;
                 self.witness(final_nullifier)
             })

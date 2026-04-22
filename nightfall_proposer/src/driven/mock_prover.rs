@@ -13,10 +13,11 @@ use jf_plonk::{
 use jf_primitives::{pcs::prelude::UnivariateKzgPCS, rescue::sponge::RescueCRHF};
 use jf_utils::fr_to_fq;
 use lib::{
+    error::UnifiedProofError,
     merkle_trees::trees::{MerkleTreeError, MutableTree, TreeMetadata},
     nf_client_proof::{PrivateInputs, PublicInputs},
-    plonk_prover::{get_client_proving_key, plonk_proof::PlonkProof},
     plonk_prover::circuits::unified_circuit::unified_circuit_builder,
+    plonk_prover::{get_client_proving_key, plonk_proof::PlonkProof},
     shared_entities::DepositData,
 };
 #[cfg(feature = "parallel")]
@@ -43,21 +44,22 @@ impl MockProver {
     fn create_unified_deposit_proof(
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
-    ) -> Result<PlonkProof, RollupProofError> {
+    ) -> Result<PlonkProof, UnifiedProofError> {
         let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
         *public_inputs = PublicInputs::for_deposit();
-        let mut circuit =
-            unified_circuit_builder(public_inputs, &mut private_inputs).map_err(PlonkError::from)?;
+        let mut circuit = unified_circuit_builder(public_inputs, &mut private_inputs)
+            .map_err(UnifiedProofError::from)?;
         circuit
             .finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()
-            .map_err(PlonkError::from)?;
+            .map_err(UnifiedProofError::from)?;
         let pk = get_client_proving_key();
 
         let output = FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<
             _,
             _,
             RescueTranscript<Fr254>,
-        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)?;
+        >(&mut ark_std::rand::thread_rng(), &circuit, pk, None, true)
+        .map_err(UnifiedProofError::from)?;
         Ok(PlonkProof::from_recursive_output(output, &pk.vk))
     }
 }
@@ -278,6 +280,6 @@ impl RecursiveProvingEngine<PlonkProof> for MockProver {
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
     ) -> Result<PlonkProof, Self::Error> {
-        Self::create_unified_deposit_proof(deposit_data, public_inputs)
+        Self::create_unified_deposit_proof(deposit_data, public_inputs).map_err(Self::Error::from)
     }
 }

@@ -870,14 +870,12 @@ fn regenerate_keys_for_production() -> Result<(), warp::Rejection> {
         pk_path,
         &kzg_srs,
     )
-    .map_err(
-        |e| {
-            error!("Failed to generate rollup keys for production: {e}");
-            warp::reject::custom(KeyVerificationError::new(
-                "Error generating rollup keys for production",
-            ))
-        },
-    )?;
+    .map_err(|e| {
+        error!("Failed to generate rollup keys for production: {e}");
+        warp::reject::custom(KeyVerificationError::new(
+            "Error generating rollup keys for production",
+        ))
+    })?;
 
     Ok(())
 }
