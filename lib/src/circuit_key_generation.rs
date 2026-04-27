@@ -1,12 +1,10 @@
 use crate::{
     constants::MAX_KZG_DEGREE,
-    deposit_circuit::deposit_circuit_builder,
     nf_client_proof::PublicInputs,
     rollup_circuit_checks::{find_file_with_path, RollupKeyGenerator},
-    shared_entities::DepositData,
     utils::get_block_size,
 };
-use ark_bn254::{Bn254, Fq as Fq254, Fr as Fr254, FrConfig};
+use ark_bn254::{Bn254, Fr as Fr254, FrConfig};
 use ark_ec::bn::Bn;
 use ark_ff::{Fp, MontBackend};
 use ark_serialize::CanonicalDeserialize;
@@ -23,7 +21,6 @@ use jf_plonk::{
 use jf_primitives::{
     pcs::prelude::*,
     poseidon::Poseidon,
-    rescue::sponge::RescueCRHF,
     trees::{
         imt::{IndexedMerkleTree, LeafDBEntry},
         timber::Timber,
@@ -54,8 +51,9 @@ pub fn universal_setup_for_production(
 }
 
 pub fn generate_rollup_keys_for_production(
-    deposit_circuit: PlonkCircuit<Fp<MontBackend<FrConfig, 4>, 4>>,
-    deposit_pk_path: PathBuf,
+    base_circuit: PlonkCircuit<Fp<MontBackend<FrConfig, 4>, 4>>,
+    base_public_inputs: PublicInputs,
+    proving_key_path: PathBuf,
     kzg_srs: &UnivariateUniversalParams<Bn<ark_bn254::Config>>,
 ) -> Result<(), PlonkError> {
     let ipa_srs = UnivariateUniversalIpaParams::gen_srs("Nightfall_4", 1 << 18).unwrap();
@@ -63,8 +61,8 @@ pub fn generate_rollup_keys_for_production(
     let mut d_proofs = Vec::new();
     let mut public_input_vec = Vec::new();
 
-    let source_file = find_file_with_path(&deposit_pk_path).unwrap();
-    let deposit_pk = ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
+    let source_file = find_file_with_path(&proving_key_path).unwrap();
+    let proving_key = ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed_unchecked(
         &*std::fs::read(source_file).expect("Could not read proving key"),
     )
     .expect("Could not deserialise proving key");
@@ -72,8 +70,8 @@ pub fn generate_rollup_keys_for_production(
     let output =
         FFTPlonk::<UnivariateKzgPCS<Bn254>>::recursive_prove::<_, _, RescueTranscript<Fr254>>(
             &mut ark_std::rand::thread_rng(),
-            &deposit_circuit,
-            &deposit_pk,
+            &base_circuit,
+            &proving_key,
             None,
             true,
         )
@@ -87,14 +85,9 @@ pub fn generate_rollup_keys_for_production(
         }
     };
 
-    let deposit_data = [DepositData::default(); 4];
-    let mut deposit_public_inputs = PublicInputs::new();
-    let mut deposit_circuit = deposit_circuit_builder(&deposit_data, &mut deposit_public_inputs)?;
-    deposit_circuit.finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()?;
-
     (0..block_size).for_each(|_| {
-        d_proofs.push((output.clone(), deposit_pk.vk.clone()));
-        public_input_vec.push(deposit_public_inputs);
+        d_proofs.push((output.clone(), proving_key.vk.clone()));
+        public_input_vec.push(base_public_inputs);
     });
 
     // We need to make dummy trees for to build circuit insertion info.
@@ -138,9 +131,8 @@ pub fn generate_rollup_keys_for_production(
 
     let mut m_proof_vec = Vec::<Fr254>::from(m_proof);
     let root_proof_len_field = Fr254::from(m_proof_vec.len() as u64);
-    m_proof_vec.push(deposit_public_inputs.roots[0]);
-    let root_m_proofs_inner = vec![m_proof_vec.clone(); 4].concat();
-    let root_membership_proofs = vec![root_m_proofs_inner.clone(); block_size];
+    m_proof_vec.push(base_public_inputs.root);
+    let root_membership_proofs = vec![m_proof_vec.clone(); block_size];
 
     let extra_base_info = izip!(
         public_input_vec.chunks(4),
@@ -162,7 +154,7 @@ pub fn generate_rollup_keys_for_production(
                     commitment_info_len,
                     nullifier_info_len,
                 ],
-                [pis[0].roots, pis[1].roots].concat(),
+                vec![pis[0].root, pis[1].root],
                 root_m_proof_chunk[0]
                     .iter()
                     .chain(root_m_proof_chunk[1].iter())
@@ -175,7 +167,7 @@ pub fn generate_rollup_keys_for_production(
                     commitment_info_len,
                     nullifier_info_len,
                 ],
-                [pis[2].roots, pis[3].roots].concat(),
+                vec![pis[2].root, pis[3].root],
                 root_m_proof_chunk[2]
                     .iter()
                     .chain(root_m_proof_chunk[3].iter())

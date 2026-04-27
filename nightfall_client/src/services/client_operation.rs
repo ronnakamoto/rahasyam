@@ -21,11 +21,75 @@ use lib::{
     nf_client_proof::{PrivateInputs, Proof, ProvingEngine, PublicInputs},
     secret_hash::SecretHash,
     shared_entities::{
-        ClientTransaction, CompressedSecrets, DepositSecret, Preimage, Salt, TokenType,
+        ClientTransaction, CompressedSecrets, DepositData, DepositSecret, Preimage, Salt, TokenType,
     },
 };
 use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BabyJubjub as BabyJubJub, Fr as BJJScalar};
+
+const MEMBERSHIP_PROOF_SNAPSHOT_ATTEMPTS: usize = 3;
+
+async fn collect_membership_proofs_with_stable_root(
+    spend_commitments: &[impl Nullifiable; 4],
+    id: &str,
+) -> Result<(Vec<MembershipProof<Fr254>>, Fr254), &'static str> {
+    let db = get_db_connection().await;
+    let hasher = Poseidon::new();
+
+    for attempt in 1..=MEMBERSHIP_PROOF_SNAPSHOT_ATTEMPTS {
+        let target_root = <mongodb::Client as CommitmentTree<Fr254>>::get_root(db)
+            .await
+            .map_err(|_| "Could not get root")?;
+        let mut proofs = Vec::with_capacity(spend_commitments.len());
+        let mut saw_non_zero_commitment = false;
+        let mut should_retry = false;
+
+        for commitment in spend_commitments.iter() {
+            if commitment.get_nf_token_id() == Fr254::zero() {
+                proofs.push(MembershipProof::default());
+                continue;
+            }
+
+            saw_non_zero_commitment = true;
+            let commitment_hash = commitment.hash().map_err(|_| "Could not hash preimage")?;
+            debug!(
+                "{id} Looking for commitment with hash {}",
+                Fr254::to_hex_string(&commitment_hash)
+            );
+
+            if db.get_commitment(&commitment_hash).await.is_none() {
+                return Err("Could not find commitment in commitment database");
+            }
+
+            let membership_proof = db
+                .get_membership_proof(Some(&commitment_hash), None)
+                .await
+                .map_err(|_| "Could not get membership proof")?;
+
+            if membership_proof.verify(&target_root, &hasher).is_err() {
+                warn!(
+                    "{id} Commitment tree root changed while collecting membership proofs (attempt {attempt})"
+                );
+                should_retry = true;
+                break;
+            }
+
+            proofs.push(membership_proof);
+        }
+
+        if !should_retry {
+            let root = if saw_non_zero_commitment {
+                target_root
+            } else {
+                Fr254::zero()
+            };
+            return Ok((proofs, root));
+        }
+    }
+
+    error!("{id} Commitment tree root kept changing while collecting membership proofs");
+    Err("Commitment tree root changed while building membership proofs")
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn client_operation<P, E>(
@@ -88,55 +152,11 @@ where
     // have computed and stored it when the commitment was added to the tree (and hopefully updated
     //it since as the Merkle tree root is updated so that we obfuscate which block it was deposited in).
     debug!("{id} Finding membership proofs for spend commitments");
-    let (membership_proofs, roots) = {
-        let mut proofs = vec![];
-        let mut roots = vec![];
-        let db = get_db_connection().await;
-        for commitment in spend_commitments.iter() {
-            // ignore zero commitments here because they won't be in our commitment database. We check
-            // for zero commitments by checking the preimage has default token id. We have already adjusted
-            // the salt to be random so we can't use that.
-            if commitment.get_nf_token_id() == Fr254::zero() {
-                proofs.push(MembershipProof::default());
-                roots.push(Fr254::zero());
-                continue;
-            }
-            let commitment_hash = commitment.hash().map_err(|_| "Could not hash preimage")?;
-            debug!(
-                "{id} Looking for commitment with hash {}",
-                Fr254::to_hex_string(&commitment_hash)
-            );
-            let stored = db.get_commitment(&commitment_hash).await;
-            if stored.is_none() {
-                return Err("Could not find commitment in commitment database");
-            };
-            // get a membership proof that is computed from the current root. This is more secure than using a membership proof
-            // that is computed from the root at the time the commitment was added to the tree.
-            let membership_proof = db
-                .get_membership_proof(Some(&commitment_hash), None)
-                .await
-                .map_err(|_| "Could not get membership proof")?;
-            let root = <mongodb::Client as CommitmentTree<Fr254>>::get_root(db)
-                .await
-                .map_err(|_| "Could not get root")?;
-            // check that the proof is valid (we may remove this check later if we need more speed)
-            let hasher = Poseidon::new();
-            membership_proof
-                .verify(&root, &hasher)
-                .map_err(|_| "Membership proof failed")?;
-            proofs.push(membership_proof);
-            roots.push(root);
-            // while we're at it, we should store the spend commitments nullifier hash. Then, when we see that nullifier
-            // on the blockchain, we can mark the commitment as nullified so we don't try to spend it again.
-        }
-        (proofs, roots)
-    };
+    let (membership_proofs, root) =
+        collect_membership_proofs_with_stable_root(spend_commitments, id).await?;
     let fixed_proofs: [MembershipProof<Fr254>; 4] = membership_proofs
         .try_into()
         .map_err(|_| "Could not convert membership proofs to fixed length array")?;
-    let fixed_roots: [Fr254; 4] = roots
-        .try_into()
-        .map_err(|_| "Could not convert roots into fixed length array")?;
     let keys = ZKPKeys::new(root_key)
         .map_err(|_| "Transaction could not be completed due to an invalid root key.")?;
     // Construct Private Inputs [ Commitment value, salt, recipient public_key];
@@ -146,7 +166,7 @@ where
     let (mut public_inputs, mut private_inputs) = (
         PublicInputs::new()
             .fee(new_commitments[2].get_value())
-            .roots(&fixed_roots)
+            .root(root)
             .build(),
         PrivateInputs::new()
             .nf_address(nf_address)
@@ -180,6 +200,7 @@ where
                 secret_preimages[2].to_array(),
                 secret_preimages[3].to_array(),
             ])
+            .deposit_data(&[DepositData::default(); 4])
             .build(),
     );
     info!("{id} Generating proof");
@@ -188,7 +209,7 @@ where
     match wrapped_proof {
         Ok(proof) => Ok(ClientTransaction {
             fee: public_inputs.fee,
-            historic_commitment_roots: public_inputs.roots,
+            historic_commitment_root: public_inputs.root,
             commitments: public_inputs.commitments,
             nullifiers: public_inputs.nullifiers,
             compressed_secrets: CompressedSecrets {
@@ -265,54 +286,17 @@ where
         .map_err(|_| "Could not convert to fixed length array")?;
 
     debug!("{id} Finding membership proofs for spend commitments");
-    let (membership_proofs, roots) = {
-        let mut proofs = vec![];
-        let mut roots = vec![];
-        let db = get_db_connection().await;
-        for commitment in spend_commitments.iter() {
-            if commitment.get_nf_token_id() == Fr254::zero() {
-                proofs.push(MembershipProof::default());
-                roots.push(Fr254::zero());
-                continue;
-            }
-            let commitment_hash = commitment.hash().map_err(|_| "Could not hash preimage")?;
-            debug!(
-                "{id} Looking for commitment with hash {}",
-                Fr254::to_hex_string(&commitment_hash)
-            );
-            let stored = db.get_commitment(&commitment_hash).await;
-            if stored.is_none() {
-                return Err("Could not find commitment in commitment database");
-            };
-            let membership_proof = db
-                .get_membership_proof(Some(&commitment_hash), None)
-                .await
-                .map_err(|_| "Could not get membership proof")?;
-            let root = <mongodb::Client as CommitmentTree<Fr254>>::get_root(db)
-                .await
-                .map_err(|_| "Could not get root")?;
-            let hasher = Poseidon::new();
-            membership_proof
-                .verify(&root, &hasher)
-                .map_err(|_| "Membership proof failed")?;
-            proofs.push(membership_proof);
-            roots.push(root);
-        }
-        (proofs, roots)
-    };
-
+    let (membership_proofs, root) =
+        collect_membership_proofs_with_stable_root(spend_commitments, id).await?;
     let fixed_proofs: [MembershipProof<Fr254>; 4] = membership_proofs
         .try_into()
         .map_err(|_| "Could not convert membership proofs to fixed length array")?;
-    let fixed_roots: [Fr254; 4] = roots
-        .try_into()
-        .map_err(|_| "Could not convert roots into fixed length array")?;
 
     let nf_address = get_addresses().nightfall();
     let (mut public_inputs, mut private_inputs) = (
         PublicInputs::new()
             .fee(new_commitments[2].get_value())
-            .roots(&fixed_roots)
+            .root(root)
             .deadline(deadline)
             .build(),
         PrivateInputs::new()
@@ -359,7 +343,7 @@ where
     match wrapped_proof {
         Ok(proof) => Ok(ClientTransaction {
             fee: public_inputs.fee,
-            historic_commitment_roots: public_inputs.roots,
+            historic_commitment_root: public_inputs.root,
             commitments: public_inputs.commitments,
             nullifiers: public_inputs.nullifiers,
             compressed_secrets: CompressedSecrets {

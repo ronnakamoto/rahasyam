@@ -75,29 +75,6 @@ pub fn get_client_proving_key_locally() -> Result<ProvingKey<UnivariateKzgPCS<Bn
         .map_err(|e| anyhow::anyhow!("Could not deserialize proving key: {e}"))
 }
 
-/// Function that retrieves the deposit proving key from a local file.
-pub fn get_deposit_proving_key_locally() -> Result<ProvingKey<UnivariateKzgPCS<Bn254>>> {
-    let deposit_pk_path = get_configuration_keys_path()
-        .expect("Configuration keys path not found")
-        .join("deposit_proving_key");
-    let source_file = find_file_with_path(&deposit_pk_path).with_context(|| {
-        format!(
-            "Could not find deposit proving key file at path: {}",
-            deposit_pk_path.display()
-        )
-    })?;
-
-    let key_bytes = std::fs::read(&source_file).with_context(|| {
-        format!(
-            "Could not read deposit proving key from file: {}",
-            source_file.display()
-        )
-    })?;
-
-    ProvingKey::<UnivariateKzgPCS<Bn254>>::deserialize_compressed(&*key_bytes)
-        .map_err(|e| anyhow::anyhow!("Could not deserialize deposit proving key: {e}"))
-}
-
 /// Function that searches for a file starting from the current working directory and moving up the directory tree.
 pub fn find_file_with_path(path: &Path) -> Option<std::path::PathBuf> {
     if path.is_absolute() {
@@ -124,12 +101,12 @@ pub struct RollupKeyGenerator;
 
 /// The number of client-proof public inputs that are currently bound into the
 /// contract-visible transaction hash:
-/// fee + 4 roots + 4 commitments + 4 nullifiers + 5 compressed secrets.
+/// fee + 1 root + 4 commitments + 4 nullifiers + 5 compressed secrets.
 ///
 /// Swap metadata is carried by the client proof, but the current Solidity
 /// block hash still excludes it, so recursion must continue to project the
 /// legacy subset until the contract boundary is upgraded in lockstep.
-const CONTRACT_HASH_FIELDS_PER_TX: usize = 18;
+const CONTRACT_HASH_FIELDS_PER_TX: usize = 15;
 
 impl RecursiveProver for RollupKeyGenerator {
     // these checks are implementation of RecursiveProver in Nightfish and will be called by each corresponding circuit
@@ -147,13 +124,13 @@ impl RecursiveProver for RollupKeyGenerator {
         let mut end_roots_comm = Vec::new();
         let mut end_roots_null = Vec::new();
 
-        let total_m_proofs_length = 8 * (root_m_proof_length + 2);
+        let total_m_proofs_length = 2 * (root_m_proof_length + 2);
 
         for pi in [first_pis, second_pis] {
-            pi[8..]
+            pi[2..]
                 .chunks(root_m_proof_length + 1)
-                .take(8)
-                .zip(pi[..8].iter())
+                .take(2)
+                .zip(pi[..2].iter())
                 .try_for_each(|(chunk, leaf_root)| {
                     let m_proof_var =
                         MembershipProofVar::from_vars(circuit, &chunk[..root_m_proof_length])?;
@@ -223,6 +200,9 @@ impl RecursiveProver for RollupKeyGenerator {
         let mut sha_vars = Vec::<Variable>::new();
         for pi_slice in pi_slices {
             let field_vars = [
+                pi_slice[2],
+                pi_slice[3],
+                pi_slice[4],
                 pi_slice[5],
                 pi_slice[6],
                 pi_slice[7],
@@ -232,12 +212,9 @@ impl RecursiveProver for RollupKeyGenerator {
                 pi_slice[11],
                 pi_slice[12],
                 pi_slice[13],
-                pi_slice[14],
-                pi_slice[15],
-                pi_slice[16],
             ];
 
-            let bit_var = circuit.is_equal(pi_slice[17], circuit.one())?;
+            let bit_var = circuit.is_equal(pi_slice[14], circuit.one())?;
             let (_, sha256_var) = circuit.full_shifted_sha256_hash_with_bit(
                 &field_vars,
                 &bit_var,
@@ -266,16 +243,16 @@ impl RecursiveProver for RollupKeyGenerator {
         circuit: &mut PlonkCircuit<Fq254>,
     ) -> Result<Vec<Variable>, CircuitError> {
         let mut output_pis = Vec::<Variable>::new();
-        const LEGACY_PUBLIC_INPUT_LEN: usize = 24;
-        const SWAP_PUBLIC_INPUT_LEN: usize = 30;
+        const LEGACY_PUBLIC_INPUT_LEN: usize = 21;
+        const SWAP_PUBLIC_INPUT_LEN: usize = 27;
         // We are in the base case, so we enforce the initialisation message and length separators to be constant
         // Everything else we simply concatenate into the output `Variable`s.
         //
         // IMPORTANT: the current Solidity block hash still binds only the legacy
-        // transaction payload (fee/roots/commitments/nullifiers/compressed_secrets).
+        // transaction payload (fee/root/commitments/nullifiers/compressed_secrets).
         // Swap metadata is verified inside the client proof itself, but is not yet
         // part of the on-chain transaction hash, so we must keep projecting the
-        // same 18-field subset here until the contract boundary is upgraded.
+        // same 15-field subset here until the contract boundary is upgraded.
         let mut init_bytes = "public_inputs".as_bytes().to_vec();
         init_bytes.extend_from_slice("version2".as_bytes());
         for specific_pi in specific_pis {
@@ -285,23 +262,23 @@ impl RecursiveProver for RollupKeyGenerator {
             )?;
             circuit.enforce_constant(specific_pi[1], Fq254::one())?;
             output_pis.push(specific_pi[2]);
-            circuit.enforce_constant(specific_pi[3], Fq254::from(4u8))?;
-            output_pis.extend_from_slice(&specific_pi[4..8]);
-            circuit.enforce_constant(specific_pi[8], Fq254::from(4u8))?;
-            output_pis.extend_from_slice(&specific_pi[9..13]);
-            circuit.enforce_constant(specific_pi[13], Fq254::from(4u8))?;
-            output_pis.extend_from_slice(&specific_pi[14..18]);
-            circuit.enforce_constant(specific_pi[18], Fq254::from(5u8))?;
-            output_pis.extend_from_slice(&specific_pi[19..24]);
+            circuit.enforce_constant(specific_pi[3], Fq254::one())?;
+            output_pis.push(specific_pi[4]);
+            circuit.enforce_constant(specific_pi[5], Fq254::from(4u8))?;
+            output_pis.extend_from_slice(&specific_pi[6..10]);
+            circuit.enforce_constant(specific_pi[10], Fq254::from(4u8))?;
+            output_pis.extend_from_slice(&specific_pi[11..15]);
+            circuit.enforce_constant(specific_pi[15], Fq254::from(5u8))?;
+            output_pis.extend_from_slice(&specific_pi[16..21]);
 
             match specific_pi.len() {
                 LEGACY_PUBLIC_INPUT_LEN => {}
                 SWAP_PUBLIC_INPUT_LEN => {
                     // Validate the extra swap field separators, but intentionally
                     // exclude the values from the contract-bound rollup hash.
-                    circuit.enforce_constant(specific_pi[24], Fq254::one())?;
-                    circuit.enforce_constant(specific_pi[26], Fq254::one())?;
-                    circuit.enforce_constant(specific_pi[28], Fq254::one())?;
+                    circuit.enforce_constant(specific_pi[21], Fq254::one())?;
+                    circuit.enforce_constant(specific_pi[23], Fq254::one())?;
+                    circuit.enforce_constant(specific_pi[25], Fq254::one())?;
                 }
                 len => {
                     return Err(CircuitError::ParameterError(format!(
@@ -550,10 +527,7 @@ impl RecursiveProver for RollupKeyGenerator {
             .unwrap_or_else(|e| panic!("Failed to load client proving key: {e:#}"))
             .vk
             .clone();
-        let deposit_vk = get_deposit_proving_key_locally()
-            .unwrap_or_else(|e| panic!("Failed to load deposit proving key: {e:#}"))
-            .vk
-            .clone();
+        let deposit_vk = client_vk.clone();
         vec![client_vk, deposit_vk]
     }
 
