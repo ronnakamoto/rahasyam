@@ -46,7 +46,10 @@ pub enum RequestStatus {
 
 pub fn should_overwrite_request_status_with_failed(request: Option<&Request>) -> bool {
     match request {
-        Some(request) => matches!(request.status, RequestStatus::Processing),
+        Some(request) => matches!(
+            request.status,
+            RequestStatus::Queued | RequestStatus::Processing
+        ),
         None => true,
     }
 }

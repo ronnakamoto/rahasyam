@@ -134,8 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn should_overwrite_request_status_with_failed_only_for_processing_requests() {
+    fn should_overwrite_request_status_with_failed_only_for_queued_or_processing_requests() {
         assert!(should_overwrite_request_status_with_failed(None));
+        assert!(should_overwrite_request_status_with_failed(Some(
+            &make_request(RequestStatus::Queued)
+        )));
         assert!(should_overwrite_request_status_with_failed(Some(
             &make_request(RequestStatus::Processing)
         )));
@@ -144,6 +147,9 @@ mod tests {
         )));
         assert!(!should_overwrite_request_status_with_failed(Some(
             &make_request(RequestStatus::Failed)
+        )));
+        assert!(!should_overwrite_request_status_with_failed(Some(
+            &make_request(RequestStatus::Submitted)
         )));
     }
 }
