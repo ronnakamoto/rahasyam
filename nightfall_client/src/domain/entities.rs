@@ -44,6 +44,13 @@ pub enum RequestStatus {
     Expired, // This is for swap tx_request status when its deadline has passed without onchain confirmation.
 }
 
+pub fn should_overwrite_request_status_with_failed(request: Option<&Request>) -> bool {
+    match request {
+        Some(request) => matches!(request.status, RequestStatus::Processing),
+        None => true,
+    }
+}
+
 impl Display for RequestStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

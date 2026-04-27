@@ -2,7 +2,8 @@ use super::client_operation::{handle_client_operation, SwapParams};
 use crate::{
     domain::{
         entities::{
-            CommitmentStatus, ERCAddress, Operation, OperationType, RequestStatus, Transport,
+            should_overwrite_request_status_with_failed, CommitmentStatus, ERCAddress, Operation,
+            OperationType, RequestStatus, Transport,
         },
         error::TransactionHandlerError,
         notifications::NotificationPayload,
@@ -1396,7 +1397,10 @@ where
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
             let _ = db.delete_commitments(new_commitment_ids).await;
             let _ = db.clear_request_child_args(id).await;
-            let _ = db.update_request(id, RequestStatus::Failed).await;
+            let existing_request = db.get_request(id).await;
+            if should_overwrite_request_status_with_failed(existing_request.as_ref()) {
+                let _ = db.update_request(id, RequestStatus::Failed).await;
+            }
 
             Err(TransactionHandlerError::CustomError(e.to_string()))
         }

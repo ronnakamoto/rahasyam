@@ -1,6 +1,6 @@
 use crate::{
     domain::entities::{Block, ClientTransactionWithMetaData, DepositDatawithFee},
-    driven::db::mongo_db::{DB, PROPOSED_BLOCKS_COLLECTION, StoredBlock},
+    driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION},
     drivers::blockchain::block_assembly::BlockAssemblyError,
     initialisation::{get_blockchain_client_connection, get_db_connection},
     ports::{
@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use ark_bn254::Fr as Fr254;
-use ark_std::{Zero, collections::HashSet};
+use ark_std::{collections::HashSet, Zero};
 use bson::doc;
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
@@ -356,8 +356,8 @@ where
                 .map(|tx| tx.client_transaction.deadline)
                 .unwrap_or_else(Fr254::zero);
 
-            if deadline < Fr254::from(current_block_number) {
-                warn!("Swap deadline expired, skipping group");
+            if deadline.is_zero() || deadline < Fr254::from(current_block_number) {
+                warn!("Swap deadline expired or invalid, skipping group");
                 expired_swaps.append(&mut same_deadline_txs);
                 continue;
             }
@@ -1120,6 +1120,59 @@ mod tests {
         assert_eq!(
             remaining_expired_swaps, 0,
             "Expired swap legs should be removed from mempool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_swap_zero_deadline_rejected_at_block_zero() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 4;
+
+        let swap_txs: Vec<ClientTransactionWithMetaData<PlonkProof>> = (0..2)
+            .map(|i| ClientTransactionWithMetaData {
+                client_transaction: lib::shared_entities::ClientTransaction {
+                    fee: Fr254::from(100u64),
+                    swap_link: Fr254::from(77u64),
+                    deadline: Fr254::zero(),
+                    swap_side: Fr254::from((i % 2) as u64),
+                    proof: PlonkProof::default(),
+                    ..Default::default()
+                },
+                block_l2: None,
+                in_mempool: true,
+                hash: vec![20 + i as u32],
+                historic_roots: vec![],
+            })
+            .collect();
+
+        for tx in swap_txs {
+            db.store_transaction(tx).await.unwrap();
+        }
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
+
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_zero_deadline_swaps = remaining_client
+            .iter()
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(77u64))
+            .count();
+        assert_eq!(
+            remaining_zero_deadline_swaps, 0,
+            "Zero-deadline swap legs should be removed from mempool at block 0"
         );
     }
 

@@ -1,5 +1,5 @@
 use crate::{
-    domain::entities::{Request, RequestStatus},
+    domain::entities::{should_overwrite_request_status_with_failed, RequestStatus},
     driven::notifier::webhook_notifier::WebhookNotifier,
     drivers::{
         blockchain::{
@@ -24,12 +24,6 @@ use tokio::{
     time::sleep,
 };
 
-fn should_update_queue_terminal_status(request: Option<&Request>) -> bool {
-    match request {
-        Some(request) => matches!(request.status, RequestStatus::Processing),
-        None => true,
-    }
-}
 /// This module implements a queue of received requests. Requests can be added to the queue
 /// asynchronously but are executed with a concurrency of 1.
 pub struct QueuedRequest {
@@ -112,7 +106,7 @@ where
                     // Handle the error here
                     let db = get_db_connection().await;
                     let existing_request = db.get_request(&request.uuid).await;
-                    if should_update_queue_terminal_status(existing_request.as_ref()) {
+                    if should_overwrite_request_status_with_failed(existing_request.as_ref()) {
                         let _ = db
                             .update_request(&request.uuid, RequestStatus::Failed)
                             .await;
@@ -129,6 +123,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::Request;
 
     fn make_request(status: RequestStatus) -> Request {
         Request {
@@ -139,16 +134,16 @@ mod tests {
     }
 
     #[test]
-    fn queue_terminal_status_update_only_overwrites_processing_requests() {
-        assert!(should_update_queue_terminal_status(None));
-        assert!(should_update_queue_terminal_status(Some(&make_request(
-            RequestStatus::Processing
-        ))));
-        assert!(!should_update_queue_terminal_status(Some(&make_request(
-            RequestStatus::ProposerUnreachable
-        ))));
-        assert!(!should_update_queue_terminal_status(Some(&make_request(
-            RequestStatus::Failed
-        ))));
+    fn should_overwrite_request_status_with_failed_only_for_processing_requests() {
+        assert!(should_overwrite_request_status_with_failed(None));
+        assert!(should_overwrite_request_status_with_failed(Some(
+            &make_request(RequestStatus::Processing)
+        )));
+        assert!(!should_overwrite_request_status_with_failed(Some(
+            &make_request(RequestStatus::ProposerUnreachable)
+        )));
+        assert!(!should_overwrite_request_status_with_failed(Some(
+            &make_request(RequestStatus::Failed)
+        )));
     }
 }
