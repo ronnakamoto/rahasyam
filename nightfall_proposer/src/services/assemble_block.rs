@@ -3,14 +3,10 @@ use crate::{
     driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION},
     drivers::blockchain::block_assembly::BlockAssemblyError,
     initialisation::{get_blockchain_client_connection, get_db_connection},
-    ports::{
-        db::{BlockStorageDB, TransactionsDB},
-        proving::RecursiveProvingEngine,
-    },
+    ports::{db::{BlockStorageDB, TransactionsDB}, proving::RecursiveProvingEngine},
 };
 use ark_bn254::Fr as Fr254;
 use ark_std::{collections::HashSet, Zero};
-use bson::doc;
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
     blockchain_client::BlockchainClientConnection,
@@ -42,7 +38,9 @@ pub(crate) fn transactions_to_include_in_block<K, V>(
 }
 /// assemble_block is the main function that is called by the proposer to create a new block,
 /// it fetches the necessary data from the database and the contract, then assembles the block
-pub(crate) async fn assemble_block<P, R>() -> Result<Block, BlockAssemblyError>
+pub(crate) async fn assemble_block<P, R>(
+    current_l2_block_number: u64,
+) -> Result<Block, BlockAssemblyError>
 where
     P: Proof,
     R: RecursiveProvingEngine<P> + Send + Sync + 'static,
@@ -56,13 +54,8 @@ where
         let db = get_db_connection().await;
         info!("Preparing block data");
         let block_size = get_block_size()?;
-        let current_block_number = db
-            .database(DB)
-            .collection::<StoredBlock>(PROPOSED_BLOCKS_COLLECTION)
-            .count_documents(doc! {})
-            .await
-            .unwrap_or(0) as u64;
-        let result = prepare_block_data::<P>(db, block_size, current_block_number).await;
+        let result =
+            prepare_block_data::<P>(db, block_size, current_l2_block_number).await;
         match &result {
             Ok(_) => info!("Block data prepared successfully"),
             Err(e) => warn!("Failed to prepare block data: {e:?}"),
@@ -106,12 +99,6 @@ where
     let block = make_block::<P, R>(included_deposits, selected_client_transactions).await?;
     // save this block to Store block db
     let db = get_db_connection().await;
-    let current_block_number = db
-        .database(DB)
-        .collection::<StoredBlock>(PROPOSED_BLOCKS_COLLECTION)
-        .count_documents(doc! {})
-        .await
-        .expect("Failed to count documents");
     let our_address = get_blockchain_client_connection()
         .await
         .read()
@@ -119,7 +106,7 @@ where
         .get_address();
 
     let store_block = StoredBlock {
-        layer2_block_number: current_block_number,
+        layer2_block_number: current_l2_block_number,
         commitments: block
             .transactions
             .iter()
