@@ -24,7 +24,7 @@ use crate::{
 };
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine;
-use ark_ff::{BigInteger256, Zero};
+use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
 use ark_std::{rand::thread_rng, UniformRand};
 use configuration::{addresses::get_addresses, settings::get_settings};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
@@ -46,6 +46,7 @@ use lib::{
 use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BJJTEAffine as JubJub, BabyJubjub, Fr as BJJScalar};
 use nightfall_bindings::artifacts::{Nightfall, IERC1155, IERC20, IERC3525, IERC721};
+use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use warp::{
@@ -483,13 +484,37 @@ where
     }
 }
 
-fn fits_in_bits_fr254(value: Fr254, bits: usize) -> bool {
-    let limbs = BigInteger256::from(value).0;
-    match bits {
-        64 => limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0,
-        96 => limbs[2] == 0 && limbs[3] == 0 && (limbs[1] >> 32) == 0,
-        _ => false,
+fn parse_bounded_swap_field(
+    id: &str,
+    field_name: &str,
+    hex_value: &str,
+    max_bits: u64,
+) -> Result<Fr254, TransactionHandlerError> {
+    let normalized_hex = hex_value.strip_prefix("0x").unwrap_or(hex_value);
+    let decoded_bytes = hex::decode(normalized_hex).map_err(|e| {
+        error!("{id} Error when reading {field_name}: {e}");
+        TransactionHandlerError::CustomError(format!("{field_name} must be a valid hex string"))
+    })?;
+
+    let raw_value = BigUint::from_bytes_be(&decoded_bytes);
+    if raw_value.bits() > max_bits {
+        error!(
+            "{id} Invalid swap request: {field_name} exceeds {max_bits} bits before field conversion"
+        );
+        return Err(TransactionHandlerError::CustomError(format!(
+            "{field_name} must fit in {max_bits} bits"
+        )));
     }
+
+    let field_modulus = BigUint::from_bytes_be(&Fr254::MODULUS.to_bytes_be());
+    if raw_value >= field_modulus {
+        error!("{id} Invalid swap request: {field_name} exceeds the BN254 field modulus");
+        return Err(TransactionHandlerError::CustomError(format!(
+            "{field_name} must be less than the BN254 field modulus"
+        )));
+    }
+
+    Ok(Fr254::from_be_bytes_mod_order(&decoded_bytes))
 }
 
 fn parse_supported_swap_token_type(
@@ -1079,15 +1104,8 @@ where
 
     let keys = get_zkp_keys().lock().expect("Poisoned Mutex lock").clone();
 
-    let fee = Fr254::from_hex_string(fee.as_str()).map_err(|e| {
-        error!("{id} Error when reading fee: {e}");
-        TransactionHandlerError::CustomError(e.to_string())
-    })?;
-
-    let deadline_fr = Fr254::from_hex_string(deadline.as_str()).map_err(|e| {
-        error!("{id} Error when reading deadline: {e}");
-        TransactionHandlerError::CustomError(e.to_string())
-    })?;
+    let fee = parse_bounded_swap_field(id, "fee", fee.as_str(), 96)?;
+    let deadline_fr = parse_bounded_swap_field(id, "deadline", deadline.as_str(), 64)?;
 
     let json_wrapped = format!("\"{}\"", party_a.public_key);
     let party_a_pk: JubJub = serde_json::from_str::<JubJubPubKey>(&json_wrapped)
@@ -1110,20 +1128,9 @@ where
         .0;
 
     // Parse swap values
-    let value_a_fr = Fr254::from_hex_string(party_a.value.as_str()).map_err(|e| {
-        error!("{id} Error when reading value_a: {e}");
-        TransactionHandlerError::CustomError(e.to_string())
-    })?;
-
-    let value_b_fr = Fr254::from_hex_string(party_b.value.as_str()).map_err(|e| {
-        error!("{id} Error when reading value_b: {e}");
-        TransactionHandlerError::CustomError(e.to_string())
-    })?;
-
-    let swap_nonce_fr = Fr254::from_hex_string(swap_nonce.as_str()).map_err(|e| {
-        error!("{id} Error when reading swap_nonce: {e}");
-        TransactionHandlerError::CustomError(e.to_string())
-    })?;
+    let value_a_fr = parse_bounded_swap_field(id, "party_a.value", party_a.value.as_str(), 96)?;
+    let value_b_fr = parse_bounded_swap_field(id, "party_b.value", party_b.value.as_str(), 96)?;
+    let swap_nonce_fr = parse_bounded_swap_field(id, "swap_nonce", swap_nonce.as_str(), 64)?;
 
     if swap_nonce_fr.is_zero() {
         error!("{id} Invalid swap request: swap_nonce must be non-zero");
@@ -1136,41 +1143,6 @@ where
         error!("{id} Invalid swap request: deadline must be non-zero");
         return Err(TransactionHandlerError::CustomError(
             "deadline must be non-zero".to_string(),
-        ));
-    }
-
-    if !fits_in_bits_fr254(value_a_fr, 96) {
-        error!("{id} Invalid swap request: party_a.value exceeds 96 bits");
-        return Err(TransactionHandlerError::CustomError(
-            "party_a.value must fit in 96 bits".to_string(),
-        ));
-    }
-
-    if !fits_in_bits_fr254(value_b_fr, 96) {
-        error!("{id} Invalid swap request: party_b.value exceeds 96 bits");
-        return Err(TransactionHandlerError::CustomError(
-            "party_b.value must fit in 96 bits".to_string(),
-        ));
-    }
-
-    if !fits_in_bits_fr254(fee, 96) {
-        error!("{id} Invalid swap request: fee exceeds 96 bits");
-        return Err(TransactionHandlerError::CustomError(
-            "fee must fit in 96 bits".to_string(),
-        ));
-    }
-
-    if !fits_in_bits_fr254(swap_nonce_fr, 64) {
-        error!("{id} Invalid swap request: swap_nonce exceeds 64 bits");
-        return Err(TransactionHandlerError::CustomError(
-            "swap_nonce must fit in 64 bits".to_string(),
-        ));
-    }
-
-    if !fits_in_bits_fr254(deadline_fr, 64) {
-        error!("{id} Invalid swap request: deadline exceeds 64 bits");
-        return Err(TransactionHandlerError::CustomError(
-            "deadline must fit in 64 bits".to_string(),
         ));
     }
 
@@ -1418,6 +1390,51 @@ mod tests {
     use lib::plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine};
     use nf_curves::ed_on_bn254::BabyJubjub;
     use nf_curves::ed_on_bn254::Fq;
+
+    #[test]
+    fn test_parse_bounded_swap_field_rejects_field_modulus_plus_one() {
+        let field_modulus = BigUint::from_bytes_be(&Fr254::MODULUS.to_bytes_be());
+        let oversized_hex = format!("0x{}", (field_modulus + BigUint::from(1u8)).to_str_radix(16));
+
+        let result =
+            parse_bounded_swap_field("test-id", "party_a.value", &oversized_hex, 256);
+
+        match result {
+            Err(TransactionHandlerError::CustomError(msg)) => {
+                assert!(msg.contains("BN254 field modulus"), "got: {msg}");
+            }
+            other => panic!("Expected field modulus rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bounded_swap_field_accepts_exact_96_bit_limit() {
+        let result = parse_bounded_swap_field(
+            "test-id",
+            "party_a.value",
+            "0xFFFFFFFFFFFFFFFFFFFFFFFF",
+            96,
+        );
+
+        assert!(result.is_ok(), "expected exact 96-bit limit to be accepted");
+    }
+
+    #[test]
+    fn test_parse_bounded_swap_field_rejects_97_bit_value() {
+        let result = parse_bounded_swap_field(
+            "test-id",
+            "party_a.value",
+            "0x01FFFFFFFFFFFFFFFFFFFFFFFF",
+            96,
+        );
+
+        match result {
+            Err(TransactionHandlerError::CustomError(msg)) => {
+                assert!(msg.contains("party_a.value must fit in 96 bits"), "got: {msg}");
+            }
+            other => panic!("Expected 97-bit rejection, got {other:?}"),
+        }
+    }
 
     /// Tests that transfer API rejects invalid recipient public keys
     #[tokio::test]
