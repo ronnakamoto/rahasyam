@@ -27,6 +27,144 @@ type ALLTransactionData<P> = (
     usize,
 );
 
+type SwapPair<P> = (
+    ClientTransactionWithMetaData<P>,
+    ClientTransactionWithMetaData<P>,
+);
+
+struct GroupedSwapTransactions<P> {
+    normal_transactions: Vec<ClientTransactionWithMetaData<P>>,
+    matched_swap_pairs: Vec<SwapPair<P>>,
+    expired_swaps: Vec<ClientTransactionWithMetaData<P>>,
+    unmatched_swap_count: usize,
+}
+
+fn group_valid_swap_pairs<P>(
+    pending_client_transactions: Vec<ClientTransactionWithMetaData<P>>,
+    current_block_number: u64,
+) -> GroupedSwapTransactions<P>
+where
+    P: Proof,
+{
+    let (swap_transactions, normal_transactions): (Vec<_>, Vec<_>) = pending_client_transactions
+        .into_iter()
+        .partition(|tx| !tx.client_transaction.swap_link.is_zero());
+
+    let mut swap_groups: std::collections::HashMap<String, Vec<ClientTransactionWithMetaData<P>>> =
+        std::collections::HashMap::new();
+
+    for tx in swap_transactions {
+        let swap_link_hex = tx.client_transaction.swap_link.to_hex_string();
+        swap_groups.entry(swap_link_hex).or_default().push(tx);
+    }
+
+    let mut matched_swap_pairs: Vec<SwapPair<P>> = Vec::new();
+    let mut expired_swaps: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
+    let mut unmatched_swap_count = 0;
+
+    for (_swap_link, txs) in swap_groups {
+        let mut by_deadline: std::collections::HashMap<
+            String,
+            Vec<ClientTransactionWithMetaData<P>>,
+        > = std::collections::HashMap::new();
+        for tx in txs {
+            let deadline_hex = tx.client_transaction.deadline.to_hex_string();
+            by_deadline.entry(deadline_hex).or_default().push(tx);
+        }
+
+        for (_deadline_key, mut same_deadline_txs) in by_deadline {
+            let deadline = same_deadline_txs
+                .first()
+                .map(|tx| tx.client_transaction.deadline)
+                .unwrap_or_else(Fr254::zero);
+
+            if deadline.is_zero() || deadline < Fr254::from(current_block_number) {
+                warn!("Swap deadline expired or invalid, skipping group");
+                expired_swaps.append(&mut same_deadline_txs);
+                continue;
+            }
+
+            let mut party_a_legs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
+            let mut party_b_legs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
+            for tx in same_deadline_txs.drain(..) {
+                if tx.client_transaction.swap_side == Fr254::from(1u64) {
+                    party_a_legs.push(tx);
+                } else if tx.client_transaction.swap_side.is_zero() {
+                    party_b_legs.push(tx);
+                } else {
+                    warn!("Invalid swap_side (expected 0 or 1), keeping transaction unmatched");
+                    unmatched_swap_count += 1;
+                }
+            }
+
+            while !party_a_legs.is_empty() && !party_b_legs.is_empty() {
+                let tx_a = party_a_legs.pop().expect("len checked");
+                let tx_b = party_b_legs.pop().expect("len checked");
+                matched_swap_pairs.push((tx_a, tx_b));
+            }
+
+            unmatched_swap_count += party_a_legs.len() + party_b_legs.len();
+        }
+    }
+
+    GroupedSwapTransactions {
+        normal_transactions,
+        matched_swap_pairs,
+        expired_swaps,
+        unmatched_swap_count,
+    }
+}
+
+fn place_swap_pairs_on_siblings<P>(
+    deposit_count: usize,
+    selected_transactions: &[ALLTransactionData<P>],
+) -> Vec<ClientTransactionWithMetaData<P>>
+where
+    P: Proof,
+{
+    let mut swap_pairs: Vec<SwapPair<P>> = Vec::new();
+    let mut normal_txs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
+
+    for (_, client_txs, _, slots) in selected_transactions {
+        if let Some(txs) = client_txs {
+            if *slots == 2 && txs.len() == 2 {
+                swap_pairs.push((txs[0].clone(), txs[1].clone()));
+            } else {
+                normal_txs.extend(txs.clone());
+            }
+        }
+    }
+
+    let mut reordered: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
+    let mut normal_iter = normal_txs.into_iter();
+    let mut global_idx = deposit_count;
+
+    for pair in swap_pairs {
+        while global_idx % 2 != 0 {
+            if let Some(normal) = normal_iter.next() {
+                reordered.push(normal);
+                global_idx += 1;
+            } else {
+                info!(
+                    "Skipping remaining swap pairs because global index {global_idx} is odd and no normal transactions are available for alignment"
+                );
+                break;
+            }
+        }
+
+        if global_idx % 2 != 0 {
+            break;
+        }
+
+        reordered.push(pair.0);
+        reordered.push(pair.1);
+        global_idx += 2;
+    }
+
+    reordered.extend(normal_iter);
+    reordered
+}
+
 pub(crate) fn transactions_to_include_in_block<K, V>(
     mempool_transactions: Option<Vec<(K, V)>>,
 ) -> Vec<(K, V)> {
@@ -302,87 +440,17 @@ where
         return Err(BlockAssemblyError::InsufficientTransactions);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // SWAP MATCHING: Group swap transactions by swap_link
-    // ═══════════════════════════════════════════════════════════
+    let GroupedSwapTransactions {
+        normal_transactions,
+        matched_swap_pairs,
+        expired_swaps,
+        unmatched_swap_count,
+    } = group_valid_swap_pairs(pending_client_transactions, current_block_number);
 
-    // Separate normal transactions and swaps
-    let (swap_transactions, normal_transactions): (Vec<_>, Vec<_>) = pending_client_transactions
-        .into_iter()
-        .partition(|tx| !tx.client_transaction.swap_link.is_zero());
-
-    // Group swap transactions by swap_link
-    let mut swap_groups: std::collections::HashMap<String, Vec<ClientTransactionWithMetaData<P>>> =
-        std::collections::HashMap::new();
-
-    for tx in swap_transactions {
-        let swap_link_hex = tx.client_transaction.swap_link.to_hex_string();
-        swap_groups.entry(swap_link_hex).or_default().push(tx);
-    }
-
-    // Keep only complete pairs with valid deadline
-    let mut matched_swaps: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-    let mut unmatched_swaps: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-    let mut expired_swaps: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-
-    for (_swap_link, txs) in swap_groups {
-        // Group by deadline, then form as many complete pairs as possible.
-        // This handles retries/multiple submissions sharing the same swap_link.
-        let mut by_deadline: std::collections::HashMap<
-            String,
-            Vec<ClientTransactionWithMetaData<P>>,
-        > = std::collections::HashMap::new();
-        for tx in txs {
-            let deadline_hex = tx.client_transaction.deadline.to_hex_string();
-            by_deadline.entry(deadline_hex).or_default().push(tx);
-        }
-
-        for (_deadline_key, mut same_deadline_txs) in by_deadline {
-            let deadline = same_deadline_txs
-                .first()
-                .map(|tx| tx.client_transaction.deadline)
-                .unwrap_or_else(Fr254::zero);
-
-            if deadline.is_zero() || deadline < Fr254::from(current_block_number) {
-                warn!("Swap deadline expired or invalid, skipping group");
-                expired_swaps.append(&mut same_deadline_txs);
-                continue;
-            }
-
-            // Pair only complementary swap legs:
-            // swap_side=1 (party A leg) must be matched with swap_side=0 (party B leg).
-            let mut party_a_legs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-            let mut party_b_legs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-            for tx in same_deadline_txs.drain(..) {
-                if tx.client_transaction.swap_side == Fr254::from(1u64) {
-                    party_a_legs.push(tx);
-                } else if tx.client_transaction.swap_side.is_zero() {
-                    party_b_legs.push(tx);
-                } else {
-                    warn!("Invalid swap_side (expected 0 or 1), keeping transaction unmatched");
-                    unmatched_swaps.push(tx);
-                }
-            }
-
-            while !party_a_legs.is_empty() && !party_b_legs.is_empty() {
-                let tx_a = party_a_legs.pop().expect("len checked");
-                let tx_b = party_b_legs.pop().expect("len checked");
-                matched_swaps.push(tx_a);
-                matched_swaps.push(tx_b);
-            }
-
-            // Leftovers stay unmatched in mempool.
-            unmatched_swaps.extend(party_a_legs);
-            unmatched_swaps.extend(party_b_legs);
-        }
-    }
-
-    // unmatched non-expired swaps stay in mempool (don't mark as not in_mempool)
-    // expired swaps are removed from mempool
-    if !unmatched_swaps.is_empty() {
+    if unmatched_swap_count != 0 {
         info!(
             "Keeping {} unmatched non-expired swap leg(s) in mempool",
-            unmatched_swaps.len()
+            unmatched_swap_count
         );
     }
 
@@ -429,14 +497,9 @@ where
         ));
     }
     // 5.3b. Push matched swap pairs (2 slots each, combined fee)
-    for pair in matched_swaps.chunks(2) {
-        let combined_fee = pair[0].client_transaction.fee + pair[1].client_transaction.fee;
-        all_transactions.push((
-            None,
-            Some(vec![pair[0].clone(), pair[1].clone()]),
-            combined_fee,
-            2,
-        ));
+    for (tx_a, tx_b) in matched_swap_pairs.iter() {
+        let combined_fee = tx_a.client_transaction.fee + tx_b.client_transaction.fee;
+        all_transactions.push((None, Some(vec![tx_a.clone(), tx_b.clone()]), combined_fee, 2));
     }
     // 5.4. Sort transactions by total fee (descending)
     // 5.4. Sort transactions by fee-per-slot (descending)
@@ -471,59 +534,8 @@ where
         .filter_map(|(deposit, _, _, _)| deposit.clone())
         .collect();
 
-    // Extract swap pairs (slots==2) and normal txs (slots==1) from selected_transactions
-    // This preserves pair structure without relying on swap_link
-    let mut swap_pairs: Vec<(
-        ClientTransactionWithMetaData<P>,
-        ClientTransactionWithMetaData<P>,
-    )> = Vec::new();
-    let mut normal_txs: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-
-    for (_, client_txs, _, slots) in selected_transactions.iter() {
-        if let Some(txs) = client_txs {
-            if *slots == 2 && txs.len() == 2 {
-                swap_pairs.push((txs[0].clone(), txs[1].clone()));
-            } else {
-                normal_txs.extend(txs.clone());
-            }
-        }
-    }
-
-    // 8. Build final client list ensuring swap pairs land on sibling positions
-    // Siblings in recursion tree = (0,1), (2,3), etc. in global list
-    // Global index = deposit_count + client_index
-    // Swap pair must start at even global index
     let deposit_count = used_deposits_info.len();
-    let mut reordered: Vec<ClientTransactionWithMetaData<P>> = Vec::new();
-    let mut normal_iter = normal_txs.into_iter();
-    let mut global_idx = deposit_count;
-
-    // Place swap pairs at even global indices, fill gaps with normal txs
-    for pair in swap_pairs {
-        // Pad with normal txs until global_idx is even
-        while global_idx % 2 != 0 {
-            if let Some(normal) = normal_iter.next() {
-                reordered.push(normal);
-                global_idx += 1;
-            } else {
-                info!(
-                    "Skipping remaining swap pairs because global index {global_idx} is odd and no normal transactions are available for alignment"
-                );
-                break;
-            }
-        }
-
-        if global_idx % 2 != 0 {
-            break;
-        }
-
-        reordered.push(pair.0);
-        reordered.push(pair.1);
-        global_idx += 2;
-    }
-
-    // Append remaining normal txs
-    reordered.extend(normal_iter);
+    let reordered = place_swap_pairs_on_siblings(deposit_count, &selected_transactions);
 
     // 9. Delete used deposits in mempool
     <mongodb::Client as TransactionsDB<P>>::remove_mempool_deposits(db, used_deposits_info.clone())
@@ -1391,6 +1403,55 @@ mod tests {
         assert_eq!(
             remaining_same_side, 2,
             "Same-side swap legs should remain pending in mempool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_single_orphan_swap_leg_stays_in_mempool() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 4;
+
+        db.store_transaction(ClientTransactionWithMetaData {
+            client_transaction: lib::shared_entities::ClientTransaction {
+                fee: Fr254::from(20u64),
+                swap_link: Fr254::from(778u64),
+                deadline: Fr254::from(1000u64),
+                swap_side: Fr254::from(1u64),
+                proof: PlonkProof::default(),
+                ..Default::default()
+            },
+            block_l2: None,
+            in_mempool: true,
+            hash: vec![210],
+            historic_roots: vec![],
+        })
+        .await
+        .unwrap();
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
+
+        let remaining_client = {
+            let mempool_client_transactions: Option<
+                Vec<(Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)>,
+            > = db.get_all_mempool_client_transactions().await;
+
+            transactions_to_include_in_block(mempool_client_transactions)
+                .into_iter()
+                .map(|(_, v)| v)
+                .collect::<Vec<ClientTransactionWithMetaData<PlonkProof>>>()
+        };
+        let remaining_orphan_swap_legs = remaining_client
+            .iter()
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(778u64))
+            .count();
+        assert_eq!(
+            remaining_orphan_swap_legs, 1,
+            "A single orphan swap leg should remain pending in mempool"
         );
     }
 

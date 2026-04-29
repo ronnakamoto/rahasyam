@@ -1,6 +1,6 @@
 use alloy::{
     primitives::{keccak256, Address, B256, I256},
-    rpc::types::Filter,
+    rpc::types::{Filter, TransactionReceipt},
     signers::local::PrivateKeySigner as LocalWallet,
 };
 use ark_bn254::Fr as Fr254;
@@ -1068,6 +1068,63 @@ pub async fn create_nf3_swap_transaction(
         .to_string();
     info!("Swap transaction {returned_id} has been accepted by the client");
     Ok(Uuid::parse_str(&returned_id).unwrap())
+}
+
+pub async fn submit_swap_pair_and_assert_paired(
+    http_client: &reqwest::Client,
+    swap_url_client1: &Url,
+    swap_url_client2: &Url,
+    request_client1: NF3SwapRequest,
+    request_client2: NF3SwapRequest,
+    responses: Arc<Mutex<Vec<Value>>>,
+    client1_url: &str,
+    client2_url: &str,
+    context: &str,
+) -> Result<(), TestError> {
+    let client1_swap_id =
+        create_nf3_swap_transaction(http_client, swap_url_client1.clone(), request_client1).await?;
+    let client2_swap_id =
+        create_nf3_swap_transaction(http_client, swap_url_client2.clone(), request_client2).await?;
+
+    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
+    let swap_responses = wait_for_all_responses(&swap_request_ids, responses).await;
+    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
+
+    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
+        swap_responses_by_uuid
+            .get(&client1_swap_id)
+            .ok_or_else(|| TestError::new(format!("Missing first swap response for {context}")))?,
+    )
+    .map_err(|e| TestError::new(format!("Failed to parse first swap response for {context}: {e}")))?
+    .0;
+    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
+        swap_responses_by_uuid
+            .get(&client2_swap_id)
+            .ok_or_else(|| TestError::new(format!("Missing second swap response for {context}")))?,
+    )
+    .map_err(|e| TestError::new(format!("Failed to parse second swap response for {context}: {e}")))?
+    .0;
+
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)?;
+
+    let client1_receives = Fr254::from_hex_string(
+        tx_client2["commitments"][0]
+            .as_str()
+            .ok_or_else(|| TestError::new(format!("Missing first counterparty commitment for {context}")))?,
+    )
+    .map_err(|e| TestError::new(format!("Invalid first counterparty commitment for {context}: {e}")))?;
+    let client2_receives = Fr254::from_hex_string(
+        tx_client1["commitments"][0]
+            .as_str()
+            .ok_or_else(|| TestError::new(format!("Missing second counterparty commitment for {context}")))?,
+    )
+    .map_err(|e| TestError::new(format!("Invalid second counterparty commitment for {context}: {e}")))?;
+
+    wait_on_chain(&[client1_receives], client1_url).await?;
+    wait_on_chain(&[client2_receives], client2_url).await?;
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives).await?;
+
+    Ok(())
 }
 
 pub async fn create_nf3_withdraw_transaction(

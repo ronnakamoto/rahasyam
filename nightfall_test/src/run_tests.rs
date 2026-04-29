@@ -1,9 +1,8 @@
 use crate::{
     test::{
-        self, assert_swap_pairing_in_proposer_block, assert_swap_pairing_public_inputs,
-        create_nf3_deposit_transaction, create_nf3_swap_request, create_nf3_swap_transaction,
-        create_nf3_transfer_transaction, create_nf3_withdraw_transaction,
-        get_key, get_recipient_address, set_anvil_mining_interval,
+        self, create_nf3_deposit_transaction, create_nf3_swap_request,
+        create_nf3_transfer_transaction, create_nf3_withdraw_transaction, get_key,
+        get_recipient_address, set_anvil_mining_interval, submit_swap_pair_and_assert_paired,
         verify_deposit_commitments_nf_token_id, wait_for_all_responses,
         wait_for_withdraws_on_chain, wait_on_chain, TokenType,
     },
@@ -878,12 +877,8 @@ pub async fn run_tests(
         .join("v1/swap")
         .unwrap();
 
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC20,
@@ -896,43 +891,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC20 swap",
     )
-    .expect("Failed to parse client1 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    // Commitment[0] is the counterparty output.
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 swap leg");
-
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC20 swap legs should pair end to end");
     info!("ERC20 swap commitments are now on-chain");
 
     // ERC721 swap (roundtrip): first move ERC721 to client1, then return it to client2.
@@ -955,12 +926,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key2.clone(),
         zkp_key.clone(),
         TokenType::ERC721,
@@ -973,41 +940,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC721 outbound swap",
     )
-    .expect("Failed to parse client1 ERC721 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 ERC721 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 ERC721 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 ERC721 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC721 outbound swap legs should pair end to end");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
     let swap_nonce = format!("0x{:x}", raw_swap_nonce);
@@ -1027,12 +972,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC721,
@@ -1045,41 +986,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC721 return swap",
     )
-    .expect("Failed to parse client1 ERC721 return swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 ERC721 return swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 ERC721 return swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 ERC721 return swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC721 return swap legs should pair end to end");
     info!("ERC721 swap commitments are now on-chain");
 
     // ERC3525 swap scenarios:
@@ -1167,12 +1086,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC3525,
@@ -1185,41 +1100,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC3525 slot7/slot8 swap",
     )
-    .expect("Failed to parse client1 ERC3525<->ERC3525 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 ERC3525<->ERC3525 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 ERC3525<->ERC3525 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 ERC3525<->ERC3525 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC3525 slot7/slot8 swap legs should pair end to end");
 
     info!("Sending ERC3525<->ERC3525 reverse swap transactions (slot8 vs slot7)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
@@ -1240,12 +1133,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC3525,
@@ -1258,41 +1147,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC3525 slot8/slot7 reverse swap",
     )
-    .expect("Failed to parse client1 reverse ERC3525<->ERC3525 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 reverse ERC3525<->ERC3525 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 reverse ERC3525<->ERC3525 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 reverse ERC3525<->ERC3525 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC3525 slot8/slot7 reverse swap legs should pair end to end");
 
     info!("Sending ERC3525<->ERC20 swap transactions (roundtrip)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
@@ -1313,12 +1180,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC3525,
@@ -1331,41 +1194,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC3525/ERC20 outbound swap",
     )
-    .expect("Failed to parse client1 ERC3525<->ERC20 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 ERC3525<->ERC20 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 ERC3525<->ERC20 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 ERC3525<->ERC20 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC3525/ERC20 outbound swap legs should pair end to end");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
     let swap_nonce = format!("0x{:x}", raw_swap_nonce);
@@ -1385,12 +1226,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client1.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key2.clone(),
         zkp_key.clone(),
         TokenType::ERC3525,
@@ -1403,41 +1240,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id =
-        create_nf3_swap_transaction(&http_client, swap_url_client2.clone(), swap_request)
-            .await
-            .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC3525/ERC20 return swap",
     )
-    .expect("Failed to parse client1 return ERC3525<->ERC20 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 return ERC3525<->ERC20 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 return ERC3525<->ERC20 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 return ERC3525<->ERC20 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC3525/ERC20 return swap legs should pair end to end");
     info!("ERC3525 swap commitments are now on-chain");
 
     // Ensure all added ERC3525 scenarios preserve final balances expected by later withdraw checks.
@@ -1516,11 +1331,8 @@ pub async fn run_tests(
         swap_nonce.clone(),
         deadline.clone(),
     );
-    let client1_swap_id = create_nf3_swap_transaction(&http_client, swap_url_client1, swap_request)
-        .await
-        .unwrap();
-
-    let swap_request = create_nf3_swap_request(
+    let swap_request_client1 = swap_request;
+    let swap_request_client2 = create_nf3_swap_request(
         zkp_key.clone(),
         zkp_key2.clone(),
         TokenType::ERC1155,
@@ -1533,40 +1345,19 @@ pub async fn run_tests(
         swap_nonce,
         deadline,
     );
-    let client2_swap_id = create_nf3_swap_transaction(&http_client, swap_url_client2, swap_request)
-        .await
-        .unwrap();
-
-    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
-    let swap_responses = wait_for_all_responses(&swap_request_ids, responses.clone()).await;
-    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
-
-    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client1_swap_id).unwrap(),
+    submit_swap_pair_and_assert_paired(
+        &http_client,
+        &swap_url_client1,
+        &swap_url_client2,
+        swap_request_client1,
+        swap_request_client2,
+        responses.clone(),
+        &settings.nightfall_client.url,
+        "http://client2:3000",
+        "ERC1155 swap",
     )
-    .expect("Failed to parse client1 ERC1155 swap response")
-    .0;
-    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
-        swap_responses_by_uuid.get(&client2_swap_id).unwrap(),
-    )
-    .expect("Failed to parse client2 ERC1155 swap response")
-    .0;
-    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
-        .expect("Swap legs were not paired by public inputs");
-
-    let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client1 ERC1155 swap leg");
-    let client2_receives = Fr254::from_hex_string(tx_client1["commitments"][0].as_str().unwrap())
-        .expect("Invalid commitment hash for client2 ERC1155 swap leg");
-    wait_on_chain(&[client1_receives], &settings.nightfall_client.url)
         .await
-        .unwrap();
-    wait_on_chain(&[client2_receives], "http://client2:3000")
-        .await
-        .unwrap();
-    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
-        .await
-        .expect("Swap legs were not assembled as sibling transactions");
+        .expect("ERC1155 swap legs should pair end to end");
     info!("ERC1155 swap commitments are now on-chain");
     let my_balance = erc20_contract
         .balanceOf(recipient_addr)
