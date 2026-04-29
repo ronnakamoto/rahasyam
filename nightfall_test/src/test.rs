@@ -782,8 +782,7 @@ fn swap_field(tx: &Value, field: &str) -> Result<Fr254, TestError> {
         .and_then(Value::as_str)
         .ok_or_else(|| TestError::new(format!("Swap tx missing {field}")))?;
 
-    Fr254::from_hex_string(raw)
-        .map_err(|e| TestError::new(format!("Invalid swap {field}: {e}")))
+    Fr254::from_hex_string(raw).map_err(|e| TestError::new(format!("Invalid swap {field}: {e}")))
 }
 
 pub fn assert_swap_pairing_public_inputs(tx_a: &Value, tx_b: &Value) -> Result<(), TestError> {
@@ -1070,6 +1069,7 @@ pub async fn create_nf3_swap_transaction(
     Ok(Uuid::parse_str(&returned_id).unwrap())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn submit_swap_pair_and_assert_paired(
     http_client: &reqwest::Client,
     swap_url_client1: &Url,
@@ -1095,30 +1095,48 @@ pub async fn submit_swap_pair_and_assert_paired(
             .get(&client1_swap_id)
             .ok_or_else(|| TestError::new(format!("Missing first swap response for {context}")))?,
     )
-    .map_err(|e| TestError::new(format!("Failed to parse first swap response for {context}: {e}")))?
+    .map_err(|e| {
+        TestError::new(format!(
+            "Failed to parse first swap response for {context}: {e}"
+        ))
+    })?
     .0;
     let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
         swap_responses_by_uuid
             .get(&client2_swap_id)
             .ok_or_else(|| TestError::new(format!("Missing second swap response for {context}")))?,
     )
-    .map_err(|e| TestError::new(format!("Failed to parse second swap response for {context}: {e}")))?
+    .map_err(|e| {
+        TestError::new(format!(
+            "Failed to parse second swap response for {context}: {e}"
+        ))
+    })?
     .0;
 
     assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)?;
 
-    let client1_receives = Fr254::from_hex_string(
-        tx_client2["commitments"][0]
-            .as_str()
-            .ok_or_else(|| TestError::new(format!("Missing first counterparty commitment for {context}")))?,
-    )
-    .map_err(|e| TestError::new(format!("Invalid first counterparty commitment for {context}: {e}")))?;
-    let client2_receives = Fr254::from_hex_string(
-        tx_client1["commitments"][0]
-            .as_str()
-            .ok_or_else(|| TestError::new(format!("Missing second counterparty commitment for {context}")))?,
-    )
-    .map_err(|e| TestError::new(format!("Invalid second counterparty commitment for {context}: {e}")))?;
+    let client1_receives =
+        Fr254::from_hex_string(tx_client2["commitments"][0].as_str().ok_or_else(|| {
+            TestError::new(format!(
+                "Missing first counterparty commitment for {context}"
+            ))
+        })?)
+        .map_err(|e| {
+            TestError::new(format!(
+                "Invalid first counterparty commitment for {context}: {e}"
+            ))
+        })?;
+    let client2_receives =
+        Fr254::from_hex_string(tx_client1["commitments"][0].as_str().ok_or_else(|| {
+            TestError::new(format!(
+                "Missing second counterparty commitment for {context}"
+            ))
+        })?)
+        .map_err(|e| {
+            TestError::new(format!(
+                "Invalid second counterparty commitment for {context}: {e}"
+            ))
+        })?;
 
     wait_on_chain(&[client1_receives], client1_url).await?;
     wait_on_chain(&[client2_receives], client2_url).await?;
@@ -1305,6 +1323,7 @@ fn create_nf3_withdraw_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_nf3_swap_request(
     party_a_public_key: String,
     party_b_public_key: String,

@@ -5,7 +5,7 @@ use crate::{
     services::assemble_block::assemble_block,
 };
 use alloy::{
-    primitives::{Address, I256, TxHash, U64},
+    primitives::{Address, TxHash, I256, U64},
     providers::{Provider, RootProvider},
     rpc::types::{BlockId, BlockNumberOrTag},
     sol_types::SolEvent,

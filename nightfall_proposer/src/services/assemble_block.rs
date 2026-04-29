@@ -3,7 +3,10 @@ use crate::{
     driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION},
     drivers::blockchain::block_assembly::BlockAssemblyError,
     initialisation::{get_blockchain_client_connection, get_db_connection},
-    ports::{db::{BlockStorageDB, TransactionsDB}, proving::RecursiveProvingEngine},
+    ports::{
+        db::{BlockStorageDB, TransactionsDB},
+        proving::RecursiveProvingEngine,
+    },
 };
 use ark_bn254::Fr as Fr254;
 use ark_std::{collections::HashSet, Zero};
@@ -192,8 +195,7 @@ where
         let db = get_db_connection().await;
         info!("Preparing block data");
         let block_size = get_block_size()?;
-        let result =
-            prepare_block_data::<P>(db, block_size, current_l2_block_number).await;
+        let result = prepare_block_data::<P>(db, block_size, current_l2_block_number).await;
         match &result {
             Ok(_) => info!("Block data prepared successfully"),
             Err(e) => warn!("Failed to prepare block data: {e:?}"),
@@ -448,10 +450,7 @@ where
     } = group_valid_swap_pairs(pending_client_transactions, current_block_number);
 
     if unmatched_swap_count != 0 {
-        info!(
-            "Keeping {} unmatched non-expired swap leg(s) in mempool",
-            unmatched_swap_count
-        );
+        info!("Keeping {unmatched_swap_count} unmatched non-expired swap leg(s) in mempool");
     }
 
     // Step 5. Sort and prioritize transactions
@@ -499,7 +498,12 @@ where
     // 5.3b. Push matched swap pairs (2 slots each, combined fee)
     for (tx_a, tx_b) in matched_swap_pairs.iter() {
         let combined_fee = tx_a.client_transaction.fee + tx_b.client_transaction.fee;
-        all_transactions.push((None, Some(vec![tx_a.clone(), tx_b.clone()]), combined_fee, 2));
+        all_transactions.push((
+            None,
+            Some(vec![tx_a.clone(), tx_b.clone()]),
+            combined_fee,
+            2,
+        ));
     }
     // 5.4. Sort transactions by total fee (descending)
     // 5.4. Sort transactions by fee-per-slot (descending)

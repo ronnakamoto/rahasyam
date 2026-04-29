@@ -850,7 +850,7 @@ pub async fn run_tests(
     // create swap requests (same party ordering in both legs)
     info!("Sending ERC20 swap transactions");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -902,14 +902,14 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC20 swap",
     )
-        .await
-        .expect("ERC20 swap legs should pair end to end");
+    .await
+    .expect("ERC20 swap legs should pair end to end");
     info!("ERC20 swap commitments are now on-chain");
 
     // ERC721 swap (roundtrip): first move ERC721 to client1, then return it to client2.
     info!("Sending ERC721 swap transactions");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -951,11 +951,11 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC721 outbound swap",
     )
-        .await
-        .expect("ERC721 outbound swap legs should pair end to end");
+    .await
+    .expect("ERC721 outbound swap legs should pair end to end");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -997,8 +997,8 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC721 return swap",
     )
-        .await
-        .expect("ERC721 return swap legs should pair end to end");
+    .await
+    .expect("ERC721 return swap legs should pair end to end");
     info!("ERC721 swap commitments are now on-chain");
 
     // ERC3525 swap scenarios:
@@ -1069,7 +1069,7 @@ pub async fn run_tests(
 
     info!("Sending ERC3525<->ERC3525 swap transactions (slot7 vs slot8)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -1111,12 +1111,12 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC3525 slot7/slot8 swap",
     )
-        .await
-        .expect("ERC3525 slot7/slot8 swap legs should pair end to end");
+    .await
+    .expect("ERC3525 slot7/slot8 swap legs should pair end to end");
 
     info!("Sending ERC3525<->ERC3525 reverse swap transactions (slot8 vs slot7)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -1158,12 +1158,12 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC3525 slot8/slot7 reverse swap",
     )
-        .await
-        .expect("ERC3525 slot8/slot7 reverse swap legs should pair end to end");
+    .await
+    .expect("ERC3525 slot8/slot7 reverse swap legs should pair end to end");
 
     info!("Sending ERC3525<->ERC20 swap transactions (roundtrip)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -1205,11 +1205,11 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC3525/ERC20 outbound swap",
     )
-        .await
-        .expect("ERC3525/ERC20 outbound swap legs should pair end to end");
+    .await
+    .expect("ERC3525/ERC20 outbound swap legs should pair end to end");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -1251,8 +1251,8 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC3525/ERC20 return swap",
     )
-        .await
-        .expect("ERC3525/ERC20 return swap legs should pair end to end");
+    .await
+    .expect("ERC3525/ERC20 return swap legs should pair end to end");
     info!("ERC3525 swap commitments are now on-chain");
 
     // Ensure all added ERC3525 scenarios preserve final balances expected by later withdraw checks.
@@ -1314,7 +1314,7 @@ pub async fn run_tests(
     // ERC1155 swap.
     info!("Sending ERC1155 swap transactions");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
-    let swap_nonce = format!("0x{:x}", raw_swap_nonce);
+    let swap_nonce = format!("0x{raw_swap_nonce:x}");
     let deadline = "0x1000".to_string();
     let fee = "0x00".to_string();
 
@@ -1356,8 +1356,8 @@ pub async fn run_tests(
         "http://client2:3000",
         "ERC1155 swap",
     )
-        .await
-        .expect("ERC1155 swap legs should pair end to end");
+    .await
+    .expect("ERC1155 swap legs should pair end to end");
     info!("ERC1155 swap commitments are now on-chain");
     let my_balance = erc20_contract
         .balanceOf(recipient_addr)

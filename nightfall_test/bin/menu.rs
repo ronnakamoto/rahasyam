@@ -6,7 +6,8 @@ use inquire::Select;
 use inquire::Text;
 use lib::{
     client_models::{
-        NF3DepositRequest, NF3RecipientData, NF3SwapRequest, SwapParty, NF3TransferRequest, NF3WithdrawRequest,
+        NF3DepositRequest, NF3RecipientData, NF3SwapRequest, NF3TransferRequest,
+        NF3WithdrawRequest, SwapParty,
     },
     derive_key::ZKPPubKey,
     hex_conversion::HexConvertible,
@@ -506,7 +507,7 @@ fn prompt_nf3_swap_request(default_erc_address: &str, default_public_key: &str) 
         .with_initial_value("0x00")
         .prompt()
         .expect("Failed to get Fee");
-     NF3SwapRequest {
+    NF3SwapRequest {
         party_a: SwapParty {
             erc_address: erc_address_a,
             token_id: token_id_a,

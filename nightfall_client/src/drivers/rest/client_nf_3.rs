@@ -1929,10 +1929,12 @@ mod tests {
     #[test]
     fn test_parse_bounded_swap_field_rejects_field_modulus_plus_one() {
         let field_modulus = BigUint::from_bytes_be(&Fr254::MODULUS.to_bytes_be());
-        let oversized_hex = format!("0x{}", (field_modulus + BigUint::from(1u8)).to_str_radix(16));
+        let oversized_hex = format!(
+            "0x{}",
+            (field_modulus + BigUint::from(1u8)).to_str_radix(16)
+        );
 
-        let result =
-            parse_bounded_swap_field("test-id", "party_a.value", &oversized_hex, 256);
+        let result = parse_bounded_swap_field("test-id", "party_a.value", &oversized_hex, 256);
 
         match result {
             Err(TransactionHandlerError::CustomError(msg)) => {
@@ -1944,12 +1946,8 @@ mod tests {
 
     #[test]
     fn test_parse_bounded_swap_field_accepts_exact_96_bit_limit() {
-        let result = parse_bounded_swap_field(
-            "test-id",
-            "party_a.value",
-            "0xFFFFFFFFFFFFFFFFFFFFFFFF",
-            96,
-        );
+        let result =
+            parse_bounded_swap_field("test-id", "party_a.value", "0xFFFFFFFFFFFFFFFFFFFFFFFF", 96);
 
         assert!(result.is_ok(), "expected exact 96-bit limit to be accepted");
     }
@@ -1965,7 +1963,10 @@ mod tests {
 
         match result {
             Err(TransactionHandlerError::CustomError(msg)) => {
-                assert!(msg.contains("party_a.value must fit in 96 bits"), "got: {msg}");
+                assert!(
+                    msg.contains("party_a.value must fit in 96 bits"),
+                    "got: {msg}"
+                );
             }
             other => panic!("Expected 97-bit rejection, got {other:?}"),
         }

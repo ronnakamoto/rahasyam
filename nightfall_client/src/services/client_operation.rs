@@ -432,9 +432,9 @@ pub async fn deposit_operation<T: TokenContract, N: NightfallContract>(
 #[cfg(test)]
 mod tests {
     use ark_bn254::Fr as Fr254;
-    use ark_ff::PrimeField;
     use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
     use ark_ec::twisted_edwards::Affine as TEAffine;
+    use ark_ff::PrimeField;
     use ark_std::UniformRand;
     use ark_std::Zero;
     use jf_primitives::poseidon::{
@@ -459,7 +459,7 @@ mod tests {
         let sponge_perm = PoseidonPerm::<Fr254>::perm().unwrap();
         let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_perm);
         sponge.absorb(&vec![
-            Fr254::from_le_bytes_mod_order(b"SWAP_V1"), 
+            Fr254::from_le_bytes_mod_order(b"SWAP_V1"),
             party_a_pk.x,
             party_a_pk.y,
             party_b_pk.x,
