@@ -1,6 +1,7 @@
 use crate::{
     test::{
-        self, create_nf3_deposit_transaction, create_nf3_swap_request, create_nf3_swap_transaction,
+        self, assert_swap_pairing_in_proposer_block, assert_swap_pairing_public_inputs,
+        create_nf3_deposit_transaction, create_nf3_swap_request, create_nf3_swap_transaction,
         create_nf3_transfer_transaction, create_nf3_withdraw_transaction,
         get_key, get_recipient_address, set_anvil_mining_interval,
         verify_deposit_commitments_nf_token_id, wait_for_all_responses,
@@ -914,6 +915,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     // Commitment[0] is the counterparty output.
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
@@ -927,6 +930,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
     info!("ERC20 swap commitments are now on-chain");
 
     // ERC721 swap (roundtrip): first move ERC721 to client1, then return it to client2.
@@ -986,6 +992,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 ERC721 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 ERC721 swap leg");
@@ -997,6 +1005,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
     let swap_nonce = format!("0x{:x}", raw_swap_nonce);
@@ -1053,6 +1064,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 ERC721 return swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 ERC721 return swap leg");
@@ -1064,6 +1077,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
     info!("ERC721 swap commitments are now on-chain");
 
     // ERC3525 swap scenarios:
@@ -1188,6 +1204,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 ERC3525<->ERC3525 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 ERC3525<->ERC3525 swap leg");
@@ -1199,6 +1217,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
 
     info!("Sending ERC3525<->ERC3525 reverse swap transactions (slot8 vs slot7)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
@@ -1256,6 +1277,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 reverse ERC3525<->ERC3525 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 reverse ERC3525<->ERC3525 swap leg");
@@ -1267,6 +1290,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
 
     info!("Sending ERC3525<->ERC20 swap transactions (roundtrip)");
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
@@ -1324,6 +1350,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 ERC3525<->ERC20 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 ERC3525<->ERC20 swap leg");
@@ -1335,6 +1363,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
 
     let raw_swap_nonce = (Uuid::new_v4().as_u128() & u128::from(u64::MAX)).max(1);
     let swap_nonce = format!("0x{:x}", raw_swap_nonce);
@@ -1391,6 +1422,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 return ERC3525<->ERC20 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 return ERC3525<->ERC20 swap leg");
@@ -1402,6 +1435,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
     info!("ERC3525 swap commitments are now on-chain");
 
     // Ensure all added ERC3525 scenarios preserve final balances expected by later withdraw checks.
@@ -1515,6 +1551,8 @@ pub async fn run_tests(
     )
     .expect("Failed to parse client2 ERC1155 swap response")
     .0;
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)
+        .expect("Swap legs were not paired by public inputs");
 
     let client1_receives = Fr254::from_hex_string(tx_client2["commitments"][0].as_str().unwrap())
         .expect("Invalid commitment hash for client1 ERC1155 swap leg");
@@ -1526,6 +1564,9 @@ pub async fn run_tests(
     wait_on_chain(&[client2_receives], "http://client2:3000")
         .await
         .unwrap();
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives)
+        .await
+        .expect("Swap legs were not assembled as sibling transactions");
     info!("ERC1155 swap commitments are now on-chain");
     let my_balance = erc20_contract
         .balanceOf(recipient_addr)

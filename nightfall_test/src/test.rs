@@ -5,7 +5,7 @@ use alloy::{
 };
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine as TEAffine;
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::{BigInteger, PrimeField, Zero};
 use ark_std::{
     collections::HashMap,
     rand::{self, Rng},
@@ -15,6 +15,7 @@ use configuration::{
     addresses::get_addresses,
     settings::{get_settings, Settings},
 };
+use futures::TryStreamExt;
 
 use hex::ToHex;
 use jf_primitives::{
@@ -40,6 +41,7 @@ use lib::{
     shared_entities::{DepositSecret, Preimage, Salt},
 };
 use log::{debug, info, warn};
+use mongodb::bson::doc;
 use nf_curves::ed_on_bn254::{BabyJubjub as BabyJubJub, Fr as BJJScalar};
 use nightfall_client::{
     domain::{
@@ -48,6 +50,7 @@ use nightfall_client::{
     },
     driven::db::mongo::CommitmentEntry,
 };
+use nightfall_proposer::driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION};
 use num_bigint::BigUint;
 use reqwest::{
     multipart::{Form, Part},
@@ -771,6 +774,91 @@ pub async fn wait_on_chain(
     }
     info!("Commitments are now on-chain");
     Ok(())
+}
+
+fn swap_field(tx: &Value, field: &str) -> Result<Fr254, TestError> {
+    let raw = tx
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| TestError::new(format!("Swap tx missing {field}")))?;
+
+    Fr254::from_hex_string(raw)
+        .map_err(|e| TestError::new(format!("Invalid swap {field}: {e}")))
+}
+
+pub fn assert_swap_pairing_public_inputs(tx_a: &Value, tx_b: &Value) -> Result<(), TestError> {
+    let link_a = swap_field(tx_a, "swap_link")?;
+    let link_b = swap_field(tx_b, "swap_link")?;
+
+    if link_a.is_zero() {
+        return Err(TestError::new("swap_link must be non-zero".to_string()));
+    }
+    if link_a != link_b {
+        return Err(TestError::new(
+            "swap legs have different swap_link values".to_string(),
+        ));
+    }
+
+    let side_a = swap_field(tx_a, "swap_side")?;
+    let side_b = swap_field(tx_b, "swap_side")?;
+    let sides_ok = (side_a.is_zero() && side_b == Fr254::from(1u64))
+        || (side_a == Fr254::from(1u64) && side_b.is_zero());
+
+    if !sides_ok {
+        return Err(TestError::new(
+            "swap legs must have complementary swap_side values".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+pub async fn assert_swap_pairing_in_proposer_block(
+    commitment_a: Fr254,
+    commitment_b: Fr254,
+) -> Result<(), TestError> {
+    let settings = get_settings();
+    let client = mongodb::Client::with_uri_str(&settings.nightfall_proposer.db_url)
+        .await
+        .map_err(|e| TestError::new(format!("Could not connect to proposer DB: {e}")))?;
+
+    let mut cursor = client
+        .database(DB)
+        .collection::<StoredBlock>(PROPOSED_BLOCKS_COLLECTION)
+        .find(doc! {})
+        .await
+        .map_err(|e| TestError::new(format!("Could not read ProposedBlocks: {e}")))?;
+
+    let commitment_a = commitment_a.to_hex_string();
+    let commitment_b = commitment_b.to_hex_string();
+
+    while let Some(block) = cursor
+        .try_next()
+        .await
+        .map_err(|e| TestError::new(format!("Could not iterate ProposedBlocks: {e}")))?
+    {
+        let slot_a = block.commitments.iter().position(|c| c == &commitment_a);
+        let slot_b = block.commitments.iter().position(|c| c == &commitment_b);
+
+        if let (Some(slot_a), Some(slot_b)) = (slot_a, slot_b) {
+            const COMMITMENTS_PER_TX: usize = 4;
+            let tx_a = slot_a / COMMITMENTS_PER_TX;
+            let tx_b = slot_b / COMMITMENTS_PER_TX;
+
+            if tx_a.abs_diff(tx_b) != 1 || tx_a / 2 != tx_b / 2 {
+                return Err(TestError::new(format!(
+                    "swap legs are in block {} but not sibling txs: slots {slot_a}/{slot_b}",
+                    block.layer2_block_number,
+                )));
+            }
+
+            return Ok(());
+        }
+    }
+
+    Err(TestError::new(
+        "swap output commitments were not found together in one proposer block".to_string(),
+    ))
 }
 
 /// Wait until each withdraw nullifier appears in the client DB as spent.
