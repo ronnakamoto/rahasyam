@@ -657,6 +657,7 @@ async fn cancel_swap_on_all_proposers(
 
     let results = join_all(futures).await;
     let mut saw_cancelled_from_mempool = false;
+    let mut saw_dropped = false;
     let mut saw_never_present = false;
     for result in results {
         match result {
@@ -671,6 +672,9 @@ async fn cancel_swap_on_all_proposers(
             Ok(CancelSwapStatus::CancelledFromMempool) => {
                 saw_cancelled_from_mempool = true;
             }
+            Ok(CancelSwapStatus::Dropped) => {
+                saw_dropped = true;
+            }
             Ok(CancelSwapStatus::NeverPresent) => {
                 saw_never_present = true;
             }
@@ -683,6 +687,8 @@ async fn cancel_swap_on_all_proposers(
 
     if saw_cancelled_from_mempool {
         Ok(CancelSwapStatus::CancelledFromMempool)
+    } else if saw_dropped {
+        Ok(CancelSwapStatus::Dropped)
     } else if saw_never_present {
         Ok(CancelSwapStatus::NeverPresent)
     } else {
@@ -3428,6 +3434,49 @@ mod tests {
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
             deadline: None,
             swap_link: Some(Fr254::from(77u64).to_hex_string()),
+            spend_commitment_ids: vec![commitment_id.to_hex_string()],
+        })
+        .expect("serialize child args");
+
+        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::PendingSpend))
+            .await;
+
+        let result = process_quit_swap(&db, request_id)
+            .await
+            .expect("quit swap should succeed");
+
+        assert_eq!(
+            result,
+            QuitSwapExecution {
+                status_code: StatusCode::OK,
+                unlocked: 1,
+                skipped: 0,
+                message: "Swap cancelled and commitments unlocked",
+            }
+        );
+        assert_eq!(
+            db.get_commitment_status(commitment_id).await,
+            Some(CommitmentStatus::Unspent)
+        );
+        assert_eq!(
+            db.request_status(request_id).await,
+            Some(RequestStatus::Cancelled)
+        );
+        assert_eq!(db.request_child_args(request_id).await, Some(None));
+    }
+
+    #[tokio::test]
+    async fn test_process_quit_swap_unlocks_pending_commitment_when_proposer_reports_dropped() {
+        let db = MockQuitSwapStore {
+            cancel_swap_status: CancelSwapStatus::Dropped,
+            ..Default::default()
+        };
+        let request_id = "33333333-3333-3333-3333-333333333334";
+        let commitment_id = Fr254::from(43u64);
+        let child_args = serde_json::to_string(&SwapChildRequestArgs {
+            deadline: None,
+            swap_link: Some(Fr254::from(78u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
         .expect("serialize child args");

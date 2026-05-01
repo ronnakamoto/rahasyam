@@ -57,7 +57,7 @@ fn classify_selected_transaction<P>(
     current_layer2_block_number: u64,
     allow_missing_block_inference: bool,
 ) -> ClassifiedSelectedTransaction<P> {
-    let block_l2 = transaction.block_l2.unwrap_or_default();
+    let block_l2 = transaction.lifecycle.block_l2().unwrap_or_default();
     let state = match stored_blocks.get(&block_l2) {
         Some(block_commitments) if block_contains_transaction(block_commitments, &transaction) => {
             SelectedTransactionState::Included
@@ -197,7 +197,7 @@ where
         classified.transaction.client_transaction.swap_link == swap_link
             && classified.state == SelectedTransactionState::Orphaned
     }) {
-        if let Some(block_l2) = classified.transaction.block_l2 {
+        if let Some(block_l2) = classified.transaction.lifecycle.block_l2() {
             orphaned_by_block
                 .entry(block_l2)
                 .or_default()
@@ -227,6 +227,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        domain::entities::TxLifecycle,
         driven::db::mongo_db::StoredBlock,
         ports::db::{BlockStorageDB, TransactionsDB},
     };
@@ -277,9 +278,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            block_l2: Some(block_l2),
-            in_mempool: false,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Selected { block_l2 },
             hash: vec![1, 2, 3],
             historic_roots: vec![],
         }
@@ -303,9 +302,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            block_l2: Some(block_l2),
-            in_mempool: false,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Selected { block_l2 },
             hash,
             historic_roots: vec![],
         }
@@ -388,8 +385,7 @@ mod tests {
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
         assert_eq!(restored, 1);
-        assert!(stored.in_mempool);
-        assert_eq!(stored.block_l2, None);
+        assert_eq!(stored.lifecycle, TxLifecycle::Mempool);
     }
 
     #[tokio::test]
@@ -414,8 +410,7 @@ mod tests {
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
         assert_eq!(restored, 1);
-        assert!(stored.in_mempool);
-        assert_eq!(stored.block_l2, None);
+        assert_eq!(stored.lifecycle, TxLifecycle::Mempool);
     }
 
     #[tokio::test]
@@ -433,9 +428,7 @@ mod tests {
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
         assert_eq!(restored, 0);
-        assert!(!stored.in_mempool);
-        assert_eq!(stored.block_l2, Some(30));
-        assert!(!stored.cancelled_explicitly);
+        assert_eq!(stored.lifecycle, TxLifecycle::Selected { block_l2: 30 });
     }
 
     #[tokio::test]
@@ -461,8 +454,7 @@ mod tests {
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
         assert_eq!(restored, 1);
-        assert!(stored.in_mempool);
-        assert_eq!(stored.block_l2, None);
+        assert_eq!(stored.lifecycle, TxLifecycle::Mempool);
     }
 
     #[tokio::test]
@@ -489,9 +481,7 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(cancelled, 1);
-        assert!(!stored.in_mempool);
-        assert_eq!(stored.block_l2, None);
-        assert!(stored.cancelled_explicitly);
+        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
         assert!(selected.is_empty());
     }
 
@@ -524,7 +514,7 @@ mod tests {
 
         assert_eq!(first, 1);
         assert_eq!(second, 0);
-        assert!(stored.cancelled_explicitly);
+        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
     }
 
     #[tokio::test]
@@ -542,9 +532,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            block_l2: Some(7),
-            in_mempool: false,
-            cancelled_explicitly: true,
+            lifecycle: TxLifecycle::Cancelled,
             hash: vec![9, 9, 9],
             historic_roots: vec![],
         };
@@ -558,8 +546,6 @@ mod tests {
             db.get_transaction(&tx.hash).await.unwrap();
 
         assert_eq!(restored, 0);
-        assert!(!stored.in_mempool);
-        assert_eq!(stored.block_l2, Some(7));
-        assert!(stored.cancelled_explicitly);
+        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
     }
 }

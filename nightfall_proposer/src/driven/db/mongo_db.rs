@@ -1,5 +1,5 @@
 use crate::{
-    domain::entities::{ClientTransactionWithMetaData, DepositDatawithFee, HistoricRoot},
+    domain::entities::{ClientTransactionWithMetaData, DepositDatawithFee, HistoricRoot, TxLifecycle},
     ports::db::{BlockStorageDB, HistoricRootsDB, TransactionsDB},
 };
 use alloy::primitives::Address;
@@ -13,6 +13,10 @@ use lib::{
 use mongodb::bson::{doc, Bson};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+fn lifecycle_bson(lifecycle: &TxLifecycle) -> Bson {
+    mongodb::bson::to_bson(lifecycle).expect("TxLifecycle should serialize to BSON")
+}
 
 pub const DB: &str = "nightfall";
 const COLLECTION: &str = "ClientTransactions";
@@ -67,8 +71,7 @@ where
         &self,
     ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>> {
         let filter = doc! {
-            "in_mempool": true,
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "mempool"
         };
         let mut cursor: mongodb::Cursor<ClientTransactionWithMetaData<P>> = self
             .database(DB)
@@ -88,9 +91,7 @@ where
         &self,
     ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>> {
         let filter = doc! {
-            "in_mempool": false,
-            "block_l2": { "$ne": Bson::Null },
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "selected"
         };
         let mut cursor: mongodb::Cursor<ClientTransactionWithMetaData<P>> = self
             .database(DB)
@@ -110,33 +111,12 @@ where
     // This is used to determine if we need to assemble a block
     async fn count_mempool_client_transactions(&self) -> Result<u64, mongodb::error::Error> {
         let filter = doc! {
-            "in_mempool": true,
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "mempool"
         };
         self.database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .count_documents(filter)
             .await
-    }
-
-    async fn set_in_mempool(
-        &self,
-        txs: &[ClientTransactionWithMetaData<P>],
-        in_mempool: bool,
-    ) -> Option<u64> {
-        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
-        let filter = doc! {
-            "hash": { "$in": k },
-            "cancelled_explicitly": { "$ne": true }
-        };
-        let update = doc! {"$set": { "in_mempool": in_mempool }};
-        let result = self
-            .database(DB)
-            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
-            .update_many(filter, update)
-            .await
-            .ok()?; // propagate DB error as None so the caller can handle it explicitly
-        Some(result.modified_count)
     }
 
     async fn mark_transactions_selected_for_block(
@@ -148,13 +128,12 @@ where
         let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
         let filter = doc! {
             "hash": { "$in": k },
-            "in_mempool": true,
-            "block_l2": Bson::Null,
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "mempool"
         };
         let update = doc! {"$set": {
-            "in_mempool": false,
-            "block_l2": Bson::Int64(block_l2)
+            "lifecycle": lifecycle_bson(&TxLifecycle::Selected {
+                block_l2: u64::try_from(block_l2).ok()?,
+            })
         }};
         let result = self
             .database(DB)
@@ -176,13 +155,10 @@ where
         let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
         let filter = doc! {
             "hash": { "$in": k },
-            "in_mempool": true,
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "mempool"
         };
         let update = doc! {"$set": {
-            "in_mempool": false,
-            "block_l2": Bson::Null,
-            "cancelled_explicitly": true
+            "lifecycle": lifecycle_bson(&TxLifecycle::Cancelled)
         }};
         let result = self
             .database(DB)
@@ -206,14 +182,11 @@ where
         let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
         let filter = doc! {
             "hash": { "$in": k },
-            "in_mempool": false,
-            "block_l2": Bson::Int64(block_l2),
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "selected",
+            "lifecycle.block_l2": Bson::Int64(block_l2)
         };
         let update = doc! {"$set": {
-            "in_mempool": false,
-            "block_l2": Bson::Null,
-            "cancelled_explicitly": true
+            "lifecycle": lifecycle_bson(&TxLifecycle::Cancelled)
         }};
         let result = self
             .database(DB)
@@ -235,11 +208,35 @@ where
         let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
         let filter = doc! {
             "hash": { "$in": k },
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "selected"
         };
         let update = doc! {"$set": {
-            "in_mempool": true,
-            "block_l2": Bson::Null
+            "lifecycle": lifecycle_bson(&TxLifecycle::Mempool)
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
+        Some(result.modified_count)
+    }
+
+    async fn drop_transactions(
+        &self,
+        txs: &[ClientTransactionWithMetaData<P>],
+    ) -> Option<u64> {
+        if txs.is_empty() {
+            return Some(0);
+        }
+
+        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
+        let filter = doc! {
+            "hash": { "$in": k },
+            "lifecycle.state": "mempool"
+        };
+        let update = doc! {"$set": {
+            "lifecycle": lifecycle_bson(&TxLifecycle::Dropped)
         }};
         let result = self
             .database(DB)
@@ -258,8 +255,7 @@ where
         let hash = v.hash().ok()?;
         let filter = doc! {
             "hash": hash,
-            "in_mempool": true,
-            "cancelled_explicitly": { "$ne": true }
+            "lifecycle.state": "mempool"
         };
         self.database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)

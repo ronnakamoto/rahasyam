@@ -1,5 +1,8 @@
 use crate::{
-    domain::{entities::ClientTransactionWithMetaData, error::ProposerRejection},
+    domain::{
+        entities::{ClientTransactionWithMetaData, TxLifecycle},
+        error::ProposerRejection,
+    },
     driven::nightfall_client_transaction::process_nightfall_client_transaction,
     drivers::blockchain::nightfall_event_listener::get_synchronisation_status,
     initialisation::get_db_connection,
@@ -217,12 +220,29 @@ where
         .map(|(_, transaction)| transaction)
         .any(|transaction| {
             transaction.client_transaction.swap_link == swap_link
-                && transaction.cancelled_explicitly
+                && matches!(transaction.lifecycle, TxLifecycle::Cancelled)
         });
 
     if already_cancelled {
         return Ok(CancelSwapResponse {
             status: CancelSwapStatus::CancelledFromMempool,
+            removed: 0,
+        });
+    }
+
+    let was_dropped = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, transaction)| transaction)
+        .any(|transaction| {
+            transaction.client_transaction.swap_link == swap_link
+                && matches!(transaction.lifecycle, TxLifecycle::Dropped)
+        });
+
+    if was_dropped {
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::Dropped,
             removed: 0,
         });
     }
@@ -237,6 +257,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        domain::entities::TxLifecycle,
         driven::db::mongo_db::StoredBlock,
         ports::db::{BlockStorageDB, TransactionsDB},
     };
@@ -337,6 +358,12 @@ mod tests {
         in_mempool: bool,
         hash: Vec<u32>,
     ) -> ClientTransactionWithMetaData<MockProof> {
+        let lifecycle = match (block_l2, in_mempool) {
+            (Some(block_l2), false) => TxLifecycle::Selected { block_l2 },
+            (None, true) => TxLifecycle::Mempool,
+            (None, false) => TxLifecycle::Dropped,
+            (Some(_), true) => panic!("invalid test lifecycle"),
+        };
         ClientTransactionWithMetaData {
             client_transaction: ClientTransaction {
                 fee: Fr254::from(2u64),
@@ -354,9 +381,7 @@ mod tests {
                 swap_side: Fr254::from(0u64),
                 proof: MockProvingEngine::default_proof(),
             },
-            block_l2,
-            in_mempool,
-            cancelled_explicitly: false,
+            lifecycle,
             hash,
             historic_roots: vec![],
         }
@@ -436,9 +461,7 @@ mod tests {
                 swap_link,
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![1, 2, 3],
             historic_roots: vec![],
         };
@@ -447,9 +470,7 @@ mod tests {
                 swap_link: other_swap_link,
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![4, 5, 6],
             historic_roots: vec![],
         };
@@ -534,9 +555,7 @@ mod tests {
 
         assert_eq!(first.status, CancelSwapStatus::CancelledFromMempool);
         assert_eq!(first.removed, 0);
-        assert!(!stored_after_first.in_mempool);
-        assert_eq!(stored_after_first.block_l2, None);
-        assert!(stored_after_first.cancelled_explicitly);
+        assert_eq!(stored_after_first.lifecycle, TxLifecycle::Cancelled);
         assert_eq!(second.status, CancelSwapStatus::CancelledFromMempool);
         assert_eq!(second.removed, 0);
     }
@@ -561,6 +580,33 @@ mod tests {
                 .unwrap();
 
         assert_eq!(response.status, CancelSwapStatus::AlreadyAssembled);
+        assert_eq!(response.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_swap_returns_dropped_for_non_cancellable_dropped_swap() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(124u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            None,
+            false,
+            vec![1, 2, 4],
+        );
+        let dropped_tx = ClientTransactionWithMetaData {
+            lifecycle: TxLifecycle::Dropped,
+            ..tx
+        };
+        db.store_transaction(dropped_tx).await.unwrap();
+
+        let response =
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+                .await
+                .unwrap();
+
+        assert_eq!(response.status, CancelSwapStatus::Dropped);
         assert_eq!(response.removed, 0);
     }
 }

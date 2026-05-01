@@ -436,7 +436,7 @@ where
     }
 
     if !stale_client_transactions.is_empty() {
-        let _ = db.set_in_mempool(&stale_client_transactions, false).await;
+        let _ = db.drop_transactions(&stale_client_transactions).await;
     }
 
     // 4. Check if there are any pending deposits or client transactions
@@ -554,7 +554,7 @@ where
 
     // 10b. Clear expired swaps from mempool
     if !expired_swaps.is_empty() {
-        db.set_in_mempool(&expired_swaps, false).await;
+        db.drop_transactions(&expired_swaps).await;
     }
 
     if used_deposits_info.is_empty() && reordered.is_empty() {
@@ -568,6 +568,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::TxLifecycle;
     use lib::{
         plonk_prover::plonk_proof::PlonkProof,
         tests_utils::{get_db_connection, get_mongo},
@@ -609,9 +610,7 @@ mod tests {
                         proof: PlonkProof::default(),
                         ..Default::default()
                     },
-                    block_l2: None,
-                    in_mempool: true,
-                    cancelled_explicitly: false,
+                    lifecycle: TxLifecycle::Mempool,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -756,9 +755,7 @@ mod tests {
                         proof: PlonkProof::default(),
                         ..Default::default()
                     },
-                    block_l2: None,
-                    in_mempool: true,
-                    cancelled_explicitly: false,
+                    lifecycle: TxLifecycle::Mempool,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -850,9 +847,7 @@ mod tests {
                         proof: PlonkProof::default(),
                         ..Default::default()
                     },
-                    block_l2: None,
-                    in_mempool: true,
-                    cancelled_explicitly: false,
+                    lifecycle: TxLifecycle::Mempool,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -944,9 +939,7 @@ mod tests {
                 proof: PlonkProof::default(),
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![1],
             historic_roots: vec![],
         };
@@ -961,9 +954,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![2],
                 historic_roots: vec![],
             },
@@ -976,9 +967,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![3],
                 historic_roots: vec![],
             },
@@ -1027,9 +1016,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![i as u32 + 1],
                 historic_roots: vec![],
             })
@@ -1045,9 +1032,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![10 + i as u32],
                 historic_roots: vec![],
             })
@@ -1100,9 +1085,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![i as u32 + 1],
                 historic_roots: vec![],
             })
@@ -1148,7 +1131,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(expired_swap_records
             .iter()
-            .all(|tx| !tx.cancelled_explicitly));
+            .all(|tx| tx.lifecycle == TxLifecycle::Dropped));
     }
 
     #[tokio::test]
@@ -1167,9 +1150,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![20 + i as u32],
                 historic_roots: vec![],
             })
@@ -1206,7 +1187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prepare_block_data_stale_transaction_keeps_cancelled_flag_false() {
+    async fn test_prepare_block_data_stale_transaction_is_marked_dropped() {
         let container = get_mongo().await;
         let db = get_db_connection(&container).await;
         let block_size = 4;
@@ -1232,9 +1213,7 @@ mod tests {
                 proof: PlonkProof::default(),
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![9, 9, 9, 9],
             historic_roots: vec![],
         };
@@ -1248,9 +1227,7 @@ mod tests {
 
         let stored: ClientTransactionWithMetaData<PlonkProof> =
             db.get_transaction(&stale_tx.hash).await.unwrap();
-        assert!(!stored.in_mempool);
-        assert_eq!(stored.block_l2, None);
-        assert!(!stored.cancelled_explicitly);
+        assert_eq!(stored.lifecycle, TxLifecycle::Dropped);
     }
 
     #[tokio::test]
@@ -1265,9 +1242,7 @@ mod tests {
                 proof: PlonkProof::default(),
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![1, 1, 1],
             historic_roots: vec![],
         };
@@ -1277,9 +1252,7 @@ mod tests {
                 proof: PlonkProof::default(),
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: true,
+            lifecycle: TxLifecycle::Cancelled,
             hash: vec![2, 2, 2],
             historic_roots: vec![],
         };
@@ -1335,9 +1308,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![50 + i as u32],
                 historic_roots: vec![],
             })
@@ -1353,9 +1324,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![70 + i as u32],
                 historic_roots: vec![],
             })
@@ -1429,9 +1398,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![600 + i as u32],
                 historic_roots: vec![],
             })
@@ -1492,9 +1459,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![200 + i as u32],
                 historic_roots: vec![],
             })
@@ -1546,9 +1511,7 @@ mod tests {
                 proof: PlonkProof::default(),
                 ..Default::default()
             },
-            block_l2: None,
-            in_mempool: true,
-            cancelled_explicitly: false,
+            lifecycle: TxLifecycle::Mempool,
             hash: vec![210],
             historic_roots: vec![],
         })
@@ -1598,9 +1561,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![300],
                 historic_roots: vec![],
             },
@@ -1613,9 +1574,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![301],
                 historic_roots: vec![],
             },
@@ -1628,9 +1587,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![302],
                 historic_roots: vec![],
             },
@@ -1688,9 +1645,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![400],
                 historic_roots: vec![],
             },
@@ -1703,9 +1658,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![401],
                 historic_roots: vec![],
             },
@@ -1757,9 +1710,7 @@ mod tests {
                     proof: PlonkProof::default(),
                     ..Default::default()
                 },
-                block_l2: None,
-                in_mempool: true,
-                cancelled_explicitly: false,
+                lifecycle: TxLifecycle::Mempool,
                 hash: vec![500 + i as u32],
                 historic_roots: vec![],
             })

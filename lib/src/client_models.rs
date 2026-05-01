@@ -166,6 +166,7 @@ pub struct CancelSwapRequest {
 pub enum CancelSwapStatus {
     CancelledFromMempool,
     NeverPresent,
+    Dropped,
     AlreadyAssembled,
     AlreadyIncluded,
 }

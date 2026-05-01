@@ -31,11 +31,6 @@ pub trait TransactionsDB<'a, P> {
         &self,
     ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>>;
     async fn count_mempool_client_transactions(&self) -> Result<u64, mongodb::error::Error>;
-    async fn set_in_mempool(
-        &self,
-        transactions: &[ClientTransactionWithMetaData<P>],
-        in_mempool: bool,
-    ) -> Option<u64>;
     async fn mark_transactions_selected_for_block(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],
@@ -46,6 +41,10 @@ pub trait TransactionsDB<'a, P> {
         transactions: &[ClientTransactionWithMetaData<P>],
     ) -> Option<u64>;
     async fn restore_transactions_to_mempool(
+        &self,
+        transactions: &[ClientTransactionWithMetaData<P>],
+    ) -> Option<u64>;
+    async fn drop_transactions(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],
     ) -> Option<u64>;
