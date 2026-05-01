@@ -64,6 +64,8 @@ pub struct ClientTransactionWithMetaData<P> {
     pub client_transaction: ClientTransaction<P>,
     pub block_l2: Option<u64>,
     pub in_mempool: bool,
+    #[serde(default)]
+    pub cancelled_explicitly: bool,
     pub hash: Vec<u32>,
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub historic_roots: Vec<Fr254>,

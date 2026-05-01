@@ -38,6 +38,7 @@ impl<E: Display> Display for MerkleTreeError<E> {
 pub enum ProposerRejection {
     BlockDataUnavailable,
     ClientTransactionFailed,
+    FailedToCancelSwap,
     FailedToRotateProposer,
     FailedToAddProposer,
     FailedToRemoveProposer,
@@ -50,6 +51,7 @@ impl std::fmt::Display for ProposerRejection {
         match self {
             ProposerRejection::BlockDataUnavailable => write!(f, "Block data unavailable"),
             ProposerRejection::ClientTransactionFailed => write!(f, "Client transaction failed"),
+            ProposerRejection::FailedToCancelSwap => write!(f, "Failed to cancel swap"),
             ProposerRejection::FailedToRotateProposer => write!(f, "Failed to rotate proposer"),
             ProposerRejection::FailedToAddProposer => write!(f, "Failed to add proposer"),
             ProposerRejection::FailedToRemoveProposer => write!(f, "Failed to remove proposer"),

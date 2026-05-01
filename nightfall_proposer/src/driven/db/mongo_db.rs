@@ -10,7 +10,7 @@ use lib::{
     error::ConversionError, hex_conversion::HexConvertible, nf_client_proof::Proof,
     shared_entities::ClientTransaction,
 };
-use mongodb::bson::doc;
+use mongodb::bson::{doc, Bson};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -66,7 +66,10 @@ where
     async fn get_all_mempool_client_transactions(
         &self,
     ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>> {
-        let filter = doc! {"in_mempool": true};
+        let filter = doc! {
+            "in_mempool": true,
+            "cancelled_explicitly": { "$ne": true }
+        };
         let mut cursor: mongodb::Cursor<ClientTransactionWithMetaData<P>> = self
             .database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
@@ -81,10 +84,35 @@ where
         Some(result)
     }
 
+    async fn get_all_selected_client_transactions(
+        &self,
+    ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>> {
+        let filter = doc! {
+            "in_mempool": false,
+            "block_l2": { "$ne": Bson::Null },
+            "cancelled_explicitly": { "$ne": true }
+        };
+        let mut cursor: mongodb::Cursor<ClientTransactionWithMetaData<P>> = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .find(filter)
+            .await
+            .ok()?;
+        let mut result: Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)> = Vec::new();
+        while cursor.advance().await.ok()? {
+            let v: ClientTransactionWithMetaData<P> = cursor.deserialize_current().ok()?;
+            result.push((v.hash.clone(), v));
+        }
+        Some(result)
+    }
+
     // Count client_transaction in the mempool
     // This is used to determine if we need to assemble a block
     async fn count_mempool_client_transactions(&self) -> Result<u64, mongodb::error::Error> {
-        let filter = doc! { "in_mempool": true };
+        let filter = doc! {
+            "in_mempool": true,
+            "cancelled_explicitly": { "$ne": true }
+        };
         self.database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .count_documents(filter)
@@ -97,7 +125,10 @@ where
         in_mempool: bool,
     ) -> Option<u64> {
         let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
-        let filter = doc! {"hash": { "$in": k }};
+        let filter = doc! {
+            "hash": { "$in": k },
+            "cancelled_explicitly": { "$ne": true }
+        };
         let update = doc! {"$set": { "in_mempool": in_mempool }};
         let result = self
             .database(DB)
@@ -105,6 +136,117 @@ where
             .update_many(filter, update)
             .await
             .ok()?; // propagate DB error as None so the caller can handle it explicitly
+        Some(result.modified_count)
+    }
+
+    async fn mark_transactions_selected_for_block(
+        &self,
+        txs: &[ClientTransactionWithMetaData<P>],
+        block_l2: u64,
+    ) -> Option<u64> {
+        let block_l2 = i64::try_from(block_l2).ok()?;
+        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
+        let filter = doc! {
+            "hash": { "$in": k },
+            "in_mempool": true,
+            "block_l2": Bson::Null,
+            "cancelled_explicitly": { "$ne": true }
+        };
+        let update = doc! {"$set": {
+            "in_mempool": false,
+            "block_l2": Bson::Int64(block_l2)
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
+        Some(result.modified_count)
+    }
+
+    async fn cancel_mempool_transactions(
+        &self,
+        txs: &[ClientTransactionWithMetaData<P>],
+    ) -> Option<u64> {
+        if txs.is_empty() {
+            return Some(0);
+        }
+
+        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
+        let filter = doc! {
+            "hash": { "$in": k },
+            "in_mempool": true,
+            "cancelled_explicitly": { "$ne": true }
+        };
+        let update = doc! {"$set": {
+            "in_mempool": false,
+            "block_l2": Bson::Null,
+            "cancelled_explicitly": true
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
+        Some(result.modified_count)
+    }
+
+    async fn cancel_selected_transactions(
+        &self,
+        txs: &[ClientTransactionWithMetaData<P>],
+        block_l2: u64,
+    ) -> Option<u64> {
+        if txs.is_empty() {
+            return Some(0);
+        }
+
+        let block_l2 = i64::try_from(block_l2).ok()?;
+        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
+        let filter = doc! {
+            "hash": { "$in": k },
+            "in_mempool": false,
+            "block_l2": Bson::Int64(block_l2),
+            "cancelled_explicitly": { "$ne": true }
+        };
+        let update = doc! {"$set": {
+            "in_mempool": false,
+            "block_l2": Bson::Null,
+            "cancelled_explicitly": true
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
+        Some(result.modified_count)
+    }
+
+    async fn restore_transactions_to_mempool(
+        &self,
+        txs: &[ClientTransactionWithMetaData<P>],
+    ) -> Option<u64> {
+        if txs.is_empty() {
+            return Some(0);
+        }
+
+        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
+        let filter = doc! {
+            "hash": { "$in": k },
+            "cancelled_explicitly": { "$ne": true }
+        };
+        let update = doc! {"$set": {
+            "in_mempool": true,
+            "block_l2": Bson::Null
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
         Some(result.modified_count)
     }
 
@@ -116,7 +258,8 @@ where
         let hash = v.hash().ok()?;
         let filter = doc! {
             "hash": hash,
-            "in_mempool": true
+            "in_mempool": true,
+            "cancelled_explicitly": { "$ne": true }
         };
         self.database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)

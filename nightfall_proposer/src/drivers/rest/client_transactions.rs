@@ -1,19 +1,24 @@
 use crate::{
     domain::{entities::ClientTransactionWithMetaData, error::ProposerRejection},
     driven::nightfall_client_transaction::process_nightfall_client_transaction,
+    drivers::blockchain::nightfall_event_listener::get_synchronisation_status,
     initialisation::get_db_connection,
-    ports::db::TransactionsDB,
+    ports::{contracts::NightfallContract, db::TransactionsDB},
+    services::selected_transactions::{
+        cancel_orphaned_selected_transactions, get_classified_selected_transactions,
+        SelectedTransactionState,
+    },
 };
 use ark_bn254::Fr as Fr254;
 use futures::Future;
 use lib::{
-    client_models::CancelSwapRequest,
+    client_models::{CancelSwapRequest, CancelSwapResponse, CancelSwapStatus},
     hex_conversion::HexConvertible,
     nf_client_proof::{Proof, ProvingEngine},
     shared_entities::ClientTransaction,
 };
 use log::{error, info};
-use serde::Serialize;
+use nightfall_bindings::artifacts::Nightfall;
 use warp::{hyper::StatusCode, path, reply::json, Filter, Reply};
 
 pub fn client_transaction<P, E>(
@@ -38,22 +43,16 @@ where
         .and_then(|request| handle_cancel_swap::<P>(request))
 }
 
-#[derive(Serialize)]
-struct CancelSwapResponse {
-    removed: u64,
-    already_absent: bool,
-}
-
-fn matching_swaps_from_mempool<P>(
-    mempool_transactions: Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>>,
+fn matching_swaps_from_transactions<P>(
+    transactions: Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>>,
     swap_link: Fr254,
 ) -> Result<Vec<ClientTransactionWithMetaData<P>>, ProposerRejection>
 where
     P: Proof,
 {
-    let mempool_transactions = mempool_transactions.ok_or(ProposerRejection::FailedToCancelSwap)?;
+    let transactions = transactions.ok_or(ProposerRejection::FailedToCancelSwap)?;
 
-    Ok(mempool_transactions
+    Ok(transactions
         .into_iter()
         .map(|(_, tx)| tx)
         .filter(|tx| tx.client_transaction.swap_link == swap_link)
@@ -105,57 +104,152 @@ where
         warp::reject::custom(ProposerRejection::FailedToCancelSwap)
     })?;
 
+    let current_layer2_block_number = <Nightfall::NightfallCalls as NightfallContract>::get_current_layer2_blocknumber()
+        .await
+        .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?
+        .try_into()
+        .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?;
+    let is_synchronised = get_synchronisation_status()
+        .await
+        .read()
+        .await
+        .is_synchronised();
+
     let db = get_db_connection().await;
-    let matching_swaps = matching_swaps_from_mempool(
-        <mongodb::Client as TransactionsDB<P>>::get_all_mempool_client_transactions(db).await,
+    let response = determine_cancel_swap_response::<P>(
+        db,
         swap_link,
+        current_layer2_block_number,
+        is_synchronised,
     )
+    .await
     .map_err(warp::reject::custom)?;
 
-    if matching_swaps.is_empty() {
-        return Ok(warp::reply::with_status(
-            json(&CancelSwapResponse {
-                removed: 0,
-                already_absent: true,
-            }),
-            StatusCode::OK,
-        ));
-    }
-
-    let removed =
-        <mongodb::Client as TransactionsDB<P>>::set_in_mempool(db, &matching_swaps, false)
-            .await
-            .ok_or_else(|| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?;
-
-    if removed != matching_swaps.len() as u64 {
-        error!(
-            "Partial swap cancel detected: expected to remove {} mempool entries for swap_link {}, removed {}",
-            matching_swaps.len(),
-            request.swap_link,
-            removed
-        );
-        return Err(warp::reject::custom(ProposerRejection::FailedToCancelSwap));
-    }
-
     Ok(warp::reply::with_status(
-        json(&CancelSwapResponse {
-            removed,
-            already_absent: false,
-        }),
+        json(&response),
         StatusCode::OK,
     ))
+}
+
+async fn determine_cancel_swap_response<P>(
+    db: &mongodb::Client,
+    swap_link: Fr254,
+    current_layer2_block_number: u64,
+    is_synchronised: bool,
+) -> Result<CancelSwapResponse, ProposerRejection>
+where
+    P: Proof,
+{
+    let matching_swaps = matching_swaps_from_transactions(
+        <mongodb::Client as TransactionsDB<P>>::get_all_mempool_client_transactions(db).await,
+        swap_link,
+    )?;
+
+    if !matching_swaps.is_empty() {
+        let removed =
+            <mongodb::Client as TransactionsDB<P>>::cancel_mempool_transactions(db, &matching_swaps)
+                .await
+                .ok_or(ProposerRejection::FailedToCancelSwap)?;
+
+        if removed != matching_swaps.len() as u64 {
+            error!(
+                "Partial swap cancel detected: expected to remove {} mempool entries for swap_link {}, removed {}",
+                matching_swaps.len(),
+                swap_link.to_hex_string(),
+                removed
+            );
+            return Err(ProposerRejection::FailedToCancelSwap);
+        }
+
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::CancelledFromMempool,
+            removed,
+        });
+    }
+
+    let selected_swaps = get_classified_selected_transactions::<P>(
+        db,
+        current_layer2_block_number,
+        is_synchronised,
+    )
+    .await
+    .ok_or(ProposerRejection::FailedToCancelSwap)?;
+
+    if selected_swaps.iter().any(|classified| {
+        classified.transaction.client_transaction.swap_link == swap_link
+            && classified.state == SelectedTransactionState::Included
+    }) {
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::AlreadyIncluded,
+            removed: 0,
+        });
+    }
+
+    let orphaned_cancelled = cancel_orphaned_selected_transactions::<P>(
+        db,
+        swap_link,
+        current_layer2_block_number,
+        is_synchronised,
+    )
+    .await
+    .ok_or(ProposerRejection::FailedToCancelSwap)?;
+    if orphaned_cancelled > 0 {
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::CancelledFromMempool,
+            removed: 0,
+        });
+    }
+
+    if selected_swaps.iter().any(|classified| {
+        classified.transaction.client_transaction.swap_link == swap_link
+            && classified.state == SelectedTransactionState::InFlight
+    }) {
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::AlreadyAssembled,
+            removed: 0,
+        });
+    }
+
+    let already_cancelled = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, transaction)| transaction)
+        .any(|transaction| {
+            transaction.client_transaction.swap_link == swap_link
+                && transaction.cancelled_explicitly
+        });
+
+    if already_cancelled {
+        return Ok(CancelSwapResponse {
+            status: CancelSwapStatus::CancelledFromMempool,
+            removed: 0,
+        });
+    }
+
+    Ok(CancelSwapResponse {
+        status: CancelSwapStatus::NeverPresent,
+        removed: 0,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        driven::db::mongo_db::StoredBlock,
+        ports::db::{BlockStorageDB, TransactionsDB},
+    };
     use crate::drivers::rest::handle_rejection;
     use alloy::primitives::Bytes;
+    use alloy::primitives::Address;
     use ark_serialize::SerializationError;
+    use ark_std::Zero;
     use lib::{
         nf_client_proof::ProvingEngine,
         plonk_prover::plonk_proof::PlonkProof,
         shared_entities::{ClientTransaction, CompressedSecrets},
+        tests_utils::{get_db_connection, get_mongo},
     };
     use serde::{Deserialize, Serialize};
     use warp::{http::StatusCode, Filter};
@@ -236,6 +330,38 @@ mod tests {
         }
     }
 
+    fn sample_selected_swap_transaction(
+        commitment: Fr254,
+        swap_link: Fr254,
+        block_l2: Option<u64>,
+        in_mempool: bool,
+        hash: Vec<u32>,
+    ) -> ClientTransactionWithMetaData<MockProof> {
+        ClientTransactionWithMetaData {
+            client_transaction: ClientTransaction {
+                fee: Fr254::from(2u64),
+                historic_commitment_root: Fr254::from(0u64),
+                commitments: [commitment, Fr254::zero(), Fr254::zero(), Fr254::zero()],
+                nullifiers: [
+                    Fr254::from(1u64),
+                    Fr254::from(0u64),
+                    Fr254::from(0u64),
+                    Fr254::from(0u64),
+                ],
+                compressed_secrets: CompressedSecrets::default(),
+                swap_link,
+                deadline: Fr254::from(0u64),
+                swap_side: Fr254::from(0u64),
+                proof: MockProvingEngine::default_proof(),
+            },
+            block_l2,
+            in_mempool,
+            cancelled_explicitly: false,
+            hash,
+            historic_roots: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn test_client_transaction_route_rejects_malformed_json() {
         let filter = client_transaction::<MockProof, MockProvingEngine>();
@@ -296,7 +422,7 @@ mod tests {
     fn cancel_swap_returns_error_when_mempool_read_fails() {
         let swap_link = Fr254::from(7u64);
 
-        let result = matching_swaps_from_mempool::<PlonkProof>(None, swap_link);
+        let result = matching_swaps_from_transactions::<PlonkProof>(None, swap_link);
 
         assert!(matches!(result, Err(ProposerRejection::FailedToCancelSwap)));
     }
@@ -312,6 +438,7 @@ mod tests {
             },
             block_l2: None,
             in_mempool: true,
+            cancelled_explicitly: false,
             hash: vec![1, 2, 3],
             historic_roots: vec![],
         };
@@ -322,11 +449,12 @@ mod tests {
             },
             block_l2: None,
             in_mempool: true,
+            cancelled_explicitly: false,
             hash: vec![4, 5, 6],
             historic_roots: vec![],
         };
 
-        let result = matching_swaps_from_mempool::<PlonkProof>(
+        let result = matching_swaps_from_transactions::<PlonkProof>(
             Some(vec![
                 (matching_tx.hash.clone(), matching_tx.clone()),
                 (other_tx.hash.clone(), other_tx),
@@ -343,9 +471,96 @@ mod tests {
     fn cancel_swap_treats_empty_mempool_as_already_absent_state() {
         let swap_link = Fr254::from(7u64);
 
-        let result = matching_swaps_from_mempool::<PlonkProof>(Some(vec![]), swap_link)
+        let result = matching_swaps_from_transactions::<PlonkProof>(Some(vec![]), swap_link)
             .expect("empty mempool should not be treated as an error");
 
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_swap_returns_already_included_for_selected_tx_present_in_stored_block() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(42u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            Some(7),
+            false,
+            vec![4, 2, 0],
+        );
+        db.store_transaction(tx.clone()).await.unwrap();
+        db.store_block(&StoredBlock {
+            layer2_block_number: 7,
+            commitments: vec![Fr254::from(10u64).to_hex_string()],
+            proposer_address: Address::ZERO,
+        })
+        .await
+        .unwrap();
+
+        let response =
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+                .await
+                .unwrap();
+
+        assert_eq!(response.status, CancelSwapStatus::AlreadyIncluded);
+        assert_eq!(response.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_swap_terminally_cancels_orphaned_selected_tx_and_is_idempotent() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(99u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            Some(7),
+            false,
+            vec![9, 9, 9],
+        );
+        db.store_transaction(tx.clone()).await.unwrap();
+
+        let first =
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+                .await
+                .unwrap();
+        let stored_after_first: ClientTransactionWithMetaData<MockProof> =
+            db.get_transaction(&tx.hash).await.unwrap();
+        let second =
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+                .await
+                .unwrap();
+
+        assert_eq!(first.status, CancelSwapStatus::CancelledFromMempool);
+        assert_eq!(first.removed, 0);
+        assert!(!stored_after_first.in_mempool);
+        assert_eq!(stored_after_first.block_l2, None);
+        assert!(stored_after_first.cancelled_explicitly);
+        assert_eq!(second.status, CancelSwapStatus::CancelledFromMempool);
+        assert_eq!(second.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_swap_stays_conservative_while_desynchronised_with_missing_local_block() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(123u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            Some(30),
+            false,
+            vec![1, 2, 3, 4],
+        );
+        db.store_transaction(tx).await.unwrap();
+
+        let response =
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 100, false)
+                .await
+                .unwrap();
+
+        assert_eq!(response.status, CancelSwapStatus::AlreadyAssembled);
+        assert_eq!(response.removed, 0);
     }
 }

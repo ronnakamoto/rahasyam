@@ -66,6 +66,10 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::In
                 "Client transaction failed",
                 warp::http::StatusCode::BAD_REQUEST,
             )),
+            ProposerRejection::FailedToCancelSwap => Ok(reply::with_status(
+                "Failed to cancel swap",
+                warp::http::StatusCode::BAD_REQUEST,
+            )),
             ProposerRejection::FailedToRotateProposer => Ok(reply::with_status(
                 "Failed to rotate proposer",
                 warp::http::StatusCode::LOCKED,

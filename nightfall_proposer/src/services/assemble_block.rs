@@ -7,6 +7,7 @@ use crate::{
         db::{BlockStorageDB, TransactionsDB},
         proving::RecursiveProvingEngine,
     },
+    services::selected_transactions::reconcile_orphaned_selected_transactions,
 };
 use ark_bn254::Fr as Fr254;
 use ark_std::{collections::HashSet, Zero};
@@ -364,6 +365,8 @@ pub(crate) async fn prepare_block_data<P>(
 where
     P: Proof,
 {
+    let _ = reconcile_orphaned_selected_transactions::<P>(db, current_block_number).await;
+
     // 1. Fetch unused deposits from mempool
     let stored_deposits_in_mempool: Option<Vec<DepositDatawithFee>> =
         <mongodb::Client as TransactionsDB<P>>::get_mempool_deposits(db).await;
@@ -545,8 +548,9 @@ where
     <mongodb::Client as TransactionsDB<P>>::remove_mempool_deposits(db, used_deposits_info.clone())
         .await;
 
-    // 10. Clear selected client transactions from mempool
-    db.set_in_mempool(&reordered, false).await;
+    // 10. Mark selected client transactions as already chosen for this block.
+    db.mark_transactions_selected_for_block(&reordered, current_block_number)
+        .await;
 
     // 10b. Clear expired swaps from mempool
     if !expired_swaps.is_empty() {
@@ -607,6 +611,7 @@ mod tests {
                     },
                     block_l2: None,
                     in_mempool: true,
+                    cancelled_explicitly: false,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -753,6 +758,7 @@ mod tests {
                     },
                     block_l2: None,
                     in_mempool: true,
+                    cancelled_explicitly: false,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -846,6 +852,7 @@ mod tests {
                     },
                     block_l2: None,
                     in_mempool: true,
+                    cancelled_explicitly: false,
                     hash: vec![i as u32],
                     historic_roots: vec![Fr254::from(123)],
                 })
@@ -939,6 +946,7 @@ mod tests {
             },
             block_l2: None,
             in_mempool: true,
+            cancelled_explicitly: false,
             hash: vec![1],
             historic_roots: vec![],
         };
@@ -955,6 +963,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![2],
                 historic_roots: vec![],
             },
@@ -969,6 +978,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![3],
                 historic_roots: vec![],
             },
@@ -1019,6 +1029,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![i as u32 + 1],
                 historic_roots: vec![],
             })
@@ -1036,6 +1047,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![10 + i as u32],
                 historic_roots: vec![],
             })
@@ -1090,6 +1102,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![i as u32 + 1],
                 historic_roots: vec![],
             })
@@ -1124,6 +1137,18 @@ mod tests {
             remaining_expired_swaps, 0,
             "Expired swap legs should be removed from mempool"
         );
+
+        let expired_swap_records = db
+            .get_all_transactions()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, tx): (Vec<u32>, ClientTransactionWithMetaData<PlonkProof>)| tx)
+            .filter(|tx| tx.client_transaction.swap_link == Fr254::from(55u64))
+            .collect::<Vec<_>>();
+        assert!(expired_swap_records
+            .iter()
+            .all(|tx| !tx.cancelled_explicitly));
     }
 
     #[tokio::test]
@@ -1144,6 +1169,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![20 + i as u32],
                 historic_roots: vec![],
             })
@@ -1177,6 +1203,97 @@ mod tests {
             remaining_zero_deadline_swaps, 0,
             "Zero-deadline swap legs should be removed from mempool at block 0"
         );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_stale_transaction_keeps_cancelled_flag_false() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 4;
+        let stale_commitment = Fr254::from(1234u64);
+
+        db.store_block(&StoredBlock {
+            layer2_block_number: 0,
+            commitments: vec![stale_commitment.to_hex_string()],
+            proposer_address: alloy::primitives::Address::ZERO,
+        })
+        .await
+        .unwrap();
+
+        let stale_tx = ClientTransactionWithMetaData {
+            client_transaction: lib::shared_entities::ClientTransaction {
+                fee: Fr254::from(100u64),
+                commitments: [
+                    stale_commitment,
+                    Fr254::zero(),
+                    Fr254::zero(),
+                    Fr254::zero(),
+                ],
+                proof: PlonkProof::default(),
+                ..Default::default()
+            },
+            block_l2: None,
+            in_mempool: true,
+            cancelled_explicitly: false,
+            hash: vec![9, 9, 9, 9],
+            historic_roots: vec![],
+        };
+        db.store_transaction(stale_tx.clone()).await.unwrap();
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 1).await;
+        assert!(matches!(
+            result,
+            Err(BlockAssemblyError::InsufficientTransactions)
+        ));
+
+        let stored: ClientTransactionWithMetaData<PlonkProof> =
+            db.get_transaction(&stale_tx.hash).await.unwrap();
+        assert!(!stored.in_mempool);
+        assert_eq!(stored.block_l2, None);
+        assert!(!stored.cancelled_explicitly);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_block_data_skips_explicitly_cancelled_transactions() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let block_size = 1;
+
+        let active_tx = ClientTransactionWithMetaData {
+            client_transaction: lib::shared_entities::ClientTransaction {
+                fee: Fr254::from(10u64),
+                proof: PlonkProof::default(),
+                ..Default::default()
+            },
+            block_l2: None,
+            in_mempool: true,
+            cancelled_explicitly: false,
+            hash: vec![1, 1, 1],
+            historic_roots: vec![],
+        };
+        let cancelled_tx = ClientTransactionWithMetaData {
+            client_transaction: lib::shared_entities::ClientTransaction {
+                fee: Fr254::from(100u64),
+                proof: PlonkProof::default(),
+                ..Default::default()
+            },
+            block_l2: None,
+            in_mempool: true,
+            cancelled_explicitly: true,
+            hash: vec![2, 2, 2],
+            historic_roots: vec![],
+        };
+
+        db.store_transaction(active_tx.clone()).await.unwrap();
+        db.store_transaction(cancelled_tx.clone()).await.unwrap();
+
+        let result = prepare_block_data::<PlonkProof>(&db, block_size, 0).await;
+        assert!(result.is_ok());
+        let (_, selected) = result.unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].hash, active_tx.hash);
+        assert_ne!(selected[0].hash, cancelled_tx.hash);
     }
 
     #[tokio::test]
@@ -1220,6 +1337,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![50 + i as u32],
                 historic_roots: vec![],
             })
@@ -1237,6 +1355,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![70 + i as u32],
                 historic_roots: vec![],
             })
@@ -1312,6 +1431,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![600 + i as u32],
                 historic_roots: vec![],
             })
@@ -1374,6 +1494,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![200 + i as u32],
                 historic_roots: vec![],
             })
@@ -1427,6 +1548,7 @@ mod tests {
             },
             block_l2: None,
             in_mempool: true,
+            cancelled_explicitly: false,
             hash: vec![210],
             historic_roots: vec![],
         })
@@ -1478,6 +1600,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![300],
                 historic_roots: vec![],
             },
@@ -1492,6 +1615,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![301],
                 historic_roots: vec![],
             },
@@ -1506,6 +1630,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![302],
                 historic_roots: vec![],
             },
@@ -1565,6 +1690,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![400],
                 historic_roots: vec![],
             },
@@ -1579,6 +1705,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![401],
                 historic_roots: vec![],
             },
@@ -1632,6 +1759,7 @@ mod tests {
                 },
                 block_l2: None,
                 in_mempool: true,
+                cancelled_explicitly: false,
                 hash: vec![500 + i as u32],
                 historic_roots: vec![],
             })

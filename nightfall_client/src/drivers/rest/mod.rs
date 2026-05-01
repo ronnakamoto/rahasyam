@@ -107,6 +107,10 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::In
                 StatusCode::SERVICE_UNAVAILABLE,
             )),
             RequestNotFound => Ok(reply::with_status("No such request", StatusCode::NOT_FOUND)),
+            FailedToCancelSwap => Ok(reply::with_status(
+                "Failed to cancel swap",
+                StatusCode::BAD_REQUEST,
+            )),
             FailedDeEscrow => Ok(reply::with_status(
                 "Failed to de-escrow funds",
                 StatusCode::BAD_REQUEST,

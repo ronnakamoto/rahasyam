@@ -1,9 +1,12 @@
 use crate::{
     domain::entities::Block,
     drivers::blockchain::nightfall_event_listener::get_synchronisation_status,
-    initialisation::{get_block_assembly_trigger, get_blockchain_client_connection},
+    initialisation::{get_block_assembly_trigger, get_blockchain_client_connection, get_db_connection},
     ports::{contracts::NightfallContract, proving::RecursiveProvingEngine},
-    services::assemble_block::assemble_block,
+    services::{
+        assemble_block::assemble_block,
+        selected_transactions::restore_selected_transactions_for_failed_block,
+    },
 };
 use alloy::{
     primitives::{Address, TxHash, I256, U64},
@@ -207,8 +210,9 @@ async fn check_l1_finality(
 /// blocks are left in the queue so the caller can retry on the next tick.
 /// Submission failures (`N::propose_block`) preserve the pre-existing
 /// behaviour of logging and dropping the offending block.
-async fn propose_pending_blocks<N>(blocks: &mut VecDeque<Block>)
+async fn propose_pending_blocks<P, N>(blocks: &mut VecDeque<Block>)
 where
+    P: Proof,
     N: NightfallContract,
 {
     while !blocks.is_empty() {
@@ -240,9 +244,12 @@ where
             .pop_front()
             .expect("queue checked as non-empty above");
         block.block_number = block_number;
+        let failed_block = block.clone();
 
         if let Err(e) = N::propose_block(block).await {
             error!("Failed to propose block: {e}");
+            let db = get_db_connection().await;
+            let _ = restore_selected_transactions_for_failed_block::<P>(db, &failed_block).await;
         }
     }
 }
@@ -389,7 +396,7 @@ where
                             "Finality checker: current proposer turn {onchain_start_block} already finalized, proposing {} pending blocks",
                             guard.len()
                         );
-                        propose_pending_blocks::<N>(&mut guard).await;
+                        propose_pending_blocks::<P, N>(&mut guard).await;
                     }
 
                     tokio::time::sleep(finality_check_interval).await;
@@ -468,7 +475,7 @@ where
                                 "Finality checker: finalized & canonical rotation, proposing {} pending blocks",
                                 guard.len()
                             );
-                            propose_pending_blocks::<N>(&mut guard).await;
+                            propose_pending_blocks::<P, N>(&mut guard).await;
                         }
                     }
                     Ok(false) => {

@@ -144,6 +144,7 @@ where
         client_transaction: client_transaction.clone(),
         block_l2: None,
         in_mempool: true,
+        cancelled_explicitly: false,
         hash: hash.to_vec(),
         historic_roots: vec![client_transaction.historic_commitment_root],
     };
