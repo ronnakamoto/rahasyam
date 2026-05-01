@@ -1,5 +1,7 @@
 use crate::{
-    domain::entities::{ClientTransactionWithMetaData, DepositDatawithFee, HistoricRoot, TxLifecycle},
+    domain::entities::{
+        ClientTransactionWithMetaData, DepositDatawithFee, HistoricRoot, TxLifecycle,
+    },
     ports::db::{BlockStorageDB, HistoricRootsDB, TransactionsDB},
 };
 use alloy::primitives::Address;
@@ -78,7 +80,7 @@ where
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .find(filter)
             .await
-            .ok()?;// propagate DB error as None so the caller can handle it explicitly
+            .ok()?; // propagate DB error as None so the caller can handle it explicitly
         let mut result: Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)> = Vec::new();
         while cursor.advance().await.ok()? {
             let v: ClientTransactionWithMetaData<P> = cursor.deserialize_current().ok()?;
@@ -222,10 +224,7 @@ where
         Some(result.modified_count)
     }
 
-    async fn drop_transactions(
-        &self,
-        txs: &[ClientTransactionWithMetaData<P>],
-    ) -> Option<u64> {
+    async fn drop_transactions(&self, txs: &[ClientTransactionWithMetaData<P>]) -> Option<u64> {
         if txs.is_empty() {
             return Some(0);
         }

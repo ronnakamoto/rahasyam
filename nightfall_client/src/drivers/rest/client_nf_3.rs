@@ -689,9 +689,8 @@ async fn cancel_swap_on_all_proposers(
         Ok(CancelSwapStatus::CancelledFromMempool)
     } else if saw_dropped {
         Ok(CancelSwapStatus::Dropped)
-    } else if saw_never_present {
-        Ok(CancelSwapStatus::NeverPresent)
     } else {
+        let _ = saw_never_present;
         Ok(CancelSwapStatus::NeverPresent)
     }
 }
@@ -861,14 +860,12 @@ async fn handle_quit_swap_request(
         .map_err(warp::reject::custom)?;
 
     Ok(reply::with_status(
-        json(
-            &serde_json::json!({
-                "requestId": request_id,
-                "unlocked": execution.unlocked,
-                "skipped": execution.skipped,
-                "message": execution.message
-            }),
-        ),
+        json(&serde_json::json!({
+            "requestId": request_id,
+            "unlocked": execution.unlocked,
+            "skipped": execution.skipped,
+            "message": execution.message
+        })),
         execution.status_code,
     ))
 }
@@ -2150,16 +2147,15 @@ where
 mod tests {
     use super::*;
     use crate::domain::entities::RequestStatus;
-    use async_trait::async_trait;
     use ark_ec::AffineRepr;
     use ark_ff::One;
     use ark_serialize::{CanonicalSerialize, Compress};
     use ark_std::Zero;
+    use async_trait::async_trait;
     use lib::{
         client_models::{
             NF3DepositRequest, NF3QuitSwapRequest, NF3RecipientData, NF3SwapRequest,
-            NF3TransferRequest,
-            NF3WithdrawRequest, SwapParty,
+            NF3TransferRequest, NF3WithdrawRequest, SwapParty,
         },
         derive_key::ZKPKeys,
         plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
@@ -2318,7 +2314,11 @@ mod tests {
                     updated = true;
                 }
             }
-            if updated { Some(()) } else { None }
+            if updated {
+                Some(())
+            } else {
+                None
+            }
         }
 
         async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
@@ -3438,9 +3438,13 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
-        db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::PendingSpend))
+        db.push_request(mock_request(request_id, Some(child_args)))
             .await;
+        db.push_commitment(mock_commitment(
+            commitment_id,
+            CommitmentStatus::PendingSpend,
+        ))
+        .await;
 
         let result = process_quit_swap(&db, request_id)
             .await
@@ -3481,9 +3485,13 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
-        db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::PendingSpend))
+        db.push_request(mock_request(request_id, Some(child_args)))
             .await;
+        db.push_commitment(mock_commitment(
+            commitment_id,
+            CommitmentStatus::PendingSpend,
+        ))
+        .await;
 
         let result = process_quit_swap(&db, request_id)
             .await
@@ -3521,7 +3529,8 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_request(mock_request(request_id, Some(child_args)))
+            .await;
         db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::Spent))
             .await;
 
@@ -3686,7 +3695,8 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_request(mock_request(request_id, Some(child_args)))
+            .await;
         db.push_commitment(mock_commitment(
             commitment_id,
             CommitmentStatus::PendingSpend,
@@ -3732,7 +3742,8 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_request(mock_request(request_id, Some(child_args)))
+            .await;
         db.push_commitment(mock_commitment(
             commitment_id,
             CommitmentStatus::PendingSpend,
@@ -3779,7 +3790,8 @@ mod tests {
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args))).await;
+        db.push_request(mock_request(request_id, Some(child_args)))
+            .await;
         db.push_commitment(mock_commitment(
             pending_commitment_id,
             CommitmentStatus::PendingSpend,
@@ -3814,7 +3826,8 @@ mod tests {
             Some(CommitmentStatus::Unspent)
         );
         assert_eq!(
-            db.get_commitment_status(already_unlocked_commitment_id).await,
+            db.get_commitment_status(already_unlocked_commitment_id)
+                .await,
             Some(CommitmentStatus::Unspent)
         );
     }

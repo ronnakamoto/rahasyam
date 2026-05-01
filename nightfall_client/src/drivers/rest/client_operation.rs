@@ -236,20 +236,18 @@ where
     E: ProvingEngine<P> + Send + Sync,
     N: NightfallContract,
 {
-    Ok(
-        submit_client_operation::<P, E, N>(
-            operation,
-            spend_commitments,
-            new_commitments,
-            ephemeral_private_key,
-            recipient_address,
-            secret_preimages,
-            swap_params,
-            id,
-        )
-        .await?
-        .payload,
+    Ok(submit_client_operation::<P, E, N>(
+        operation,
+        spend_commitments,
+        new_commitments,
+        ephemeral_private_key,
+        recipient_address,
+        secret_preimages,
+        swap_params,
+        id,
     )
+    .await?
+    .payload)
 }
 
 /// Only retry on network issues or timeouts

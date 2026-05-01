@@ -1,7 +1,9 @@
 use crate::domain::error::ProposerRejection;
 use crate::drivers::rest::{
-    block_data::get_block_data, client_transactions::{cancel_swap, client_transaction},
-    proposers::rotate_proposer, synchronisation::synchronisation,
+    block_data::get_block_data,
+    client_transactions::{cancel_swap, client_transaction},
+    proposers::rotate_proposer,
+    synchronisation::synchronisation,
 };
 use block_assembly::{
     get_block_assembly_status_route, pause_block_assembly, resume_block_assembly,

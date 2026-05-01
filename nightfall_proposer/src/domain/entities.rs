@@ -206,7 +206,10 @@ mod tests {
         let deserialized: ClientTransactionWithMetaData<MockProof> =
             from_str(&serialized).expect("deserialize legacy tx");
 
-        assert_eq!(deserialized.lifecycle, TxLifecycle::Selected { block_l2: 7 });
+        assert_eq!(
+            deserialized.lifecycle,
+            TxLifecycle::Selected { block_l2: 7 }
+        );
     }
 
     #[test]

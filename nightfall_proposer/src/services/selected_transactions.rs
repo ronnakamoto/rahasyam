@@ -133,8 +133,7 @@ pub async fn reconcile_obviously_orphaned_selected_transactions<P>(
 where
     P: Proof,
 {
-    let classified_transactions =
-        get_classified_selected_transactions::<P>(db, 0, false).await?;
+    let classified_transactions = get_classified_selected_transactions::<P>(db, 0, false).await?;
     let orphaned_transactions = classified_transactions
         .into_iter()
         .filter(|classified| classified.state == SelectedTransactionState::Orphaned)
@@ -172,8 +171,11 @@ where
         .filter(|transaction| block_contains_transaction(&block_commitments, transaction))
         .collect::<Vec<_>>();
 
-    <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(db, &matching_transactions)
-        .await
+    <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(
+        db,
+        &matching_transactions,
+    )
+    .await
 }
 
 pub async fn cancel_orphaned_selected_transactions<P>(
@@ -207,13 +209,12 @@ where
 
     let mut cancelled = 0u64;
     for (block_l2, transactions) in orphaned_by_block {
-        let modified =
-            <mongodb::Client as TransactionsDB<P>>::cancel_selected_transactions(
-                db,
-                &transactions,
-                block_l2,
-            )
-            .await?;
+        let modified = <mongodb::Client as TransactionsDB<P>>::cancel_selected_transactions(
+            db,
+            &transactions,
+            block_l2,
+        )
+        .await?;
         if modified != transactions.len() as u64 {
             return None;
         }
@@ -231,8 +232,8 @@ mod tests {
         driven::db::mongo_db::StoredBlock,
         ports::db::{BlockStorageDB, TransactionsDB},
     };
-    use alloy::primitives::Bytes;
     use alloy::primitives::Address;
+    use alloy::primitives::Bytes;
     use ark_bn254::Fr as Fr254;
     use ark_serialize::SerializationError;
     use lib::{
@@ -311,7 +312,7 @@ mod tests {
     fn sample_block(commitment: Fr254) -> Block {
         Block {
             transactions: vec![OnChainTransaction {
-                commitments: [commitment.into(), 0u64.into(), 0u64.into(), 0u64.into()],
+                commitments: [commitment, 0u64.into(), 0u64.into(), 0u64.into()],
                 ..Default::default()
             }],
             ..Default::default()
@@ -321,7 +322,8 @@ mod tests {
     #[test]
     fn classifies_selected_transaction_as_included_when_block_contains_commitments() {
         let tx = sample_selected_transaction(Fr254::from(10u64), 7);
-        let stored_blocks = HashMap::from([(7, HashSet::from([Fr254::from(10u64).to_hex_string()]))]);
+        let stored_blocks =
+            HashMap::from([(7, HashSet::from([Fr254::from(10u64).to_hex_string()]))]);
 
         let classified = classify_selected_transaction(tx, &stored_blocks, 8, true);
 
@@ -347,7 +349,8 @@ mod tests {
     }
 
     #[test]
-    fn does_not_classify_missing_local_block_as_orphaned_when_missing_block_inference_is_disabled() {
+    fn does_not_classify_missing_local_block_as_orphaned_when_missing_block_inference_is_disabled()
+    {
         let tx = sample_selected_transaction(Fr254::from(10u64), 30);
 
         let classified = classify_selected_transaction(tx, &HashMap::new(), 100, false);
@@ -377,10 +380,12 @@ mod tests {
         let tx = sample_selected_transaction(Fr254::from(10u64), 7);
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let restored =
-            restore_selected_transactions_for_failed_block::<MockProof>(&db, &sample_block(Fr254::from(10u64)))
-                .await
-                .unwrap();
+        let restored = restore_selected_transactions_for_failed_block::<MockProof>(
+            &db,
+            &sample_block(Fr254::from(10u64)),
+        )
+        .await
+        .unwrap();
 
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
@@ -402,10 +407,9 @@ mod tests {
         .await
         .unwrap();
 
-        let restored =
-            reconcile_obviously_orphaned_selected_transactions::<MockProof>(&db)
-                .await
-                .unwrap();
+        let restored = reconcile_obviously_orphaned_selected_transactions::<MockProof>(&db)
+            .await
+            .unwrap();
 
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
@@ -420,10 +424,9 @@ mod tests {
         let tx = sample_selected_transaction(Fr254::from(10u64), 30);
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let restored =
-            reconcile_obviously_orphaned_selected_transactions::<MockProof>(&db)
-                .await
-                .unwrap();
+        let restored = reconcile_obviously_orphaned_selected_transactions::<MockProof>(&db)
+            .await
+            .unwrap();
 
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
@@ -446,10 +449,9 @@ mod tests {
         .unwrap();
 
         db.delete_block_by_number(7).await.unwrap();
-        let restored =
-            reconcile_orphaned_selected_transactions::<MockProof>(&db, 8)
-                .await
-                .unwrap();
+        let restored = reconcile_orphaned_selected_transactions::<MockProof>(&db, 8)
+            .await
+            .unwrap();
 
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
@@ -465,21 +467,18 @@ mod tests {
         let tx = sample_selected_swap_transaction(Fr254::from(10u64), 7, swap_link, vec![7, 7, 7]);
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let cancelled = cancel_orphaned_selected_transactions::<MockProof>(
-            &db,
-            swap_link,
-            8,
-            true,
-        )
-        .await
-        .unwrap();
+        let cancelled = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
 
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
         let selected =
-            <mongodb::Client as TransactionsDB<MockProof>>::get_all_selected_client_transactions(&db)
-                .await
-                .unwrap();
+            <mongodb::Client as TransactionsDB<MockProof>>::get_all_selected_client_transactions(
+                &db,
+            )
+            .await
+            .unwrap();
         assert_eq!(cancelled, 1);
         assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
         assert!(selected.is_empty());
@@ -493,22 +492,12 @@ mod tests {
         let tx = sample_selected_swap_transaction(Fr254::from(10u64), 7, swap_link, vec![8, 8, 8]);
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let first = cancel_orphaned_selected_transactions::<MockProof>(
-            &db,
-            swap_link,
-            8,
-            true,
-        )
-        .await
-        .unwrap();
-        let second = cancel_orphaned_selected_transactions::<MockProof>(
-            &db,
-            swap_link,
-            8,
-            true,
-        )
-        .await
-        .unwrap();
+        let first = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
+        let second = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
 
@@ -523,7 +512,12 @@ mod tests {
         let db = get_db_connection(&container).await;
         let tx = ClientTransactionWithMetaData {
             client_transaction: ClientTransaction {
-                commitments: [Fr254::from(10u64), Fr254::zero(), Fr254::zero(), Fr254::zero()],
+                commitments: [
+                    Fr254::from(10u64),
+                    Fr254::zero(),
+                    Fr254::zero(),
+                    Fr254::zero(),
+                ],
                 compressed_secrets: CompressedSecrets::default(),
                 proof: MockProof {
                     a: vec![1],
@@ -538,10 +532,9 @@ mod tests {
         };
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let restored =
-            reconcile_orphaned_selected_transactions::<MockProof>(&db, 8)
-                .await
-                .unwrap();
+        let restored = reconcile_orphaned_selected_transactions::<MockProof>(&db, 8)
+            .await
+            .unwrap();
         let stored: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
 

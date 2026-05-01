@@ -107,11 +107,12 @@ where
         warp::reject::custom(ProposerRejection::FailedToCancelSwap)
     })?;
 
-    let current_layer2_block_number = <Nightfall::NightfallCalls as NightfallContract>::get_current_layer2_blocknumber()
-        .await
-        .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?
-        .try_into()
-        .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?;
+    let current_layer2_block_number =
+        <Nightfall::NightfallCalls as NightfallContract>::get_current_layer2_blocknumber()
+            .await
+            .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?
+            .try_into()
+            .map_err(|_| warp::reject::custom(ProposerRejection::FailedToCancelSwap))?;
     let is_synchronised = get_synchronisation_status()
         .await
         .read()
@@ -128,10 +129,7 @@ where
     .await
     .map_err(warp::reject::custom)?;
 
-    Ok(warp::reply::with_status(
-        json(&response),
-        StatusCode::OK,
-    ))
+    Ok(warp::reply::with_status(json(&response), StatusCode::OK))
 }
 
 async fn determine_cancel_swap_response<P>(
@@ -149,10 +147,12 @@ where
     )?;
 
     if !matching_swaps.is_empty() {
-        let removed =
-            <mongodb::Client as TransactionsDB<P>>::cancel_mempool_transactions(db, &matching_swaps)
-                .await
-                .ok_or(ProposerRejection::FailedToCancelSwap)?;
+        let removed = <mongodb::Client as TransactionsDB<P>>::cancel_mempool_transactions(
+            db,
+            &matching_swaps,
+        )
+        .await
+        .ok_or(ProposerRejection::FailedToCancelSwap)?;
 
         if removed != matching_swaps.len() as u64 {
             error!(
@@ -170,13 +170,10 @@ where
         });
     }
 
-    let selected_swaps = get_classified_selected_transactions::<P>(
-        db,
-        current_layer2_block_number,
-        is_synchronised,
-    )
-    .await
-    .ok_or(ProposerRejection::FailedToCancelSwap)?;
+    let selected_swaps =
+        get_classified_selected_transactions::<P>(db, current_layer2_block_number, is_synchronised)
+            .await
+            .ok_or(ProposerRejection::FailedToCancelSwap)?;
 
     if selected_swaps.iter().any(|classified| {
         classified.transaction.client_transaction.swap_link == swap_link
@@ -217,20 +214,28 @@ where
         .await
         .unwrap_or_default();
 
-    if all_transactions.iter().map(|(_, transaction)| transaction).any(|transaction| {
-        transaction.client_transaction.swap_link == swap_link
-            && matches!(transaction.lifecycle, TxLifecycle::Cancelled)
-    }) {
+    if all_transactions
+        .iter()
+        .map(|(_, transaction)| transaction)
+        .any(|transaction| {
+            transaction.client_transaction.swap_link == swap_link
+                && matches!(transaction.lifecycle, TxLifecycle::Cancelled)
+        })
+    {
         return Ok(CancelSwapResponse {
             status: CancelSwapStatus::CancelledFromMempool,
             removed: 0,
         });
     }
 
-    if all_transactions.iter().map(|(_, transaction)| transaction).any(|transaction| {
-        transaction.client_transaction.swap_link == swap_link
-            && matches!(transaction.lifecycle, TxLifecycle::Dropped)
-    }) {
+    if all_transactions
+        .iter()
+        .map(|(_, transaction)| transaction)
+        .any(|transaction| {
+            transaction.client_transaction.swap_link == swap_link
+                && matches!(transaction.lifecycle, TxLifecycle::Dropped)
+        })
+    {
         return Ok(CancelSwapResponse {
             status: CancelSwapStatus::Dropped,
             removed: 0,
@@ -246,15 +251,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drivers::rest::handle_rejection;
     use crate::{
         domain::entities::TxLifecycle,
         driven::db::mongo_db::StoredBlock,
         ports::db::{BlockStorageDB, TransactionsDB},
         services::selected_transactions::reconcile_orphaned_selected_transactions,
     };
-    use crate::drivers::rest::handle_rejection;
-    use alloy::primitives::Bytes;
     use alloy::primitives::Address;
+    use alloy::primitives::Bytes;
     use ark_serialize::SerializationError;
     use ark_std::Zero;
     use lib::{
@@ -510,10 +515,9 @@ mod tests {
         .await
         .unwrap();
 
-        let response =
-            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
-                .await
-                .unwrap();
+        let response = determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
 
         assert_eq!(response.status, CancelSwapStatus::AlreadyIncluded);
         assert_eq!(response.removed, 0);
@@ -533,16 +537,14 @@ mod tests {
         );
         db.store_transaction(tx.clone()).await.unwrap();
 
-        let first =
-            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
-                .await
-                .unwrap();
+        let first = determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
         let stored_after_first: ClientTransactionWithMetaData<MockProof> =
             db.get_transaction(&tx.hash).await.unwrap();
-        let second =
-            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
-                .await
-                .unwrap();
+        let second = determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
 
         assert_eq!(first.status, CancelSwapStatus::CancelledFromMempool);
         assert_eq!(first.removed, 0);
@@ -565,10 +567,9 @@ mod tests {
         );
         db.store_transaction(tx).await.unwrap();
 
-        let response =
-            determine_cancel_swap_response::<MockProof>(&db, swap_link, 100, false)
-                .await
-                .unwrap();
+        let response = determine_cancel_swap_response::<MockProof>(&db, swap_link, 100, false)
+            .await
+            .unwrap();
 
         assert_eq!(response.status, CancelSwapStatus::AlreadyAssembled);
         assert_eq!(response.removed, 0);
@@ -592,10 +593,9 @@ mod tests {
         };
         db.store_transaction(dropped_tx).await.unwrap();
 
-        let response =
-            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
-                .await
-                .unwrap();
+        let response = determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true)
+            .await
+            .unwrap();
 
         assert_eq!(response.status, CancelSwapStatus::Dropped);
         assert_eq!(response.removed, 0);
@@ -618,7 +618,11 @@ mod tests {
 
         let (response, selected) = tokio::join!(
             determine_cancel_swap_response::<MockProof>(&db, swap_link, 9, true),
-            <mongodb::Client as TransactionsDB<MockProof>>::mark_transactions_selected_for_block(&db, &select_batch, 9),
+            <mongodb::Client as TransactionsDB<MockProof>>::mark_transactions_selected_for_block(
+                &db,
+                &select_batch,
+                9
+            ),
         );
 
         let response = response.unwrap();
@@ -634,7 +638,9 @@ mod tests {
             TxLifecycle::Selected { block_l2: 9 } => {
                 assert_eq!(response.status, CancelSwapStatus::AlreadyAssembled);
             }
-            ref lifecycle => panic!("unexpected lifecycle after cancel/selection race: {lifecycle:?}"),
+            ref lifecycle => {
+                panic!("unexpected lifecycle after cancel/selection race: {lifecycle:?}")
+            }
         }
     }
 
