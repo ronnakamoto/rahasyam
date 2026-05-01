@@ -50,8 +50,13 @@ pub struct SwapParams {
     pub deadline: Fr254,
 }
 
+pub struct SubmittedOperation<P> {
+    pub payload: NotificationPayload,
+    pub transaction: ClientTransaction<P>,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub async fn handle_client_operation<P, E, N>(
+pub async fn submit_client_operation<P, E, N>(
     operation: Operation,
     spend_commitments: [impl Nullifiable; 4],
     new_commitments: [impl Nullifiable; 4],
@@ -60,7 +65,7 @@ pub async fn handle_client_operation<P, E, N>(
     secret_preimages: [impl SecretHash; 4],
     swap_params: Option<SwapParams>,
     id: &str,
-) -> Result<NotificationPayload, TransactionHandlerError>
+) -> Result<SubmittedOperation<P>, TransactionHandlerError>
 where
     P: Proof + Debug + serde::Serialize + Clone + Send + Sync,
     E: ProvingEngine<P> + Send + Sync,
@@ -209,7 +214,42 @@ where
 
     let uuid = serde_json::to_string(id).map_err(TransactionHandlerError::JsonConversionError)?;
 
-    Ok(NotificationPayload::TransactionEvent { response, uuid })
+    Ok(SubmittedOperation {
+        payload: NotificationPayload::TransactionEvent { response, uuid },
+        transaction: operation_result,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_client_operation<P, E, N>(
+    operation: Operation,
+    spend_commitments: [impl Nullifiable; 4],
+    new_commitments: [impl Nullifiable; 4],
+    ephemeral_private_key: BJJScalar,
+    recipient_address: Fr254,
+    secret_preimages: [impl SecretHash; 4],
+    swap_params: Option<SwapParams>,
+    id: &str,
+) -> Result<NotificationPayload, TransactionHandlerError>
+where
+    P: Proof + Debug + serde::Serialize + Clone + Send + Sync,
+    E: ProvingEngine<P> + Send + Sync,
+    N: NightfallContract,
+{
+    Ok(
+        submit_client_operation::<P, E, N>(
+            operation,
+            spend_commitments,
+            new_commitments,
+            ephemeral_private_key,
+            recipient_address,
+            secret_preimages,
+            swap_params,
+            id,
+        )
+        .await?
+        .payload,
+    )
 }
 
 /// Only retry on network issues or timeouts

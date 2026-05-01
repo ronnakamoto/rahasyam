@@ -1,4 +1,4 @@
-use super::client_operation::{handle_client_operation, SwapParams};
+use super::client_operation::{handle_client_operation, submit_client_operation, SwapParams};
 use crate::{
     domain::{
         entities::{
@@ -24,7 +24,6 @@ use crate::{
 };
 use alloy::primitives::TxHash;
 use ark_bn254::Fr as Fr254;
-use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
 use ark_ec::twisted_edwards::Affine;
 use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
 use ark_std::{rand::thread_rng, UniformRand};
@@ -50,10 +49,6 @@ use lib::{
     plonk_prover::circuits::DOMAIN_SHARED_SALT,
     serialization::ark_de_hex,
     shared_entities::{DepositSecret, Preimage, Salt, TokenType},
-};
-use jf_primitives::poseidon::{
-    sponge::{PoseidonSponge, CRHF_RATE},
-    PoseidonPerm,
 };
 use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BJJTEAffine as JubJub, BabyJubjub, Fr as BJJScalar};
@@ -1305,34 +1300,6 @@ async fn store_swap_child_request_args(
     Ok(())
 }
 
-fn compute_swap_link(
-    party_a_pk: JubJub,
-    party_b_pk: JubJub,
-    token_a_id: Fr254,
-    value_a: Fr254,
-    token_b_id: Fr254,
-    value_b: Fr254,
-    swap_nonce: Fr254,
-) -> Result<Fr254, TransactionHandlerError> {
-    let sponge_perm = PoseidonPerm::<Fr254>::perm().map_err(|e| {
-        TransactionHandlerError::CustomError(format!("failed to initialise swap sponge: {e:?}"))
-    })?;
-    let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_perm);
-    sponge.absorb(&vec![
-        Fr254::from_le_bytes_mod_order(b"SWAP_V1"),
-        party_a_pk.x,
-        party_a_pk.y,
-        party_b_pk.x,
-        party_b_pk.y,
-        token_a_id,
-        value_a,
-        token_b_id,
-        value_b,
-        swap_nonce,
-    ]);
-    Ok(sponge.squeeze_native_field_elements(1)[0])
-}
-
 async fn handle_transfer<P, E, N>(
     transfer_req: NF3TransferRequest,
     id: &str,
@@ -2013,16 +1980,6 @@ where
         .filter(|c| c.get_preimage() != Preimage::default())
         .filter_map(|c| c.hash().ok())
         .collect::<Vec<_>>();
-    let swap_link = compute_swap_link(
-        party_a_pk,
-        party_b_pk,
-        nf_token_a_id,
-        value_a_fr,
-        nf_token_b_id,
-        value_b_fr,
-        swap_nonce_fr,
-    )?;
-
     // Calculate change
     let total_token_value = spend_commitments[..2]
         .iter()
@@ -2119,16 +2076,7 @@ where
         operation_type: OperationType::Swap,
     };
 
-    if let Err(e) =
-        store_swap_child_request_args(id, deadline_fr, swap_link, &spend_commitment_ids).await
-    {
-        let db = get_db_connection().await;
-        rollback_commitments(db, &spend_commitment_ids, id).await;
-        return Err(e);
-    }
-
-    // Call handle_client_operation_swap with swap parameters
-    match handle_client_operation::<P, E, N>(
+    match submit_client_operation::<P, E, N>(
         op,
         spend_commitments,
         new_commitments,
@@ -2149,7 +2097,21 @@ where
     )
     .await
     {
-        Ok(res) => Ok(res),
+        Ok(submitted) => {
+            if let Err(e) = store_swap_child_request_args(
+                id,
+                deadline_fr,
+                submitted.transaction.swap_link,
+                &spend_commitment_ids,
+            )
+            .await
+            {
+                let db = get_db_connection().await;
+                rollback_commitments(db, &spend_commitment_ids, id).await;
+                return Err(e);
+            }
+            Ok(submitted.payload)
+        }
         Err(e) => {
             // Rollback on failure
             let db = get_db_connection().await;
@@ -2183,15 +2145,10 @@ mod tests {
     use super::*;
     use crate::domain::entities::RequestStatus;
     use async_trait::async_trait;
-    use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
     use ark_ec::AffineRepr;
     use ark_ff::One;
     use ark_serialize::{CanonicalSerialize, Compress};
     use ark_std::Zero;
-    use jf_primitives::poseidon::{
-        sponge::{PoseidonSponge, CRHF_RATE},
-        PoseidonPerm,
-    };
     use lib::{
         client_models::{
             NF3DepositRequest, NF3QuitSwapRequest, NF3RecipientData, NF3SwapRequest,
@@ -3427,50 +3384,6 @@ mod tests {
             }
             other => panic!("Expected unsupported token_type error, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_stored_swap_link_matches_swap_transaction_formula() {
-        let party_a_pk = ZKPKeys::new(Fr254::from(1u64))
-            .expect("should derive first zkp keys")
-            .zkp_public_key;
-        let party_b_pk = ZKPKeys::new(Fr254::from(2u64))
-            .expect("should derive second zkp keys")
-            .zkp_public_key;
-        let token_a_id = Fr254::from(11u64);
-        let value_a = Fr254::from(12u64);
-        let token_b_id = Fr254::from(21u64);
-        let value_b = Fr254::from(22u64);
-        let swap_nonce = Fr254::from(99u64);
-
-        let stored_swap_link = compute_swap_link(
-            party_a_pk,
-            party_b_pk,
-            token_a_id,
-            value_a,
-            token_b_id,
-            value_b,
-            swap_nonce,
-        )
-        .expect("swap link should compute");
-
-        let sponge_perm = PoseidonPerm::<Fr254>::perm().expect("poseidon permutation");
-        let mut sponge = PoseidonSponge::<Fr254, CRHF_RATE>::new(&sponge_perm);
-        sponge.absorb(&vec![
-            Fr254::from_le_bytes_mod_order(b"SWAP_V1"),
-            party_a_pk.x,
-            party_a_pk.y,
-            party_b_pk.x,
-            party_b_pk.y,
-            token_a_id,
-            value_a,
-            token_b_id,
-            value_b,
-            swap_nonce,
-        ]);
-        let transaction_swap_link = sponge.squeeze_native_field_elements(1)[0];
-
-        assert_eq!(stored_swap_link, transaction_swap_link);
     }
 
     #[tokio::test]
