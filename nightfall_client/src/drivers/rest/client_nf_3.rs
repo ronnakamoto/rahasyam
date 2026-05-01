@@ -33,6 +33,7 @@ use configuration::{addresses::get_addresses, settings::get_settings};
 use futures::future::join_all;
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
+    blockchain_client::BlockchainClientConnection,
     client_models::{
         CancelSwapRequest, DeEscrowDataReq, NF3DepositRequest, NF3QuitSwapRequest,
         NF3SwapRequest, NF3TransferRequest, NF3WithdrawRequest,
@@ -2030,8 +2031,8 @@ where
 
             info!("{id} Deleting {} new commitments", new_commitment_ids.len());
             let _ = db.delete_commitments(new_commitment_ids).await;
-            let _ = db.clear_request_child_args(id).await;
-            let existing_request = db.get_request(id).await;
+            let _ = RequestDB::clear_request_child_args(db, id).await;
+            let existing_request = RequestDB::get_request(db, id).await;
             if should_overwrite_request_status_with_failed(existing_request.as_ref()) {
                 let _ = db.update_request(id, RequestStatus::Failed).await;
             }
