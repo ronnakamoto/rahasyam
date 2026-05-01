@@ -258,6 +258,7 @@ fn validate_withdraw_request_payload(req: &NF3WithdrawRequest) -> Result<(), Str
 pub fn quit_swap_request(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
     path!("v1" / "swap" / "quit")
+        .and(warp::post())
         .and(warp::body::json())
         .and_then(handle_quit_swap_request)
 }

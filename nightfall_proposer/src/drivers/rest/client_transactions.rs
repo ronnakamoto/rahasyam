@@ -33,6 +33,7 @@ where
     P: Proof,
 {
     path!("v1" / "swap" / "cancel")
+        .and(warp::post())
         .and(warp::body::json())
         .and_then(|request| handle_cancel_swap::<P>(request))
 }
