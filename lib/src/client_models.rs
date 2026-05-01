@@ -153,32 +153,6 @@ pub struct NF3QuitSwapRequest {
     pub request_id: String,
 }
 
-/// Structure representing a request sent to proposers to cancel a swap by swap link.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CancelSwapRequest {
-    pub swap_link: String,
-}
-
-/// Status returned by a proposer when attempting to cancel a swap.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CancelSwapStatus {
-    CancelledFromMempool,
-    NeverPresent,
-    Dropped,
-    AlreadyAssembled,
-    AlreadyIncluded,
-}
-
-/// Structure representing a proposer's response to a swap-cancel request.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CancelSwapResponse {
-    pub status: CancelSwapStatus,
-    pub removed: u64,
-}
-
 /// structure representing NF_3 recipient data
 /// This is a sub-structure of the NF_3 transfer request
 #[derive(Debug, Deserialize, Serialize)]

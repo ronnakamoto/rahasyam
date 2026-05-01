@@ -192,58 +192,6 @@ where
         Some(result.modified_count)
     }
 
-    async fn cancel_mempool_transactions(
-        &self,
-        txs: &[ClientTransactionWithMetaData<P>],
-    ) -> Option<u64> {
-        if txs.is_empty() {
-            return Some(0);
-        }
-
-        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
-        let mut filter = doc! {
-            "hash": { "$in": k }
-        };
-        filter.extend(mempool_state_filter());
-        let update = doc! {"$set": {
-            "lifecycle": lifecycle_bson(&TxLifecycle::Cancelled)
-        }};
-        let result = self
-            .database(DB)
-            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
-            .update_many(filter, update)
-            .await
-            .ok()?;
-        Some(result.modified_count)
-    }
-
-    async fn cancel_selected_transactions(
-        &self,
-        txs: &[ClientTransactionWithMetaData<P>],
-        block_l2: u64,
-    ) -> Option<u64> {
-        if txs.is_empty() {
-            return Some(0);
-        }
-
-        let block_l2 = i64::try_from(block_l2).ok()?;
-        let k: Vec<_> = txs.iter().map(|t| &t.hash).collect();
-        let mut filter = doc! {
-            "hash": { "$in": k }
-        };
-        filter.extend(selected_state_filter_for_block(block_l2));
-        let update = doc! {"$set": {
-            "lifecycle": lifecycle_bson(&TxLifecycle::Cancelled)
-        }};
-        let result = self
-            .database(DB)
-            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
-            .update_many(filter, update)
-            .await
-            .ok()?;
-        Some(result.modified_count)
-    }
-
     async fn restore_transactions_to_mempool(
         &self,
         txs: &[ClientTransactionWithMetaData<P>],

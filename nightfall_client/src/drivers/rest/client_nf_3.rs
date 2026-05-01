@@ -3,7 +3,7 @@ use crate::{
     domain::{
         entities::{
             should_overwrite_request_status_with_failed, CommitmentStatus, ERCAddress, Operation,
-            OperationType, Request, RequestStatus, Transport,
+            OperationType, RequestStatus, Transport,
         },
         error::{ClientRejection, DepositError, TokenContractError, TransactionHandlerError},
         notifications::NotificationPayload,
@@ -12,6 +12,7 @@ use crate::{
         db::mongo::CommitmentEntry,
         queue::{get_queue, QueuedRequest, TransactionRequest},
     },
+    drivers::blockchain::nightfall_event_listener::get_synchronisation_status,
     get_zkp_keys,
     initialisation::get_db_connection,
     ports::{
@@ -19,23 +20,24 @@ use crate::{
         db::{CommitmentDB, CommitmentEntryDB, RequestCommitmentMappingDB, RequestDB},
     },
     services::{
-        client_operation::deposit_operation, commitment_selection::find_usable_commitments,
+        client_operation::deposit_operation,
+        commitment_selection::find_usable_commitments,
+        swap_expiry::{
+            reconcile_expired_swap_request, swap_deadline_has_passed, SwapChildRequestArgs,
+            SwapExpiryError, SwapExpiryStore,
+        },
     },
 };
-use alloy::primitives::TxHash;
+use alloy::primitives::I256;
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine;
 use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
 use ark_std::{rand::thread_rng, UniformRand};
-use async_trait::async_trait;
 use configuration::{addresses::get_addresses, settings::get_settings};
-use futures::future::join_all;
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
 use lib::{
-    blockchain_client::BlockchainClientConnection,
     client_models::{
-        CancelSwapRequest, CancelSwapResponse, CancelSwapStatus, DeEscrowDataReq,
-        NF3DepositRequest, NF3QuitSwapRequest, NF3SwapRequest, NF3TransferRequest,
+        DeEscrowDataReq, NF3DepositRequest, NF3QuitSwapRequest, NF3SwapRequest, NF3TransferRequest,
         NF3WithdrawRequest,
     },
     commitments::{Commitment, Nullifiable},
@@ -43,7 +45,6 @@ use lib::{
     derive_key::ZKPKeys,
     get_fee_token_id,
     hex_conversion::HexConvertible,
-    initialisation::get_blockchain_client_connection,
     nf_client_proof::{Proof, ProvingEngine},
     nf_token_id::to_nf_token_id_from_str,
     plonk_prover::circuits::DOMAIN_SHARED_SALT,
@@ -52,13 +53,9 @@ use lib::{
 };
 use log::{debug, error, info, warn};
 use nf_curves::ed_on_bn254::{BJJTEAffine as JubJub, BabyJubjub, Fr as BJJScalar};
-use nightfall_bindings::artifacts::{
-    Nightfall, ProposerManager, IERC1155, IERC20, IERC3525, IERC721,
-};
+use nightfall_bindings::artifacts::{Nightfall, IERC1155, IERC20, IERC3525, IERC721};
 use num_bigint::BigUint;
-use reqwest::{Client, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use uuid::Uuid;
 use warp::{
     hyper::StatusCode,
@@ -71,16 +68,6 @@ pub struct WithdrawResponse {
     success: bool,
     message: String,
     pub withdraw_fund_salt: String, // Return the withdraw_fund_salt
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct SwapChildRequestArgs {
-    #[serde(default)]
-    pub deadline: Option<String>,
-    #[serde(default)]
-    pub swap_link: Option<String>,
-    #[serde(default)]
-    pub spend_commitment_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -326,109 +313,6 @@ async fn queue_swap_request(swap_req: NF3SwapRequest) -> Result<impl Reply, warp
     queue_request(transaction_request, uuid_string).await
 }
 
-#[async_trait]
-trait QuitSwapStore {
-    async fn get_request(&self, request_id: &str) -> Option<Request>;
-    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry>;
-    async fn set_request_status(&self, request_id: &str, status: RequestStatus) -> Option<()>;
-    async fn mark_commitments_unspent(
-        &self,
-        commitments: &[Fr254],
-        layer_1_transaction_hash: Option<TxHash>,
-        layer_2_block_number: Option<i64>,
-    ) -> Option<()>;
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()>;
-    async fn cancel_swap_on_proposers(
-        &self,
-        request_id: &str,
-        swap_link: &Fr254,
-    ) -> Result<CancelSwapStatus, ClientRejection>;
-}
-
-#[async_trait]
-impl QuitSwapStore for mongodb::Client {
-    async fn get_request(&self, request_id: &str) -> Option<Request> {
-        RequestDB::get_request(self, request_id).await
-    }
-
-    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry> {
-        CommitmentDB::get_commitment(self, commitment_id).await
-    }
-
-    async fn set_request_status(&self, request_id: &str, status: RequestStatus) -> Option<()> {
-        RequestDB::update_request(self, request_id, status).await
-    }
-
-    async fn mark_commitments_unspent(
-        &self,
-        commitments: &[Fr254],
-        layer_1_transaction_hash: Option<TxHash>,
-        layer_2_block_number: Option<i64>,
-    ) -> Option<()> {
-        CommitmentDB::mark_commitments_unspent(
-            self,
-            commitments,
-            layer_1_transaction_hash,
-            layer_2_block_number,
-        )
-        .await
-    }
-
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
-        RequestDB::clear_request_child_args(self, request_id).await
-    }
-
-    async fn cancel_swap_on_proposers(
-        &self,
-        request_id: &str,
-        swap_link: &Fr254,
-    ) -> Result<CancelSwapStatus, ClientRejection> {
-        cancel_swap_on_all_proposers(request_id, *swap_link).await
-    }
-}
-
-#[async_trait]
-impl QuitSwapStore for &mongodb::Client {
-    async fn get_request(&self, request_id: &str) -> Option<Request> {
-        RequestDB::get_request(*self, request_id).await
-    }
-
-    async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry> {
-        CommitmentDB::get_commitment(*self, commitment_id).await
-    }
-
-    async fn set_request_status(&self, request_id: &str, status: RequestStatus) -> Option<()> {
-        RequestDB::update_request(*self, request_id, status).await
-    }
-
-    async fn mark_commitments_unspent(
-        &self,
-        commitments: &[Fr254],
-        layer_1_transaction_hash: Option<TxHash>,
-        layer_2_block_number: Option<i64>,
-    ) -> Option<()> {
-        CommitmentDB::mark_commitments_unspent(
-            *self,
-            commitments,
-            layer_1_transaction_hash,
-            layer_2_block_number,
-        )
-        .await
-    }
-
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
-        RequestDB::clear_request_child_args(*self, request_id).await
-    }
-
-    async fn cancel_swap_on_proposers(
-        &self,
-        request_id: &str,
-        swap_link: &Fr254,
-    ) -> Result<CancelSwapStatus, ClientRejection> {
-        cancel_swap_on_all_proposers(request_id, *swap_link).await
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct QuitSwapExecution {
     status_code: StatusCode,
@@ -443,15 +327,6 @@ fn no_child_args_execution() -> QuitSwapExecution {
         unlocked: 0,
         skipped: 0,
         message: "No pending swap commitments found for this request",
-    }
-}
-
-fn no_cancellable_swap_execution() -> QuitSwapExecution {
-    QuitSwapExecution {
-        status_code: StatusCode::CONFLICT,
-        unlocked: 0,
-        skipped: 0,
-        message: "No cancellable swap found for this request",
     }
 }
 
@@ -483,46 +358,8 @@ fn non_cancellable_request_status_execution(status: RequestStatus) -> QuitSwapEx
                 "Swap request is still being processed and cannot be cancelled yet"
             }
             RequestStatus::Confirmed => "Swap request is already confirmed on-chain",
-            RequestStatus::Expired => "Swap request has already expired",
-            RequestStatus::Cancelled => "Swap request has already been cancelled",
             _ => "Swap request is not in a cancellable state",
         },
-    }
-}
-
-fn swap_already_assembled_execution() -> QuitSwapExecution {
-    QuitSwapExecution {
-        status_code: StatusCode::CONFLICT,
-        unlocked: 0,
-        skipped: 0,
-        message: "Swap is already being assembled into a proposer block",
-    }
-}
-
-fn swap_already_included_execution() -> QuitSwapExecution {
-    QuitSwapExecution {
-        status_code: StatusCode::CONFLICT,
-        unlocked: 0,
-        skipped: 0,
-        message: "Swap is already included in a proposer block",
-    }
-}
-
-fn dropped_swap_indeterminate_execution() -> QuitSwapExecution {
-    QuitSwapExecution {
-        status_code: StatusCode::CONFLICT,
-        unlocked: 0,
-        skipped: 0,
-        message: "Swap was dropped by the proposer, but unlock safety cannot be determined",
-    }
-}
-
-fn already_cancelled_execution() -> QuitSwapExecution {
-    QuitSwapExecution {
-        status_code: StatusCode::OK,
-        unlocked: 0,
-        skipped: 0,
-        message: "Swap was already cancelled",
     }
 }
 
@@ -532,180 +369,42 @@ fn request_status_allows_quit_swap(status: RequestStatus) -> bool {
         RequestStatus::Submitted
             | RequestStatus::ProposerUnreachable
             | RequestStatus::Failed
+            | RequestStatus::Expired
             | RequestStatus::Cancelled
     )
 }
 
-fn group_commitments_by_origin(
-    commitments: Vec<CommitmentEntry>,
-) -> Vec<(Option<TxHash>, Option<i64>, Vec<Fr254>)> {
-    let mut groups: Vec<(Option<TxHash>, Option<i64>, Vec<Fr254>)> = Vec::new();
-
-    for commitment in commitments {
-        if let Some((_, _, commitment_ids)) = groups.iter_mut().find(|(l1_hash, l2_block, _)| {
-            *l1_hash == commitment.layer_1_transaction_hash
-                && *l2_block == commitment.layer_2_block_number
-        }) {
-            commitment_ids.push(commitment.key);
-        } else {
-            groups.push((
-                commitment.layer_1_transaction_hash,
-                commitment.layer_2_block_number,
-                vec![commitment.key],
-            ));
-        }
-    }
-
-    groups
-}
-
-fn is_retriable_proposer_error(err: &ReqwestError) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
-}
-
-async fn send_cancel_swap_to_proposer_with_retry(
-    client: &Client,
-    proposer: ProposerManager::Proposer,
-    swap_link_hex: &str,
-    request_id: &str,
-    max_retries: u32,
-    initial_backoff: Duration,
-) -> Result<CancelSwapStatus, (String, bool)> {
-    let proposer_url = proposer.url.trim_end_matches('/');
-    let endpoint = format!("{proposer_url}/v1/swap/cancel");
-    let payload = CancelSwapRequest {
-        swap_link: swap_link_hex.to_string(),
-    };
-
-    for attempt in 1..=max_retries {
-        match client.post(&endpoint).json(&payload).send().await {
-            Ok(response) if response.status().is_success() => {
-                let proposer_url = proposer.url.clone();
-                let cancel_response = response
-                    .json::<CancelSwapResponse>()
-                    .await
-                    .map_err(|err| {
-                        (
-                            format!(
-                                "Proposer {proposer_url} returned an unreadable cancel response: {err}"
-                            ),
-                            false,
-                        )
-                    })?;
-                return Ok(cancel_response.status);
-            }
-            Ok(response) => {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                let retriable = status.is_server_error();
-                let message = format!(
-                    "Proposer {proposer_url} rejected swap cancel with status {status}: {body}"
-                );
-                if retriable && attempt < max_retries {
-                    let backoff = initial_backoff * 2u32.pow(attempt - 1);
-                    warn!("{request_id} Retrying proposer cancel in {backoff:?}");
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                return Err((message, retriable));
-            }
-            Err(err) => {
-                error!("{request_id} Network error cancelling swap on proposer {proposer_url}: {err:?}");
-                if is_retriable_proposer_error(&err) && attempt < max_retries {
-                    let backoff = initial_backoff * 2u32.pow(attempt - 1);
-                    warn!("{request_id} Retrying proposer cancel in {backoff:?}");
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                return Err((format!("Network error: {err}"), true));
-            }
-        }
-    }
-
-    Err((
-        format!("Max retries exhausted for proposer {proposer_url}"),
-        true,
-    ))
-}
-
-async fn cancel_swap_on_all_proposers(
-    request_id: &str,
-    swap_link: Fr254,
-) -> Result<CancelSwapStatus, ClientRejection> {
-    const MAX_RETRIES: u32 = 3;
-    const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
-
-    let client = Client::new();
-    let blockchain_client = get_blockchain_client_connection()
-        .await
-        .read()
-        .await
-        .get_client();
-    let round_robin_instance =
-        ProposerManager::new(get_addresses().round_robin, blockchain_client.root());
-    let proposers = round_robin_instance
-        .get_proposers()
-        .call()
-        .await
-        .map_err(|e| {
-            error!("{request_id} Failed to fetch proposers for swap cancel: {e}");
-            ClientRejection::FailedToCancelSwap
-        })?;
-
-    let swap_link_hex = swap_link.to_hex_string();
-    let futures = proposers.into_iter().map(|proposer| {
-        send_cancel_swap_to_proposer_with_retry(
-            &client,
-            proposer,
-            &swap_link_hex,
-            request_id,
-            MAX_RETRIES,
-            INITIAL_BACKOFF,
-        )
-    });
-
-    let results = join_all(futures).await;
-    let mut saw_cancelled_from_mempool = false;
-    let mut saw_dropped = false;
-    let mut saw_never_present = false;
-    for result in results {
-        match result {
-            Ok(CancelSwapStatus::AlreadyAssembled) => {
-                warn!("{request_id} Swap cancel refused: proposer already assembled the swap");
-                return Ok(CancelSwapStatus::AlreadyAssembled);
-            }
-            Ok(CancelSwapStatus::AlreadyIncluded) => {
-                warn!("{request_id} Swap cancel refused: proposer already included the swap");
-                return Ok(CancelSwapStatus::AlreadyIncluded);
-            }
-            Ok(CancelSwapStatus::CancelledFromMempool) => {
-                saw_cancelled_from_mempool = true;
-            }
-            Ok(CancelSwapStatus::Dropped) => {
-                saw_dropped = true;
-            }
-            Ok(CancelSwapStatus::NeverPresent) => {
-                saw_never_present = true;
-            }
-            Err((message, _)) => {
-                warn!("{request_id} Swap cancel failed on proposer: {message}");
-                return Err(ClientRejection::FailedToCancelSwap);
-            }
-        }
-    }
-
-    if saw_cancelled_from_mempool {
-        Ok(CancelSwapStatus::CancelledFromMempool)
-    } else if saw_dropped {
-        Ok(CancelSwapStatus::Dropped)
-    } else {
-        let _ = saw_never_present;
-        Ok(CancelSwapStatus::NeverPresent)
+fn deadline_not_passed_execution() -> QuitSwapExecution {
+    QuitSwapExecution {
+        status_code: StatusCode::CONFLICT,
+        unlocked: 0,
+        skipped: 0,
+        message: "Swap deadline has not passed yet; commitments remain locked",
     }
 }
+
+fn client_not_synchronised_execution() -> QuitSwapExecution {
+    QuitSwapExecution {
+        status_code: StatusCode::CONFLICT,
+        unlocked: 0,
+        skipped: 0,
+        message: "Client is not synchronised with L2; unlock safety cannot be determined",
+    }
+}
+
+fn already_expired_execution() -> QuitSwapExecution {
+    QuitSwapExecution {
+        status_code: StatusCode::OK,
+        unlocked: 0,
+        skipped: 0,
+        message: "Swap was already expired and commitments were already reconciled",
+    }
+}
+
 async fn process_quit_swap(
-    db: &impl QuitSwapStore,
+    db: &impl SwapExpiryStore,
     request_id: &str,
+    current_l2_block: I256,
 ) -> Result<QuitSwapExecution, ClientRejection> {
     let request = db
         .get_request(request_id)
@@ -720,143 +419,51 @@ async fn process_quit_swap(
         return Ok(non_cancellable_request_status_execution(request.status));
     }
 
-    let Some(child_args_json) = request.child_request_args else {
-        if request.status == RequestStatus::Cancelled {
-            info!("{request_id} Quit swap is already fully cancelled");
-            return Ok(already_cancelled_execution());
+    if request.child_request_args.is_none() {
+        if matches!(
+            request.status,
+            RequestStatus::Expired | RequestStatus::Cancelled
+        ) {
+            info!("{request_id} Quit swap is already fully reconciled");
+            return Ok(already_expired_execution());
         }
         warn!("{request_id} Quit swap refused: no child_request_args found");
         return Ok(no_child_args_execution());
-    };
-
-    let child_args: SwapChildRequestArgs = serde_json::from_str(&child_args_json).map_err(|e| {
-        error!("{request_id} Failed to deserialize child_request_args: {e}");
-        ClientRejection::DatabaseError
-    })?;
-
-    let Some(swap_link_hex) = child_args.swap_link.as_ref() else {
-        warn!("{request_id} Quit swap refused: swap_link missing from child_request_args");
-        return Ok(no_cancellable_swap_execution());
-    };
-
-    let swap_link = Fr254::from_hex_string(swap_link_hex).map_err(|e| {
-        error!("{request_id} Quit swap failed to parse swap_link: {e}");
-        ClientRejection::DatabaseError
-    })?;
-
-    let mut pending_unlock_entries = Vec::new();
-    let mut already_unlocked = 0usize;
-    let mut skipped = 0usize;
-
-    for commitment_hex in &child_args.spend_commitment_ids {
-        let commitment_id = match Fr254::from_hex_string(commitment_hex) {
-            Ok(id) => id,
-            Err(e) => {
-                warn!("{request_id} Quit swap skipped invalid commitment id {commitment_hex}: {e}");
-                skipped += 1;
-                continue;
-            }
-        };
-
-        let Some(existing) = db.get_commitment(&commitment_id).await else {
-            warn!(
-                "{request_id} Quit swap skipped missing commitment {}",
-                commitment_id.to_hex_string()
-            );
-            skipped += 1;
-            continue;
-        };
-
-        match existing.status {
-            CommitmentStatus::PendingSpend => pending_unlock_entries.push(existing),
-            CommitmentStatus::Unspent => {
-                already_unlocked += 1;
-            }
-            _ => {
-                warn!(
-                    "{request_id} Quit swap skipped commitment {} with status {:?}",
-                    commitment_id.to_hex_string(),
-                    existing.status
-                );
-                skipped += 1;
-                continue;
-            }
-        }
     }
 
-    if pending_unlock_entries.is_empty() && already_unlocked == 0 {
-        warn!("{request_id} Quit swap refused: unlocked=0, skipped={skipped}");
-        return Ok(no_unlockable_commitments_execution(skipped));
-    }
-
-    if skipped > 0 {
+    if !swap_deadline_has_passed(&request, current_l2_block) {
         warn!(
-            "{request_id} Quit swap refused: all spend commitments must still be PendingSpend (skipped={skipped})"
+            "{request_id} Quit swap refused: current L2 block {current_l2_block} has not passed the swap deadline"
         );
-        return Ok(invalid_quit_swap_commitments_execution(skipped));
+        return Ok(deadline_not_passed_execution());
     }
 
-    let proposer_cancel_status = db.cancel_swap_on_proposers(request_id, &swap_link).await?;
-    if matches!(proposer_cancel_status, CancelSwapStatus::AlreadyAssembled) {
-        warn!("{request_id} Quit swap refused: swap already selected by proposer");
-        return Ok(swap_already_assembled_execution());
-    }
-    if matches!(proposer_cancel_status, CancelSwapStatus::AlreadyIncluded) {
-        warn!("{request_id} Quit swap refused: swap already included by proposer");
-        return Ok(swap_already_included_execution());
-    }
-    if matches!(proposer_cancel_status, CancelSwapStatus::Dropped) {
-        warn!(
-            "{request_id} Quit swap refused: proposer reported Dropped, unlock safety is ambiguous"
-        );
-        return Ok(dropped_swap_indeterminate_execution());
-    }
-
-    let unlocked = pending_unlock_entries.len();
-    for (layer_1_transaction_hash, layer_2_block_number, commitment_ids) in
-        group_commitments_by_origin(pending_unlock_entries)
-    {
-        if db
-            .mark_commitments_unspent(
-                &commitment_ids,
-                layer_1_transaction_hash,
-                layer_2_block_number,
-            )
-            .await
-            .is_none()
-        {
-            error!(
-                "{request_id} Quit swap failed to unlock commitment batch {:?}",
-                commitment_ids
-                    .iter()
-                    .map(|id| id.to_hex_string())
-                    .collect::<Vec<_>>()
+    match reconcile_expired_swap_request(db, &request).await {
+        Ok(outcome) => {
+            info!(
+                "{request_id} Trustlessly reconciled expired swap: unlocked={}, already_unlocked={}",
+                outcome.unlocked, outcome.already_unlocked
             );
-            return Err(ClientRejection::DatabaseError);
+            Ok(QuitSwapExecution {
+                status_code: StatusCode::OK,
+                unlocked: outcome.unlocked,
+                skipped: 0,
+                message: "Swap expired and commitments were unlocked locally",
+            })
         }
+        Err(SwapExpiryError::MissingChildArgs) => Ok(no_child_args_execution()),
+        Err(SwapExpiryError::InvalidChildArgs) => Err(ClientRejection::DatabaseError),
+        Err(SwapExpiryError::NoUnlockableCommitments { skipped }) => {
+            Ok(no_unlockable_commitments_execution(skipped))
+        }
+        Err(SwapExpiryError::InvalidCommitmentStates { skipped }) => {
+            Ok(invalid_quit_swap_commitments_execution(skipped))
+        }
+        Err(SwapExpiryError::IncompatibleStatus(status)) => {
+            Ok(non_cancellable_request_status_execution(status))
+        }
+        Err(SwapExpiryError::DatabaseError) => Err(ClientRejection::DatabaseError),
     }
-
-    if db
-        .set_request_status(request_id, RequestStatus::Cancelled)
-        .await
-        .is_none()
-    {
-        error!("{request_id} Quit swap failed to persist Cancelled status");
-        return Err(ClientRejection::DatabaseError);
-    }
-
-    if db.clear_request_child_args(request_id).await.is_none() {
-        error!("{request_id} Quit swap failed to clear child_request_args");
-        return Err(ClientRejection::DatabaseError);
-    }
-
-    info!("{request_id} Quit swap accepted: unlocked={unlocked}, skipped={skipped}");
-    Ok(QuitSwapExecution {
-        status_code: StatusCode::OK,
-        unlocked,
-        skipped,
-        message: "Swap cancelled and commitments unlocked",
-    })
 }
 
 async fn handle_quit_swap_request(
@@ -870,7 +477,31 @@ async fn handle_quit_swap_request(
     }
 
     let db = get_db_connection().await;
-    let execution = process_quit_swap(&db, &request_id)
+    if RequestDB::get_request(db, &request_id).await.is_none() {
+        return Err(warp::reject::custom(ClientRejection::RequestNotFound));
+    }
+
+    let sync_status = get_synchronisation_status::<Nightfall::NightfallCalls>()
+        .await
+        .map_err(|_| warp::reject::custom(ClientRejection::SynchronisationUnavailable))?;
+    if !sync_status.is_synchronised() {
+        let execution = client_not_synchronised_execution();
+        return Ok(reply::with_status(
+            json(&serde_json::json!({
+                "requestId": request_id,
+                "unlocked": execution.unlocked,
+                "skipped": execution.skipped,
+                "message": execution.message
+            })),
+            execution.status_code,
+        ));
+    }
+
+    let current_l2_block =
+        <Nightfall::NightfallCalls as NightfallContract>::get_current_layer2_blocknumber()
+            .await
+            .map_err(|_| warp::reject::custom(ClientRejection::SynchronisationUnavailable))?;
+    let execution = process_quit_swap(&db, &request_id, current_l2_block)
         .await
         .map_err(warp::reject::custom)?;
 
@@ -2161,7 +1792,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::RequestStatus;
+    use crate::domain::entities::{Request, RequestStatus};
+    use alloy::primitives::TxHash;
     use ark_ec::AffineRepr;
     use ark_ff::One;
     use ark_serialize::{CanonicalSerialize, Compress};
@@ -2229,8 +1861,6 @@ mod tests {
         requests: Mutex<Vec<Request>>,
         commitments: Mutex<Vec<CommitmentEntry>>,
         fail_mark_unspent: bool,
-        fail_cancel_swap: bool,
-        cancel_swap_status: CancelSwapStatus,
     }
 
     impl Default for MockQuitSwapStore {
@@ -2239,8 +1869,6 @@ mod tests {
                 requests: Mutex::new(Vec::new()),
                 commitments: Mutex::new(Vec::new()),
                 fail_mark_unspent: false,
-                fail_cancel_swap: false,
-                cancel_swap_status: CancelSwapStatus::CancelledFromMempool,
             }
         }
     }
@@ -2283,7 +1911,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl QuitSwapStore for MockQuitSwapStore {
+    impl SwapExpiryStore for MockQuitSwapStore {
         async fn get_request(&self, request_id: &str) -> Option<Request> {
             self.requests
                 .lock()
@@ -2341,18 +1969,6 @@ mod tests {
             let request = requests.iter_mut().find(|r| r.uuid == request_id)?;
             request.child_request_args = None;
             Some(())
-        }
-
-        async fn cancel_swap_on_proposers(
-            &self,
-            _request_id: &str,
-            _swap_link: &Fr254,
-        ) -> Result<CancelSwapStatus, ClientRejection> {
-            if self.fail_cancel_swap {
-                Err(ClientRejection::FailedToCancelSwap)
-            } else {
-                Ok(self.cancel_swap_status)
-            }
         }
     }
 
@@ -3412,7 +3028,7 @@ mod tests {
         let db = MockQuitSwapStore::default();
         let request_id = "11111111-1111-1111-1111-111111111111";
 
-        let result = process_quit_swap(&db, request_id).await;
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap()).await;
 
         assert!(matches!(
             result,
@@ -3426,7 +3042,7 @@ mod tests {
         let request_id = "22222222-2222-2222-2222-222222222222";
         db.push_request(mock_request(request_id, None)).await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap should return an execution result");
 
@@ -3442,12 +3058,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_unlocks_pending_commitment_and_clears_args() {
+    async fn test_process_quit_swap_unlocks_pending_commitment_after_deadline() {
         let db = MockQuitSwapStore::default();
         let request_id = "33333333-3333-3333-3333-333333333333";
         let commitment_id = Fr254::from(42u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(77u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
@@ -3461,7 +3077,7 @@ mod tests {
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap should succeed");
 
@@ -3471,7 +3087,7 @@ mod tests {
                 status_code: StatusCode::OK,
                 unlocked: 1,
                 skipped: 0,
-                message: "Swap cancelled and commitments unlocked",
+                message: "Swap expired and commitments were unlocked locally",
             }
         );
         assert_eq!(
@@ -3480,21 +3096,18 @@ mod tests {
         );
         assert_eq!(
             db.request_status(request_id).await,
-            Some(RequestStatus::Cancelled)
+            Some(RequestStatus::Expired)
         );
         assert_eq!(db.request_child_args(request_id).await, Some(None));
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_does_not_unlock_when_proposer_reports_dropped() {
-        let db = MockQuitSwapStore {
-            cancel_swap_status: CancelSwapStatus::Dropped,
-            ..Default::default()
-        };
+    async fn test_process_quit_swap_refuses_before_deadline() {
+        let db = MockQuitSwapStore::default();
         let request_id = "33333333-3333-3333-3333-333333333334";
         let commitment_id = Fr254::from(43u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(78u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
@@ -3508,7 +3121,7 @@ mod tests {
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(16u64).unwrap())
             .await
             .expect("quit swap should return conflict");
 
@@ -3518,7 +3131,7 @@ mod tests {
                 status_code: StatusCode::CONFLICT,
                 unlocked: 0,
                 skipped: 0,
-                message: "Swap was dropped by the proposer, but unlock safety cannot be determined",
+                message: "Swap deadline has not passed yet; commitments remain locked",
             }
         );
         assert_eq!(
@@ -3538,7 +3151,7 @@ mod tests {
         let request_id = "44444444-4444-4444-4444-444444444444";
         let commitment_id = Fr254::from(99u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(88u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
@@ -3549,7 +3162,7 @@ mod tests {
         db.push_commitment(mock_commitment(commitment_id, CommitmentStatus::Spent))
             .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap should return conflict");
 
@@ -3575,7 +3188,7 @@ mod tests {
         let pending_commitment_id = Fr254::from(100u64);
         let spent_commitment_id = Fr254::from(101u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(89u64).to_hex_string()),
             spend_commitment_ids: vec![
                 pending_commitment_id.to_hex_string(),
@@ -3597,7 +3210,7 @@ mod tests {
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap should return conflict");
 
@@ -3626,15 +3239,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_leaves_local_state_untouched_when_proposer_cancel_fails() {
-        let db = MockQuitSwapStore {
-            fail_cancel_swap: true,
-            ..Default::default()
-        };
+    async fn test_process_quit_swap_returns_conflict_before_deadline_even_if_metadata_exists() {
+        let db = MockQuitSwapStore::default();
         let request_id = "66666666-6666-6666-6666-666666666666";
         let commitment_id = Fr254::from(102u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x20".to_string()),
             swap_link: Some(Fr254::from(90u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
@@ -3648,9 +3258,19 @@ mod tests {
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id).await;
+        let result = process_quit_swap(&db, request_id, I256::try_from(16u64).unwrap())
+            .await
+            .expect("quit swap should return conflict");
 
-        assert!(matches!(result, Err(ClientRejection::FailedToCancelSwap)));
+        assert_eq!(
+            result,
+            QuitSwapExecution {
+                status_code: StatusCode::CONFLICT,
+                unlocked: 0,
+                skipped: 0,
+                message: "Swap deadline has not passed yet; commitments remain locked",
+            }
+        );
         assert_eq!(
             db.request_status(request_id).await,
             Some(RequestStatus::Submitted)
@@ -3667,7 +3287,7 @@ mod tests {
         let db = MockQuitSwapStore::default();
         let request_id = "77777777-7777-7777-7777-777777777777";
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(91u64).to_hex_string()),
             spend_commitment_ids: vec![Fr254::from(103u64).to_hex_string()],
         })
@@ -3680,7 +3300,7 @@ mod tests {
         })
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap should return conflict");
 
@@ -3696,97 +3316,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_does_not_unlock_when_proposer_already_assembled_swap() {
-        let db = MockQuitSwapStore {
-            cancel_swap_status: CancelSwapStatus::AlreadyAssembled,
-            ..Default::default()
-        };
+    async fn test_process_quit_swap_returns_ok_when_expired_request_is_already_reconciled() {
+        let db = MockQuitSwapStore::default();
         let request_id = "88888888-8888-8888-8888-888888888888";
-        let commitment_id = Fr254::from(104u64);
-        let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
-            swap_link: Some(Fr254::from(92u64).to_hex_string()),
-            spend_commitment_ids: vec![commitment_id.to_hex_string()],
+        db.push_request(Request {
+            status: RequestStatus::Expired,
+            uuid: request_id.to_string(),
+            child_request_args: None,
         })
-        .expect("serialize child args");
-
-        db.push_request(mock_request(request_id, Some(child_args)))
-            .await;
-        db.push_commitment(mock_commitment(
-            commitment_id,
-            CommitmentStatus::PendingSpend,
-        ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
-            .expect("quit swap should return conflict");
+            .expect("quit swap should return success");
 
         assert_eq!(
             result,
             QuitSwapExecution {
-                status_code: StatusCode::CONFLICT,
+                status_code: StatusCode::OK,
                 unlocked: 0,
                 skipped: 0,
-                message: "Swap is already being assembled into a proposer block",
+                message: "Swap was already expired and commitments were already reconciled",
             }
         );
-        assert_eq!(
-            db.request_status(request_id).await,
-            Some(RequestStatus::Submitted)
-        );
-        assert_eq!(
-            db.get_commitment_status(commitment_id).await,
-            Some(CommitmentStatus::PendingSpend)
-        );
-        assert!(db.request_child_args(request_id).await.flatten().is_some());
+        assert_eq!(db.request_child_args(request_id).await, Some(None));
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_does_not_unlock_when_proposer_already_included_swap() {
-        let db = MockQuitSwapStore {
-            cancel_swap_status: CancelSwapStatus::AlreadyIncluded,
-            ..Default::default()
-        };
+    async fn test_process_quit_swap_retries_cleanly_when_request_is_already_expired() {
+        let db = MockQuitSwapStore::default();
         let request_id = "12121212-1212-1212-1212-121212121212";
         let commitment_id = Fr254::from(107u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(94u64).to_hex_string()),
             spend_commitment_ids: vec![commitment_id.to_hex_string()],
         })
         .expect("serialize child args");
 
-        db.push_request(mock_request(request_id, Some(child_args)))
-            .await;
+        db.push_request(Request {
+            status: RequestStatus::Expired,
+            uuid: request_id.to_string(),
+            child_request_args: Some(child_args),
+        })
+        .await;
         db.push_commitment(mock_commitment(
             commitment_id,
             CommitmentStatus::PendingSpend,
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
-            .expect("quit swap should return conflict");
+            .expect("quit swap should return success");
 
         assert_eq!(
             result,
             QuitSwapExecution {
-                status_code: StatusCode::CONFLICT,
-                unlocked: 0,
+                status_code: StatusCode::OK,
+                unlocked: 1,
                 skipped: 0,
-                message: "Swap is already included in a proposer block",
+                message: "Swap expired and commitments were unlocked locally",
             }
         );
         assert_eq!(
             db.request_status(request_id).await,
-            Some(RequestStatus::Submitted)
+            Some(RequestStatus::Expired)
         );
         assert_eq!(
             db.get_commitment_status(commitment_id).await,
-            Some(CommitmentStatus::PendingSpend)
+            Some(CommitmentStatus::Unspent)
         );
-        assert!(db.request_child_args(request_id).await.flatten().is_some());
+        assert_eq!(db.request_child_args(request_id).await, Some(None));
     }
 
     #[tokio::test]
@@ -3796,7 +3397,7 @@ mod tests {
         let pending_commitment_id = Fr254::from(105u64);
         let already_unlocked_commitment_id = Fr254::from(106u64);
         let child_args = serde_json::to_string(&SwapChildRequestArgs {
-            deadline: None,
+            deadline: Some("0x10".to_string()),
             swap_link: Some(Fr254::from(93u64).to_hex_string()),
             spend_commitment_ids: vec![
                 pending_commitment_id.to_hex_string(),
@@ -3818,7 +3419,7 @@ mod tests {
         ))
         .await;
 
-        let result = process_quit_swap(&db, request_id)
+        let result = process_quit_swap(&db, request_id, I256::try_from(17u64).unwrap())
             .await
             .expect("quit swap retry should converge");
 
@@ -3828,12 +3429,12 @@ mod tests {
                 status_code: StatusCode::OK,
                 unlocked: 1,
                 skipped: 0,
-                message: "Swap cancelled and commitments unlocked",
+                message: "Swap expired and commitments were unlocked locally",
             }
         );
         assert_eq!(
             db.request_status(request_id).await,
-            Some(RequestStatus::Cancelled)
+            Some(RequestStatus::Expired)
         );
         assert_eq!(db.request_child_args(request_id).await, Some(None));
         assert_eq!(

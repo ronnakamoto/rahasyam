@@ -195,52 +195,6 @@ where
     restore_selected_transactions_grouped_by_block(db, matching_transactions).await
 }
 
-pub async fn cancel_orphaned_selected_transactions<P>(
-    db: &mongodb::Client,
-    swap_link: ark_bn254::Fr,
-    current_layer2_block_number: u64,
-    allow_missing_block_inference: bool,
-) -> Option<u64>
-where
-    P: Proof,
-{
-    let classified_transactions = get_classified_selected_transactions::<P>(
-        db,
-        current_layer2_block_number,
-        allow_missing_block_inference,
-    )
-    .await?;
-
-    let mut orphaned_by_block = HashMap::<u64, Vec<ClientTransactionWithMetaData<P>>>::new();
-    for classified in classified_transactions.into_iter().filter(|classified| {
-        classified.transaction.client_transaction.swap_link == swap_link
-            && classified.state == SelectedTransactionState::Orphaned
-    }) {
-        if let Some(block_l2) = classified.transaction.lifecycle.block_l2() {
-            orphaned_by_block
-                .entry(block_l2)
-                .or_default()
-                .push(classified.transaction);
-        }
-    }
-
-    let mut cancelled = 0u64;
-    for (block_l2, transactions) in orphaned_by_block {
-        let modified = <mongodb::Client as TransactionsDB<P>>::cancel_selected_transactions(
-            db,
-            &transactions,
-            block_l2,
-        )
-        .await?;
-        if modified != transactions.len() as u64 {
-            return None;
-        }
-        cancelled += modified;
-    }
-
-    Some(cancelled)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,30 +252,6 @@ mod tests {
             },
             lifecycle: TxLifecycle::Selected { block_l2 },
             hash: vec![1, 2, 3],
-            historic_roots: vec![],
-        }
-    }
-
-    fn sample_selected_swap_transaction(
-        commitment: Fr254,
-        block_l2: u64,
-        swap_link: Fr254,
-        hash: Vec<u32>,
-    ) -> ClientTransactionWithMetaData<MockProof> {
-        ClientTransactionWithMetaData {
-            client_transaction: ClientTransaction {
-                commitments: [commitment, Fr254::zero(), Fr254::zero(), Fr254::zero()],
-                swap_link,
-                compressed_secrets: CompressedSecrets::default(),
-                proof: MockProof {
-                    a: vec![1],
-                    b: vec![2],
-                    c: vec![3],
-                },
-                ..Default::default()
-            },
-            lifecycle: TxLifecycle::Selected { block_l2 },
-            hash,
             historic_roots: vec![],
         }
     }
@@ -474,53 +404,6 @@ mod tests {
             db.get_transaction(&tx.hash).await.unwrap();
         assert_eq!(restored, 1);
         assert_eq!(stored.lifecycle, TxLifecycle::Mempool);
-    }
-
-    #[tokio::test]
-    async fn cancel_orphaned_selected_transaction_marks_it_terminally_cancelled() {
-        let container = get_mongo().await;
-        let db = get_db_connection(&container).await;
-        let swap_link = Fr254::from(77u64);
-        let tx = sample_selected_swap_transaction(Fr254::from(10u64), 7, swap_link, vec![7, 7, 7]);
-        db.store_transaction(tx.clone()).await.unwrap();
-
-        let cancelled = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
-            .await
-            .unwrap();
-
-        let stored: ClientTransactionWithMetaData<MockProof> =
-            db.get_transaction(&tx.hash).await.unwrap();
-        let selected =
-            <mongodb::Client as TransactionsDB<MockProof>>::get_all_selected_client_transactions(
-                &db,
-            )
-            .await
-            .unwrap();
-        assert_eq!(cancelled, 1);
-        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
-        assert!(selected.is_empty());
-    }
-
-    #[tokio::test]
-    async fn cancel_orphaned_selected_transaction_is_idempotent() {
-        let container = get_mongo().await;
-        let db = get_db_connection(&container).await;
-        let swap_link = Fr254::from(88u64);
-        let tx = sample_selected_swap_transaction(Fr254::from(10u64), 7, swap_link, vec![8, 8, 8]);
-        db.store_transaction(tx.clone()).await.unwrap();
-
-        let first = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
-            .await
-            .unwrap();
-        let second = cancel_orphaned_selected_transactions::<MockProof>(&db, swap_link, 8, true)
-            .await
-            .unwrap();
-        let stored: ClientTransactionWithMetaData<MockProof> =
-            db.get_transaction(&tx.hash).await.unwrap();
-
-        assert_eq!(first, 1);
-        assert_eq!(second, 0);
-        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
     }
 
     #[tokio::test]

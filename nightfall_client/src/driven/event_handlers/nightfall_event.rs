@@ -8,8 +8,6 @@ use crate::{
         notifier::webhook_notifier::WebhookNotifier,
         primitives::kemdem_functions::kemdem_decrypt,
     },
-    drivers::rest::client_nf_3::SwapChildRequestArgs,
-    drivers::rest::request_status::should_expire_request,
     drivers::rest::withdraw::handle_de_escrow,
     get_zkp_keys,
     initialisation::get_db_connection,
@@ -20,6 +18,9 @@ use crate::{
         trees::CommitmentTree,
     },
     services::data_publisher::DataPublisher,
+    services::swap_expiry::{
+        reconcile_expired_swap_request, should_expire_request, SwapChildRequestArgs,
+    },
 };
 use alloy::consensus::Transaction;
 use alloy::sol_types::SolInterface;
@@ -537,20 +538,19 @@ async fn expire_submitted_swaps_for_block(db: &mongodb::Client, current_l2_block
 
     for request in submitted_requests {
         if should_expire_request(&request, current_l2_block) {
-            if db
-                .update_request(&request.uuid, RequestStatus::Expired)
-                .await
-                .is_none()
-            {
-                warn!(
-                    "{} Failed to persist Expired status during block-based swap reconciliation",
-                    request.uuid
-                );
-            } else {
-                debug!(
-                    "{} Marked submitted swap request as Expired during block-based reconciliation",
-                    request.uuid
-                );
+            match reconcile_expired_swap_request(db, &request).await {
+                Ok(outcome) => {
+                    debug!(
+                        "{} Reconciled expired swap during block listener update (unlocked={}, already_unlocked={})",
+                        request.uuid, outcome.unlocked, outcome.already_unlocked
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "{} Failed to reconcile expired swap during block-based reconciliation: {e:?}",
+                        request.uuid
+                    );
+                }
             }
         }
     }

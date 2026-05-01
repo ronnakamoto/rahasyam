@@ -36,10 +36,6 @@ pub trait TransactionsDB<'a, P> {
         transactions: &[ClientTransactionWithMetaData<P>],
         block_l2: u64,
     ) -> Option<u64>;
-    async fn cancel_mempool_transactions(
-        &self,
-        transactions: &[ClientTransactionWithMetaData<P>],
-    ) -> Option<u64>;
     async fn restore_transactions_to_mempool(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],
@@ -48,11 +44,6 @@ pub trait TransactionsDB<'a, P> {
     async fn drop_transactions(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],
-    ) -> Option<u64>;
-    async fn cancel_selected_transactions(
-        &self,
-        transactions: &[ClientTransactionWithMetaData<P>],
-        block_l2: u64,
     ) -> Option<u64>;
     async fn find_transaction(
         &self,

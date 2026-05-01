@@ -185,7 +185,6 @@ pub enum ClientRejection {
     CommitmentNotFound,
     ProposerError,
     RequestNotFound,
-    FailedToCancelSwap,
     FailedDeEscrow,
     SynchronisationUnavailable,
 }
@@ -205,7 +204,6 @@ impl std::fmt::Display for ClientRejection {
             ClientRejection::CommitmentNotFound => write!(f, "Commitment not found"),
             ClientRejection::ProposerError => write!(f, "Failed to get list of Proposers"),
             ClientRejection::RequestNotFound => write!(f, "No such request"),
-            ClientRejection::FailedToCancelSwap => write!(f, "Failed to cancel swap"),
             ClientRejection::FailedDeEscrow => write!(f, "Failed to de-escrow funds"),
             ClientRejection::SynchronisationUnavailable => {
                 write!(f, "Synchronisation service unavailable")
