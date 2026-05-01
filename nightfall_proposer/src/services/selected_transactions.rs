@@ -81,13 +81,9 @@ where
     P: Proof,
 {
     let selected_transactions =
-        <mongodb::Client as TransactionsDB<P>>::get_all_selected_client_transactions(db)
-            .await
-            .unwrap_or_default();
+        <mongodb::Client as TransactionsDB<P>>::get_all_selected_client_transactions(db).await?;
     let stored_blocks = stored_block_commitments_map(
-        <mongodb::Client as BlockStorageDB>::get_all_blocks(db)
-            .await
-            .unwrap_or_default(),
+        <mongodb::Client as BlockStorageDB>::get_all_blocks(db).await?,
     );
 
     Some(
@@ -105,6 +101,39 @@ where
     )
 }
 
+async fn restore_selected_transactions_grouped_by_block<P>(
+    db: &mongodb::Client,
+    transactions: Vec<ClientTransactionWithMetaData<P>>,
+) -> Option<u64>
+where
+    P: Proof,
+{
+    let mut transactions_by_block = HashMap::<u64, Vec<ClientTransactionWithMetaData<P>>>::new();
+    for transaction in transactions {
+        let block_l2 = transaction.lifecycle.block_l2()?;
+        transactions_by_block
+            .entry(block_l2)
+            .or_default()
+            .push(transaction);
+    }
+
+    let mut restored = 0u64;
+    for (block_l2, transactions) in transactions_by_block {
+        let modified = <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(
+            db,
+            &transactions,
+            block_l2,
+        )
+        .await?;
+        if modified != transactions.len() as u64 {
+            return None;
+        }
+        restored += modified;
+    }
+
+    Some(restored)
+}
+
 pub async fn reconcile_orphaned_selected_transactions<P>(
     db: &mongodb::Client,
     current_layer2_block_number: u64,
@@ -120,11 +149,7 @@ where
         .map(|classified| classified.transaction)
         .collect::<Vec<_>>();
 
-    <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(
-        db,
-        &orphaned_transactions,
-    )
-    .await
+    restore_selected_transactions_grouped_by_block(db, orphaned_transactions).await
 }
 
 pub async fn reconcile_obviously_orphaned_selected_transactions<P>(
@@ -140,11 +165,7 @@ where
         .map(|classified| classified.transaction)
         .collect::<Vec<_>>();
 
-    <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(
-        db,
-        &orphaned_transactions,
-    )
-    .await
+    restore_selected_transactions_grouped_by_block(db, orphaned_transactions).await
 }
 
 pub async fn restore_selected_transactions_for_failed_block<P>(
@@ -171,11 +192,7 @@ where
         .filter(|transaction| block_contains_transaction(&block_commitments, transaction))
         .collect::<Vec<_>>();
 
-    <mongodb::Client as TransactionsDB<P>>::restore_transactions_to_mempool(
-        db,
-        &matching_transactions,
-    )
-    .await
+    restore_selected_transactions_grouped_by_block(db, matching_transactions).await
 }
 
 pub async fn cancel_orphaned_selected_transactions<P>(

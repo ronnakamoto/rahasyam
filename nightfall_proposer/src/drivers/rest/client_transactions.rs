@@ -212,7 +212,7 @@ where
 
     let all_transactions = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
         .await
-        .unwrap_or_default();
+        .ok_or(ProposerRejection::FailedToCancelSwap)?;
 
     if all_transactions
         .iter()

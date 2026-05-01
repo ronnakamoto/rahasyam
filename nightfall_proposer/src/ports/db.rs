@@ -43,6 +43,7 @@ pub trait TransactionsDB<'a, P> {
     async fn restore_transactions_to_mempool(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],
+        block_l2: u64,
     ) -> Option<u64>;
     async fn drop_transactions(
         &self,

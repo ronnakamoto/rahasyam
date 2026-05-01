@@ -508,6 +508,15 @@ fn swap_already_included_execution() -> QuitSwapExecution {
     }
 }
 
+fn dropped_swap_indeterminate_execution() -> QuitSwapExecution {
+    QuitSwapExecution {
+        status_code: StatusCode::CONFLICT,
+        unlocked: 0,
+        skipped: 0,
+        message: "Swap was dropped by the proposer, but unlock safety cannot be determined",
+    }
+}
+
 fn already_cancelled_execution() -> QuitSwapExecution {
     QuitSwapExecution {
         status_code: StatusCode::OK,
@@ -795,6 +804,12 @@ async fn process_quit_swap(
     if matches!(proposer_cancel_status, CancelSwapStatus::AlreadyIncluded) {
         warn!("{request_id} Quit swap refused: swap already included by proposer");
         return Ok(swap_already_included_execution());
+    }
+    if matches!(proposer_cancel_status, CancelSwapStatus::Dropped) {
+        warn!(
+            "{request_id} Quit swap refused: proposer reported Dropped, unlock safety is ambiguous"
+        );
+        return Ok(dropped_swap_indeterminate_execution());
     }
 
     let unlocked = pending_unlock_entries.len();
@@ -3471,7 +3486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_quit_swap_unlocks_pending_commitment_when_proposer_reports_dropped() {
+    async fn test_process_quit_swap_does_not_unlock_when_proposer_reports_dropped() {
         let db = MockQuitSwapStore {
             cancel_swap_status: CancelSwapStatus::Dropped,
             ..Default::default()
@@ -3495,26 +3510,26 @@ mod tests {
 
         let result = process_quit_swap(&db, request_id)
             .await
-            .expect("quit swap should succeed");
+            .expect("quit swap should return conflict");
 
         assert_eq!(
             result,
             QuitSwapExecution {
-                status_code: StatusCode::OK,
-                unlocked: 1,
+                status_code: StatusCode::CONFLICT,
+                unlocked: 0,
                 skipped: 0,
-                message: "Swap cancelled and commitments unlocked",
+                message: "Swap was dropped by the proposer, but unlock safety cannot be determined",
             }
         );
         assert_eq!(
             db.get_commitment_status(commitment_id).await,
-            Some(CommitmentStatus::Unspent)
+            Some(CommitmentStatus::PendingSpend)
         );
         assert_eq!(
             db.request_status(request_id).await,
-            Some(RequestStatus::Cancelled)
+            Some(RequestStatus::Submitted)
         );
-        assert_eq!(db.request_child_args(request_id).await, Some(None));
+        assert!(db.request_child_args(request_id).await.flatten().is_some());
     }
 
     #[tokio::test]
