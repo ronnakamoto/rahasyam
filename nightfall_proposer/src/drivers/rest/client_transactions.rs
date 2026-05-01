@@ -213,34 +213,24 @@ where
         });
     }
 
-    let already_cancelled = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
+    let all_transactions = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(_, transaction)| transaction)
-        .any(|transaction| {
-            transaction.client_transaction.swap_link == swap_link
-                && matches!(transaction.lifecycle, TxLifecycle::Cancelled)
-        });
+        .unwrap_or_default();
 
-    if already_cancelled {
+    if all_transactions.iter().map(|(_, transaction)| transaction).any(|transaction| {
+        transaction.client_transaction.swap_link == swap_link
+            && matches!(transaction.lifecycle, TxLifecycle::Cancelled)
+    }) {
         return Ok(CancelSwapResponse {
             status: CancelSwapStatus::CancelledFromMempool,
             removed: 0,
         });
     }
 
-    let was_dropped = <mongodb::Client as TransactionsDB<P>>::get_all_transactions(db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(_, transaction)| transaction)
-        .any(|transaction| {
-            transaction.client_transaction.swap_link == swap_link
-                && matches!(transaction.lifecycle, TxLifecycle::Dropped)
-        });
-
-    if was_dropped {
+    if all_transactions.iter().map(|(_, transaction)| transaction).any(|transaction| {
+        transaction.client_transaction.swap_link == swap_link
+            && matches!(transaction.lifecycle, TxLifecycle::Dropped)
+    }) {
         return Ok(CancelSwapResponse {
             status: CancelSwapStatus::Dropped,
             removed: 0,
@@ -260,6 +250,7 @@ mod tests {
         domain::entities::TxLifecycle,
         driven::db::mongo_db::StoredBlock,
         ports::db::{BlockStorageDB, TransactionsDB},
+        services::selected_transactions::reconcile_orphaned_selected_transactions,
     };
     use crate::drivers::rest::handle_rejection;
     use alloy::primitives::Bytes;
@@ -608,5 +599,123 @@ mod tests {
 
         assert_eq!(response.status, CancelSwapStatus::Dropped);
         assert_eq!(response.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_cancel_and_selection_returns_status_consistent_with_final_state() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(125u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            None,
+            true,
+            vec![3, 3, 3],
+        );
+        db.store_transaction(tx.clone()).await.unwrap();
+        let select_batch = vec![tx.clone()];
+
+        let (response, selected) = tokio::join!(
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 9, true),
+            <mongodb::Client as TransactionsDB<MockProof>>::mark_transactions_selected_for_block(&db, &select_batch, 9),
+        );
+
+        let response = response.unwrap();
+        let selected = selected.unwrap();
+        let stored: ClientTransactionWithMetaData<MockProof> =
+            db.get_transaction(&tx.hash).await.unwrap();
+
+        assert!(selected <= 1);
+        match stored.lifecycle {
+            TxLifecycle::Cancelled => {
+                assert_eq!(response.status, CancelSwapStatus::CancelledFromMempool);
+            }
+            TxLifecycle::Selected { block_l2: 9 } => {
+                assert_eq!(response.status, CancelSwapStatus::AlreadyAssembled);
+            }
+            ref lifecycle => panic!("unexpected lifecycle after cancel/selection race: {lifecycle:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_cancel_and_recovery_either_cancels_or_fails_safely() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(126u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            Some(7),
+            false,
+            vec![4, 4, 4],
+        );
+        db.store_transaction(tx.clone()).await.unwrap();
+
+        let (cancel_response, restored) = tokio::join!(
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true),
+            reconcile_orphaned_selected_transactions::<MockProof>(&db, 8),
+        );
+
+        let _ = restored.unwrap();
+        let stored: ClientTransactionWithMetaData<MockProof> =
+            db.get_transaction(&tx.hash).await.unwrap();
+
+        match cancel_response {
+            Ok(response) => {
+                assert_eq!(response.status, CancelSwapStatus::CancelledFromMempool);
+                assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
+            }
+            Err(ProposerRejection::FailedToCancelSwap) => {
+                assert_eq!(stored.lifecycle, TxLifecycle::Mempool);
+            }
+            Err(err) => panic!("unexpected cancel result during cancel/recovery race: {err:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_double_cancel_converges_to_cancelled_state() {
+        let container = get_mongo().await;
+        let db = get_db_connection(&container).await;
+        let swap_link = Fr254::from(127u64);
+        let tx = sample_selected_swap_transaction(
+            Fr254::from(10u64),
+            swap_link,
+            Some(7),
+            false,
+            vec![5, 5, 5],
+        );
+        db.store_transaction(tx.clone()).await.unwrap();
+
+        let (first, second) = tokio::join!(
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true),
+            determine_cancel_swap_response::<MockProof>(&db, swap_link, 8, true),
+        );
+
+        let first = first.unwrap();
+        let stored: ClientTransactionWithMetaData<MockProof> =
+            db.get_transaction(&tx.hash).await.unwrap();
+
+        assert_eq!(stored.lifecycle, TxLifecycle::Cancelled);
+        match (first, second) {
+            (
+                CancelSwapResponse {
+                    status: CancelSwapStatus::CancelledFromMempool,
+                    ..
+                },
+                Ok(CancelSwapResponse {
+                    status: CancelSwapStatus::CancelledFromMempool,
+                    ..
+                }),
+            ) => {}
+            (
+                CancelSwapResponse {
+                    status: CancelSwapStatus::CancelledFromMempool,
+                    ..
+                },
+                Err(ProposerRejection::FailedToCancelSwap),
+            ) => {}
+            other => panic!("unexpected concurrent double cancel outcome: {other:?}"),
+        }
     }
 }
