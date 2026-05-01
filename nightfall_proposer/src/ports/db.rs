@@ -31,6 +31,19 @@ pub trait TransactionsDB<'a, P> {
         &self,
     ) -> Option<Vec<(Vec<u32>, ClientTransactionWithMetaData<P>)>>;
     async fn count_mempool_client_transactions(&self) -> Result<u64, mongodb::error::Error>;
+    async fn count_mempool_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error>;
+    async fn count_selected_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error>;
+    async fn count_cancelled_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error>;
+    async fn cancel_mempool_swap_transactions(&self, swap_link: &Fr254) -> Option<u64>;
     async fn mark_transactions_selected_for_block(
         &self,
         transactions: &[ClientTransactionWithMetaData<P>],

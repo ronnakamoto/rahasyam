@@ -1,8 +1,12 @@
 use crate::{
     domain::error::ProposerRejection,
     driven::nightfall_client_transaction::process_nightfall_client_transaction,
+    initialisation::get_db_connection, ports::db::TransactionsDB,
 };
+use ark_bn254::Fr as Fr254;
 use futures::Future;
+use lib::client_models::{ProposerSwapCancelRequest, SwapCancelResponse};
+use lib::hex_conversion::HexConvertible;
 use lib::{
     nf_client_proof::{Proof, ProvingEngine},
     shared_entities::ClientTransaction,
@@ -19,6 +23,17 @@ where
     path!("v1" / "transaction")
         .and(warp::body::json())
         .and_then(|transaction| handle_client_transaction::<P, E>(transaction))
+}
+
+pub fn cancel_swap_request<P>(
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone
+where
+    P: Proof,
+{
+    path!("v1" / "swap" / "cancel-request")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and_then(handle_cancel_swap_request::<P>)
 }
 
 async fn handle_client_transaction<P, E>(
@@ -57,6 +72,71 @@ where
     Ok(StatusCode::CREATED)
 }
 
+async fn handle_cancel_swap_request<P>(
+    request: ProposerSwapCancelRequest,
+) -> Result<impl warp::Reply, warp::Rejection>
+where
+    P: Proof,
+{
+    let swap_link = Fr254::from_hex_string(&request.swap_link)
+        .map_err(|_| warp::reject::custom(ProposerRejection::ClientTransactionFailed))?;
+    let db = get_db_connection().await;
+
+    let cancelled =
+        <mongodb::Client as TransactionsDB<P>>::cancel_mempool_swap_transactions(db, &swap_link)
+            .await
+            .ok_or_else(|| warp::reject::custom(ProposerRejection::ClientTransactionFailed))?;
+
+    let response = if cancelled > 0 {
+        SwapCancelResponse {
+            status: "accepted".to_string(),
+            message:
+                "Swap cancel request accepted; matching mempool swap legs were marked cancelled"
+                    .to_string(),
+            matched: cancelled as usize,
+        }
+    } else {
+        let selected = <mongodb::Client as TransactionsDB<P>>::count_selected_swap_transactions(
+            db, &swap_link,
+        )
+        .await
+        .map_err(|_| warp::reject::custom(ProposerRejection::ClientTransactionFailed))?;
+        let cancelled = <mongodb::Client as TransactionsDB<P>>::count_cancelled_swap_transactions(
+            db, &swap_link,
+        )
+        .await
+        .map_err(|_| warp::reject::custom(ProposerRejection::ClientTransactionFailed))?;
+
+        if selected > 0 {
+            SwapCancelResponse {
+                status: "too_late".to_string(),
+                message:
+                    "Swap is no longer in proposer mempool and may already be selected for a block"
+                        .to_string(),
+                matched: 0,
+            }
+        } else if cancelled > 0 {
+            SwapCancelResponse {
+                status: "already_cancelled".to_string(),
+                message: "Matching swap legs were already cancelled in proposer state"
+                    .to_string(),
+                matched: cancelled as usize,
+            }
+        } else {
+            SwapCancelResponse {
+                status: "not_found".to_string(),
+                message: "No matching mempool swap was found for cancellation".to_string(),
+                matched: 0,
+            }
+        }
+    };
+
+    Ok(warp::reply::with_status(
+        warp::reply::json(&response),
+        StatusCode::OK,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +145,7 @@ mod tests {
     use ark_bn254::Fr as Fr254;
     use ark_serialize::SerializationError;
     use lib::{
+        client_models::ProposerSwapCancelRequest,
         nf_client_proof::ProvingEngine,
         shared_entities::{ClientTransaction, CompressedSecrets},
     };
@@ -201,5 +282,46 @@ mod tests {
             std::str::from_utf8(res.body()).unwrap(),
             "Client transaction failed"
         );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_swap_route_rejects_invalid_payload_shape() {
+        let filter = cancel_swap_request::<MockProof>().recover(handle_rejection);
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/swap/cancel-request")
+            .header("content-type", "application/json")
+            .body("{}")
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_swap_route_rejects_invalid_swap_link_hex() {
+        let filter = path!("v1" / "swap" / "cancel-request")
+            .and(warp::post())
+            .and(warp::body::json())
+            .and_then(|request: ProposerSwapCancelRequest| async move {
+                let parsed = Fr254::from_hex_string(&request.swap_link).map_err(|_| {
+                    warp::reject::custom(ProposerRejection::ClientTransactionFailed)
+                })?;
+                Ok::<_, warp::Rejection>(warp::reply::json(
+                    &serde_json::json!({ "swapLink": parsed.to_string() }),
+                ))
+            })
+            .recover(handle_rejection);
+
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/swap/cancel-request")
+            .json(&ProposerSwapCancelRequest {
+                swap_link: "not-hex".to_string(),
+            })
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }

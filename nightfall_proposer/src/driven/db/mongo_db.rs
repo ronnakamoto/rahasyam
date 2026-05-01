@@ -75,6 +75,24 @@ fn selected_state_filter_for_block(block_l2: i64) -> Document {
     }
 }
 
+fn swap_link_filter(swap_link: &Fr254) -> Document {
+    doc! {
+        "client_transaction.swap_link": swap_link.to_hex_string()
+    }
+}
+
+fn cancelled_state_filter() -> Document {
+    doc! {
+        "$or": [
+            doc! { "lifecycle.state": "cancelled" },
+            doc! {
+                "lifecycle": { "$exists": false },
+                "cancelled_explicitly": true
+            }
+        ]
+    }
+}
+
 pub const DB: &str = "nightfall";
 const COLLECTION: &str = "ClientTransactions";
 const DEPOSIT_COLLECTION: &str = "Deposits";
@@ -165,6 +183,57 @@ where
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
             .count_documents(filter)
             .await
+    }
+
+    async fn count_mempool_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error> {
+        let mut filter = swap_link_filter(swap_link);
+        filter.extend(mempool_state_filter());
+        self.database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .count_documents(filter)
+            .await
+    }
+
+    async fn count_selected_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error> {
+        let mut filter = swap_link_filter(swap_link);
+        filter.extend(selected_state_filter());
+        self.database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .count_documents(filter)
+            .await
+    }
+
+    async fn count_cancelled_swap_transactions(
+        &self,
+        swap_link: &Fr254,
+    ) -> Result<u64, mongodb::error::Error> {
+        let mut filter = swap_link_filter(swap_link);
+        filter.extend(cancelled_state_filter());
+        self.database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .count_documents(filter)
+            .await
+    }
+
+    async fn cancel_mempool_swap_transactions(&self, swap_link: &Fr254) -> Option<u64> {
+        let mut filter = swap_link_filter(swap_link);
+        filter.extend(mempool_state_filter());
+        let update = doc! {"$set": {
+            "lifecycle": lifecycle_bson(&TxLifecycle::Cancelled)
+        }};
+        let result = self
+            .database(DB)
+            .collection::<ClientTransactionWithMetaData<P>>(COLLECTION)
+            .update_many(filter, update)
+            .await
+            .ok()?;
+        Some(result.modified_count)
     }
 
     async fn mark_transactions_selected_for_block(

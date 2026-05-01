@@ -20,6 +20,7 @@ use configuration::addresses::get_addresses;
 use futures::future::join_all;
 use lib::{
     blockchain_client::BlockchainClientConnection,
+    client_models::{ProposerSwapCancelRequest, SwapCancelResponse},
     commitments::Nullifiable,
     derive_key::ZKPKeys,
     hex_conversion::HexConvertible,
@@ -38,6 +39,13 @@ use std::{error::Error, fmt::Debug, time::Duration};
 use tokio::time::sleep;
 use url::Url;
 use warp::hyper::StatusCode;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregatedSwapCancelResponse {
+    pub status: String,
+    pub message: String,
+    pub matched: usize,
+}
 
 pub struct SwapParams {
     pub party_a_public_key: TEAffine<BabyJubjub>,
@@ -332,6 +340,199 @@ async fn send_to_proposer_with_retry<P: Serialize + Sync>(
         format!("Max retries exhausted for proposer {}", proposer.url),
         true,
     ))
+}
+
+async fn send_cancel_request_with_retry(
+    client: &Client,
+    proposer: ProposerManager::Proposer,
+    cancel_request: &ProposerSwapCancelRequest,
+    id: &str,
+    max_retries: u32,
+    initial_backoff: Duration,
+) -> Result<SwapCancelResponse, (String, bool)> {
+    let url = match Url::parse(&proposer.url).and_then(|base| base.join("/v1/swap/cancel-request"))
+    {
+        Ok(u) => u,
+        Err(e) => {
+            warn!("Skipping proposer with invalid URL {}: {}", proposer.url, e);
+            return Err((format!("Invalid URL: {e}"), false));
+        }
+    };
+
+    for attempt in 1..=max_retries {
+        let body = serde_json::to_string(cancel_request).unwrap();
+        let resp = client
+            .post(url.clone())
+            .header("Content-Type", "application/json")
+            .header("Content-Length", body.len().to_string())
+            .body(body)
+            .send()
+            .await;
+        match resp {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    let response_body = response.text().await.unwrap_or_default();
+                    let parsed = serde_json::from_str::<SwapCancelResponse>(&response_body)
+                        .map_err(|e| {
+                            (
+                                format!("Failed to parse proposer cancel response: {e}"),
+                                false,
+                            )
+                        })?;
+                    debug!("{id} Successfully sent swap cancel request to proposer at {url}");
+                    return Ok(parsed);
+                }
+
+                let body = response.text().await.unwrap_or_default();
+                error!("{id} Error from proposer cancel endpoint: HTTP {status} — Body: {body}");
+                if matches!(
+                    status,
+                    StatusCode::BAD_GATEWAY
+                        | StatusCode::SERVICE_UNAVAILABLE
+                        | StatusCode::GATEWAY_TIMEOUT
+                ) && attempt < max_retries
+                {
+                    let backoff = initial_backoff * 2u32.pow(attempt - 1);
+                    warn!(
+                        "{id} Retrying swap cancel against proposer {} in {backoff:?}",
+                        proposer.url
+                    );
+                    sleep(backoff).await;
+                    continue;
+                }
+
+                return Err((
+                    format!("Proposer returned HTTP {status}: {body}"),
+                    matches!(
+                        status,
+                        StatusCode::BAD_GATEWAY
+                            | StatusCode::SERVICE_UNAVAILABLE
+                            | StatusCode::GATEWAY_TIMEOUT
+                    ),
+                ));
+            }
+            Err(err) => {
+                error!("{id} Network error sending cancel request to proposer {url}: {err:?}");
+                if is_retriable_error(&err) && attempt < max_retries {
+                    let backoff = initial_backoff * 2u32.pow(attempt - 1);
+                    warn!("{id} Retrying cancel-request network error in {backoff:?}");
+                    sleep(backoff).await;
+                    continue;
+                }
+                return Err((format!("Network error: {err}"), true));
+            }
+        }
+    }
+
+    Err((
+        format!("Max retries exhausted for proposer {}", proposer.url),
+        true,
+    ))
+}
+
+pub async fn request_swap_cancel(
+    swap_link: Fr254,
+    id: &str,
+) -> Result<AggregatedSwapCancelResponse, Box<dyn Error>> {
+    info!("{id} Sending swap cancel request to all proposers concurrently.");
+    const MAX_RETRIES: u32 = 3;
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+
+    let cancel_request = ProposerSwapCancelRequest {
+        swap_link: swap_link.to_hex_string(),
+    };
+    let client = Client::new();
+
+    let blockchain_client = get_blockchain_client_connection()
+        .await
+        .read()
+        .await
+        .get_client();
+    let round_robin_instance =
+        ProposerManager::new(get_addresses().round_robin, blockchain_client.root());
+    let proposers_struct: Vec<ProposerManager::Proposer> =
+        round_robin_instance.get_proposers().call().await?;
+
+    let futures: Vec<_> = proposers_struct
+        .into_iter()
+        .map(|proposer| {
+            send_cancel_request_with_retry(
+                &client,
+                proposer,
+                &cancel_request,
+                id,
+                MAX_RETRIES,
+                INITIAL_BACKOFF,
+            )
+        })
+        .collect();
+
+    let results = join_all(futures).await;
+    let mut accepted_matched = 0usize;
+    let mut already_cancelled_matched = 0usize;
+    let mut saw_too_late = false;
+    let mut saw_not_found = false;
+    let mut saw_response = false;
+
+    for result in results {
+        match result {
+            Ok(response) => {
+                saw_response = true;
+                match response.status.as_str() {
+                    "accepted" => accepted_matched += response.matched,
+                    "already_cancelled" => already_cancelled_matched += response.matched,
+                    "too_late" => saw_too_late = true,
+                    "not_found" => saw_not_found = true,
+                    other => warn!("{id} Ignoring unknown proposer cancel status {other}"),
+                }
+            }
+            Err((msg, retriable)) => {
+                if retriable {
+                    warn!("{id} Advisory cancel request could not be delivered to one proposer: {msg}");
+                } else {
+                    warn!("{id} Advisory cancel request rejected by one proposer: {msg}");
+                }
+            }
+        }
+    }
+
+    if accepted_matched > 0 {
+        Ok(AggregatedSwapCancelResponse {
+            status: "accepted".to_string(),
+            message: "Swap cancel request accepted by proposer(s); commitments remain locked until local trustless settlement".to_string(),
+            matched: accepted_matched,
+        })
+    } else if already_cancelled_matched > 0 {
+        Ok(AggregatedSwapCancelResponse {
+            status: "already_cancelled".to_string(),
+            message: "Matching proposer swap legs were already cancelled; commitments remain locked until local trustless settlement".to_string(),
+            matched: already_cancelled_matched,
+        })
+    } else if saw_too_late {
+        Ok(AggregatedSwapCancelResponse {
+            status: "too_late".to_string(),
+            message: "Swap is no longer cancellable in proposer mempool; commitments remain locked until local trustless settlement".to_string(),
+            matched: 0,
+        })
+    } else if saw_not_found {
+        Ok(AggregatedSwapCancelResponse {
+            status: "not_found".to_string(),
+            message: "No proposer reported a matching mempool swap; commitments remain locked until local trustless settlement".to_string(),
+            matched: 0,
+        })
+    } else if saw_response {
+        Ok(AggregatedSwapCancelResponse {
+            status: "not_found".to_string(),
+            message: "Proposers returned no actionable advisory cancel result; commitments remain locked until local trustless settlement".to_string(),
+            matched: 0,
+        })
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{id} No proposer could be reached for advisory swap cancellation."),
+        )))
+    }
 }
 
 pub async fn process_transaction_offchain<P: Serialize + Sync>(

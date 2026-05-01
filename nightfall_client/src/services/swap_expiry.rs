@@ -18,6 +18,12 @@ pub(crate) struct SwapChildRequestArgs {
     pub swap_link: Option<String>,
     #[serde(default)]
     pub spend_commitment_ids: Vec<String>,
+    #[serde(default)]
+    pub cancel_requested_at: Option<String>,
+    #[serde(default)]
+    pub cancel_request_status: Option<String>,
+    #[serde(default)]
+    pub cancel_request_message: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,13 +47,13 @@ pub(crate) trait SwapExpiryStore {
     async fn get_request(&self, request_id: &str) -> Option<Request>;
     async fn get_commitment(&self, commitment_id: &Fr254) -> Option<CommitmentEntry>;
     async fn set_request_status(&self, request_id: &str, status: RequestStatus) -> Option<()>;
+    async fn update_request_child_args(&self, request_id: &str, child_args: &str) -> Option<()>;
     async fn mark_commitments_unspent(
         &self,
         commitments: &[Fr254],
         layer_1_transaction_hash: Option<TxHash>,
         layer_2_block_number: Option<i64>,
     ) -> Option<()>;
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()>;
 }
 
 #[async_trait]
@@ -64,6 +70,10 @@ impl SwapExpiryStore for mongodb::Client {
         RequestDB::update_request(self, request_id, status).await
     }
 
+    async fn update_request_child_args(&self, request_id: &str, child_args: &str) -> Option<()> {
+        RequestDB::update_request_child_args(self, request_id, child_args).await
+    }
+
     async fn mark_commitments_unspent(
         &self,
         commitments: &[Fr254],
@@ -77,10 +87,6 @@ impl SwapExpiryStore for mongodb::Client {
             layer_2_block_number,
         )
         .await
-    }
-
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
-        RequestDB::clear_request_child_args(self, request_id).await
     }
 }
 
@@ -98,6 +104,10 @@ impl SwapExpiryStore for &mongodb::Client {
         RequestDB::update_request(*self, request_id, status).await
     }
 
+    async fn update_request_child_args(&self, request_id: &str, child_args: &str) -> Option<()> {
+        RequestDB::update_request_child_args(*self, request_id, child_args).await
+    }
+
     async fn mark_commitments_unspent(
         &self,
         commitments: &[Fr254],
@@ -111,10 +121,6 @@ impl SwapExpiryStore for &mongodb::Client {
             layer_2_block_number,
         )
         .await
-    }
-
-    async fn clear_request_child_args(&self, request_id: &str) -> Option<()> {
-        RequestDB::clear_request_child_args(*self, request_id).await
     }
 }
 
@@ -152,16 +158,12 @@ pub(crate) async fn reconcile_expired_swap_request(
             | RequestStatus::Failed
             | RequestStatus::ProposerUnreachable
             | RequestStatus::Expired
-            | RequestStatus::Cancelled
     ) {
         return Err(SwapExpiryError::IncompatibleStatus(request.status));
     }
 
     let Some(child_args_json) = request.child_request_args.as_ref() else {
-        if matches!(
-            request.status,
-            RequestStatus::Expired | RequestStatus::Cancelled
-        ) {
+        if matches!(request.status, RequestStatus::Expired) {
             return Ok(SwapExpiryReconciliation {
                 unlocked: 0,
                 already_unlocked: 0,
@@ -172,6 +174,14 @@ pub(crate) async fn reconcile_expired_swap_request(
 
     let child_args: SwapChildRequestArgs =
         serde_json::from_str(child_args_json).map_err(|_| SwapExpiryError::InvalidChildArgs)?;
+
+    if child_args.spend_commitment_ids.is_empty() && matches!(request.status, RequestStatus::Expired)
+    {
+        return Ok(SwapExpiryReconciliation {
+            unlocked: 0,
+            already_unlocked: 0,
+        });
+    }
 
     let mut pending_unlock_entries = Vec::new();
     let mut already_unlocked = 0usize;
@@ -257,8 +267,20 @@ pub(crate) async fn reconcile_expired_swap_request(
         }
     }
 
-    if db.clear_request_child_args(&request.uuid).await.is_none() {
-        error!("{} Failed to clear child_request_args", request.uuid);
+    let mut settled_child_args = child_args;
+    settled_child_args.spend_commitment_ids.clear();
+    let settled_child_args_json =
+        serde_json::to_string(&settled_child_args).map_err(|_| SwapExpiryError::DatabaseError)?;
+
+    if db
+        .update_request_child_args(&request.uuid, &settled_child_args_json)
+        .await
+        .is_none()
+    {
+        error!(
+            "{} Failed to persist settled child_request_args",
+            request.uuid
+        );
         return Err(SwapExpiryError::DatabaseError);
     }
 

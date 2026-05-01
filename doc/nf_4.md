@@ -592,20 +592,83 @@ The components of the JSON object have the following meaning:
 
 ***
 
-POST /v1/swap/quit
+POST /v1/swap/cancel-request
 
 ```sh
 curl -i \
   -H 'Content-Type: application/json' \
-  -X POST 'http://localhost:3000/v1/swap/quit' \
+  -X POST 'http://localhost:3000/v1/swap/cancel-request' \
   --data-raw '{
     "requestId": "33333333-3333-3333-3333-333333333333"
   }'
 ```
 
 Returns:
-- `200 OK` when one or more swap input commitments are unlocked (moved from `PendingSpend` back to `Unspent`).
-- `409 CONFLICT` when no pending commitments can be unlocked (for example already spent/unavailable, or no swap child args saved for that request).
+- `200 OK` when the advisory cancel request was delivered or when proposers returned an informative result such as `accepted`, `already_cancelled`, `not_found`, `too_late`, or `delivery_failed`.
+- `409 CONFLICT` when the request is not in a cancel-requestable state, or when the deadline has already passed and the client should use `settle-expired` instead.
+- `404 NOT FOUND` if `requestId` does not exist.
+- `400 BAD REQUEST` if `requestId` is not a valid UUID.
+
+Response body (200/409):
+
+```json
+{
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "cancelRequestStatus": "accepted",
+  "matched": 2,
+  "commitmentsRemainLocked": true,
+  "message": "Swap cancel request accepted by proposer(s); commitments remain locked until local trustless settlement"
+}
+```
+
+This call is advisory only. The client uses `requestId` to load the swap metadata it stored locally, translates that into the swap's `swap_link`, and then asks proposers to best-effort remove matching swap legs from proposer mempools. This can reduce the chance of inclusion before expiry, but it does not unlock anything locally.
+
+Security note:
+- The proposer response is informational only and has no safety value.
+- Commitments remain locked after `cancel-request`, even if every proposer replies `accepted`.
+- This endpoint does not modify on-chain state and does not bypass circuit or proposer validation.
+
+Proposer-facing endpoint:
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3001/v1/swap/cancel-request' \
+  --data-raw '{
+    "swapLink": "0x1234"
+  }'
+```
+
+Response body:
+
+```json
+{
+  "status": "accepted",
+  "message": "Swap cancel request accepted; matching mempool swap legs were marked cancelled",
+  "matched": 2
+}
+```
+
+- Client API uses `requestId` because that is the client-side request identifier persisted in the local DB.
+- Proposer API uses `swapLink` because that is the proposer/mempool matching key for swap pairing.
+- The proposer response is advisory only and never authorizes commitment unlock.
+
+***
+
+POST /v1/swap/settle-expired
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/v1/swap/settle-expired' \
+  --data-raw '{
+    "requestId": "33333333-3333-3333-3333-333333333333"
+  }'
+```
+
+Returns:
+- `200 OK` when one or more swap input commitments are unlocked locally, or when the swap was already fully reconciled.
+- `409 CONFLICT` when the deadline has not passed, when the client is not synchronised with L2, or when no safe local unlock can be proven.
 - `404 NOT FOUND` if `requestId` does not exist.
 - `400 BAD REQUEST` if `requestId` is not a valid UUID.
 
@@ -616,16 +679,16 @@ Response body (200/409):
   "requestId": "33333333-3333-3333-3333-333333333333",
   "unlocked": 1,
   "skipped": 0,
-  "message": "Swap commitments unlocked"
+  "message": "Swap expired and commitments were unlocked locally"
 }
 ```
 
-This call allows a client to cancel its local participation in a pending swap and unlock the commitments that were reserved for that swap request.
+This call is the manual trustless settlement path for expired swaps. It uses the same reconciliation helper as the block listener and request-status path, but applies it immediately on demand.
 
 Security note:
-- This endpoint only updates local client DB commitment status (`PendingSpend` -> `Unspent`).
-- It does not modify on-chain state, does not forge counterpart signatures, and does not bypass circuit/proposer validation.
-- If a commitment is already spent or not unlockable, it is skipped and reported in the response.
+- `settle-expired` is the only manual endpoint that can unlock locally reserved swap commitments (`PendingSpend` -> `Unspent`).
+- Unlock is only allowed when the client can verify safety locally: the client must be synchronised with L2, the swap deadline must have passed, and every tracked spend commitment must still be locally verifiable as `PendingSpend` or already `Unspent`.
+- `settle-expired` does not depend on any prior `cancel-request`. An expired swap can always be settled trustlessly when the local safety checks pass.
 
 ***
 
