@@ -128,7 +128,7 @@ async fn test_request_status_and_balance_routes_cover_stateful_sanity_cases() {
         RequestStatus::Submitted,
         RequestStatus::Failed,
     ] {
-        db.update_request(&request_id, expected_status.clone())
+        db.update_request(&request_id, expected_status)
             .await
             .expect("update request");
 

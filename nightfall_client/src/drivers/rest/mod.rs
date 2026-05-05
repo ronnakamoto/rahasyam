@@ -15,7 +15,10 @@ use warp::{
 };
 
 use self::{
-    client_nf_3::{deposit_request, swap_request, transfer_request, withdraw_request},
+    client_nf_3::{
+        cancel_swap_request, deposit_request, settle_expired_swap_request, swap_request,
+        transfer_request, withdraw_request,
+    },
     commitment::{
         get_all_commitments, get_commitment, get_commitments_by_token_type,
         get_max_transferable_amount_by_token_type,
@@ -32,7 +35,7 @@ pub mod client_operation;
 mod commitment;
 mod keys;
 pub mod proposers;
-mod request_status;
+pub(crate) mod request_status;
 mod synchronisation;
 mod token_info;
 pub mod withdraw;
@@ -47,6 +50,8 @@ where
         .or(transfer_request::<P>())
         .or(withdraw_request::<P>())
         .or(swap_request::<P>())
+        .or(cancel_swap_request())
+        .or(settle_expired_swap_request())
         .or(get_commitment())
         .or(get_all_commitments())
         .or(get_commitments_by_token_type())
