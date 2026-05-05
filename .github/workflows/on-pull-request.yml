@@ -41,6 +41,7 @@ jobs:
         run: cargo test -- --nocapture
         env:
           RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
   resync:
     name: Synchronisation Test with Mock Prover
     needs: [build]
