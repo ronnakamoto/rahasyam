@@ -144,8 +144,10 @@ pub(crate) fn swap_deadline_has_passed(request: &Request, current_l2_block: I256
 }
 
 pub(crate) fn should_expire_request(request: &Request, current_l2_block: I256) -> bool {
-    matches!(request.status, RequestStatus::Submitted)
-        && swap_deadline_has_passed(request, current_l2_block)
+    matches!(
+        request.status,
+        RequestStatus::Submitted | RequestStatus::Failed | RequestStatus::ProposerUnreachable
+    ) && swap_deadline_has_passed(request, current_l2_block)
 }
 
 pub(crate) async fn reconcile_expired_swap_request(
@@ -175,7 +177,8 @@ pub(crate) async fn reconcile_expired_swap_request(
     let child_args: SwapChildRequestArgs =
         serde_json::from_str(child_args_json).map_err(|_| SwapExpiryError::InvalidChildArgs)?;
 
-    if child_args.spend_commitment_ids.is_empty() && matches!(request.status, RequestStatus::Expired)
+    if child_args.spend_commitment_ids.is_empty()
+        && matches!(request.status, RequestStatus::Expired)
     {
         return Ok(SwapExpiryReconciliation {
             unlocked: 0,

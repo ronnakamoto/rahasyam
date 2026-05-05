@@ -477,7 +477,7 @@ fn non_cancel_requestable_status_execution(status: RequestStatus) -> SwapCancelE
                 "Swap request is still being processed and cannot be cancelled yet".to_string()
             }
             RequestStatus::Confirmed => "Swap request is already confirmed on-chain".to_string(),
-            RequestStatus::Expired | RequestStatus::Cancelled => {
+            RequestStatus::Expired => {
                 "Swap request is already expired locally; use settle-expired if reconciliation is still needed"
                     .to_string()
             }
@@ -1202,6 +1202,29 @@ async fn store_swap_child_request_args(
     }
 
     Ok(())
+}
+
+async fn rollback_swap_request(
+    db: &mongodb::Client,
+    spend_commitment_ids: &[Fr254],
+    new_commitment_ids: &[Fr254],
+    id: &str,
+) {
+    rollback_commitments(db, spend_commitment_ids, id).await;
+
+    if !new_commitment_ids.is_empty() {
+        info!("{id} Deleting {} new commitments", new_commitment_ids.len());
+        let _ = db.delete_commitments(new_commitment_ids.to_vec()).await;
+    }
+
+    // Failure rollback returns the request to its pre-swap state, so we intentionally clear
+    // transient swap metadata here. This differs from settle-expired, which preserves
+    // cancel-request UX metadata after a successful local reconciliation.
+    let _ = RequestDB::clear_request_child_args(db, id).await;
+    let existing_request = RequestDB::get_request(db, id).await;
+    if should_overwrite_request_status_with_failed(existing_request.as_ref()) {
+        let _ = db.update_request(id, RequestStatus::Failed).await;
+    }
 }
 
 async fn handle_transfer<P, E, N>(
@@ -2001,6 +2024,10 @@ where
     .await
     {
         Ok(submitted) => {
+            let new_commitment_ids = new_commitments
+                .iter()
+                .filter_map(|c| c.hash().ok())
+                .collect::<Vec<_>>();
             if let Err(e) = store_swap_child_request_args(
                 id,
                 deadline_fr,
@@ -2010,7 +2037,7 @@ where
             .await
             {
                 let db = get_db_connection().await;
-                rollback_commitments(db, &spend_commitment_ids, id).await;
+                rollback_swap_request(db, &spend_commitment_ids, &new_commitment_ids, id).await;
                 return Err(e);
             }
             Ok(submitted.payload)
@@ -2023,20 +2050,12 @@ where
                 .iter()
                 .filter_map(|c| c.hash().ok())
                 .collect::<Vec<_>>();
-            rollback_commitments(db, &commitment_ids, id).await;
 
             let new_commitment_ids = new_commitments
                 .iter()
                 .filter_map(|c| c.hash().ok())
                 .collect::<Vec<_>>();
-
-            info!("{id} Deleting {} new commitments", new_commitment_ids.len());
-            let _ = db.delete_commitments(new_commitment_ids).await;
-            let _ = RequestDB::clear_request_child_args(db, id).await;
-            let existing_request = RequestDB::get_request(db, id).await;
-            if should_overwrite_request_status_with_failed(existing_request.as_ref()) {
-                let _ = db.update_request(id, RequestStatus::Failed).await;
-            }
+            rollback_swap_request(db, &commitment_ids, &new_commitment_ids, id).await;
 
             Err(TransactionHandlerError::CustomError(e.to_string()))
         }
@@ -2194,7 +2213,11 @@ mod tests {
             Some(())
         }
 
-        async fn update_request_child_args(&self, request_id: &str, child_args: &str) -> Option<()> {
+        async fn update_request_child_args(
+            &self,
+            request_id: &str,
+            child_args: &str,
+        ) -> Option<()> {
             let mut requests = self.requests.lock().await;
             let request = requests.iter_mut().find(|r| r.uuid == request_id)?;
             request.child_request_args = Some(child_args.to_string());
@@ -2227,7 +2250,6 @@ mod tests {
                 None
             }
         }
-
     }
 
     #[async_trait]

@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_not_expire_non_submitted_request() {
+    fn test_should_not_expire_terminal_request() {
         let request = make_request(
             RequestStatus::Confirmed,
             Some(r#"{"deadline":"0x10"}"#.to_string()),
@@ -175,6 +175,17 @@ mod tests {
             &request,
             I256::try_from(17u64).unwrap()
         ));
+    }
+
+    #[test]
+    fn test_should_expire_failed_and_unreachable_requests_after_deadline() {
+        for status in [RequestStatus::Failed, RequestStatus::ProposerUnreachable] {
+            let request = make_request(status, Some(r#"{"deadline":"0x10"}"#.to_string()));
+            assert!(should_expire_request(
+                &request,
+                I256::try_from(17u64).unwrap()
+            ));
+        }
     }
 
     #[test]

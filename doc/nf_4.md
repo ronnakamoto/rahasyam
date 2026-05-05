@@ -191,6 +191,24 @@ AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
 AZURE_TENANT_ID= .
 
+### Advisory swap cancellation auth
+
+For advisory swap cancellation, both the `client` and every `proposer` must be given the same shared secret via:
+
+```sh
+NF4_SWAP_CANCEL_AUTH_TOKEN=choose-a-long-random-secret
+```
+
+This token is a transport-level mitigation for the proposer-facing `POST /v1/swap/cancel-request` endpoint. It is intended for trusted/internal deployment boundaries only. It is not proof that the caller is the owner of a swap and it must not be treated as owner-level authorization.
+
+Operational notes:
+- Set `NF4_SWAP_CANCEL_AUTH_TOKEN` on the `client` and every `proposer` that is expected to participate in advisory swap cancellation.
+- The value should be long, random, and kept out of source control.
+- The value must not be logged or copied into application diagnostics.
+- If the token is absent on the `client`, advisory cancel requests cannot be sent to proposers and the client will report `cancelRequestStatus=delivery_failed` while keeping commitments locked.
+- If the token is absent on a `proposer`, that proposer returns `503 Swap cancel unavailable` for the proposer-facing cancel endpoint.
+- If the token header is missing or wrong on a `proposer`, that proposer returns `401 Unauthorized swap cancel request`.
+
 Not all of the configuration items can be static (i.e. known at compile-time). In particular, the addresses of the deployed contracts are not known in advance. The `deployer` saves addresses by writing directly to a shared file (`/app/configuration/toml/addresses.toml`) in the Docker volume (`address_data`). The Nightfall applications read addresses at startup, first attempting to load from the local file, then falling back to HTTP GET from the `configuration` service (nginx) with retry logic if the file is unavailable. The file must include a `chain_id` field for validation. Note that the `NF4_RUN_MODE` environment variable must be set for address validation to work correctly, with private IPs allowed in development mode to support Docker networking.
 
 ## Deployment on a testnet for integration testing
@@ -237,6 +255,8 @@ Generate three Ethereum addresses and private keys. These should be stored in a 
 Set the environment variable `NF4_RUN_MODE=base_sepolia`. This will cause Nightfall to use the `[base_sepolia]` section of `nightfall.toml` rather than the `[development]` section.
 
 If you need to, override the `deploy_contracts` configuration item, e.g.: `NF4_CONTRACTS__DEPLOY_CONTRACTS=false` (note the double underscore, which replaces the more common 'dot' notation).
+
+If you intend to use advisory swap cancellation, also set `NF4_SWAP_CANCEL_AUTH_TOKEN` on the `client` and every `proposer` as described in [Advisory swap cancellation auth](#advisory-swap-cancellation-auth).
 
 Set `ethereum_client_url`: The url of the rpc endpoint of your layer 1 client. Alternatively, you can set this via `NF4_ETHEREUM_CLIENT_URL` in the `local.env` file.
 
@@ -633,6 +653,7 @@ Proposer-facing endpoint:
 ```sh
 curl -i \
   -H 'Content-Type: application/json' \
+  -H 'x-nf4-swap-cancel-auth: <NF4_SWAP_CANCEL_AUTH_TOKEN>' \
   -X POST 'http://localhost:3001/v1/swap/cancel-request' \
   --data-raw '{
     "swapLink": "0x1234"
@@ -652,6 +673,7 @@ Response body:
 - Client API uses `requestId` because that is the client-side request identifier persisted in the local DB.
 - Proposer API uses `swapLink` because that is the proposer/mempool matching key for swap pairing.
 - The proposer response is advisory only and never authorizes commitment unlock.
+- Advisory swap cancel auth and failure modes are described in [Advisory swap cancellation auth](#advisory-swap-cancellation-auth).
 
 ***
 

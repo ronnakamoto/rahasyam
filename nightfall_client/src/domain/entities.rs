@@ -42,7 +42,6 @@ pub enum RequestStatus {
     ProposerUnreachable, // This is for transfer and withdraw tx_request status when the Client was unable to reach the Proposer at the URL provided in the request.
     Confirmed, // This is for tx_request status associated with the X-Request-ID for a request with status: The life cycle of this tx is finished, aka, commitments are all onchain.
     Expired, // This is for swap tx_request status when its deadline has passed without onchain confirmation.
-    Cancelled, // This is for swap tx_request status when the swap was cancelled before confirmation.
 }
 
 pub fn should_overwrite_request_status_with_failed(request: Option<&Request>) -> bool {
@@ -65,7 +64,6 @@ impl Display for RequestStatus {
             RequestStatus::ProposerUnreachable => write!(f, "ProposerUnreachable"),
             RequestStatus::Confirmed => write!(f, "Confirmed"),
             RequestStatus::Expired => write!(f, "Expired"),
-            RequestStatus::Cancelled => write!(f, "Cancelled"),
         }
     }
 }

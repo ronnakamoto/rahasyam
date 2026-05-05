@@ -151,6 +151,8 @@ fn default_rpc_rate_limit() -> u32 {
 pub struct Settings {
     pub signing_key: String,
     #[serde(default)]
+    pub swap_cancel_auth_token: Option<String>,
+    #[serde(default)]
     pub azure_vault_url: String,
     #[serde(default)]
     pub azure_key_name: String,

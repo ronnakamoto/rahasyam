@@ -16,7 +16,7 @@ use crate::{
 use alloy::rpc::types::TransactionReceipt;
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine as TEAffine;
-use configuration::addresses::get_addresses;
+use configuration::{addresses::get_addresses, settings::get_settings};
 use futures::future::join_all;
 use lib::{
     blockchain_client::BlockchainClientConnection,
@@ -346,6 +346,7 @@ async fn send_cancel_request_with_retry(
     client: &Client,
     proposer: ProposerManager::Proposer,
     cancel_request: &ProposerSwapCancelRequest,
+    swap_cancel_auth_token: &str,
     id: &str,
     max_retries: u32,
     initial_backoff: Duration,
@@ -364,6 +365,7 @@ async fn send_cancel_request_with_retry(
         let resp = client
             .post(url.clone())
             .header("Content-Type", "application/json")
+            .header("x-nf4-swap-cancel-auth", swap_cancel_auth_token)
             .header("Content-Length", body.len().to_string())
             .body(body)
             .send()
@@ -442,6 +444,17 @@ pub async fn request_swap_cancel(
     let cancel_request = ProposerSwapCancelRequest {
         swap_link: swap_link.to_hex_string(),
     };
+    let swap_cancel_auth_token = get_settings()
+        .swap_cancel_auth_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::other(
+                "swap cancel auth is not configured; refusing to call proposer cancel endpoint",
+            )
+        })?
+        .to_string();
     let client = Client::new();
 
     let blockchain_client = get_blockchain_client_connection()
@@ -461,6 +474,7 @@ pub async fn request_swap_cancel(
                 &client,
                 proposer,
                 &cancel_request,
+                &swap_cancel_auth_token,
                 id,
                 MAX_RETRIES,
                 INITIAL_BACKOFF,

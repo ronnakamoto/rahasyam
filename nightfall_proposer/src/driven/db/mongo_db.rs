@@ -427,7 +427,7 @@ where
             .database(DB)
             .collection::<ClientTransactionWithMetaData<P>>(COLLECTION);
 
-        let result = collection.delete_many(doc! {}).await.ok()?;
+        let result = collection.delete_many(mempool_state_filter()).await.ok()?;
         Some(result.deleted_count)
     }
 }

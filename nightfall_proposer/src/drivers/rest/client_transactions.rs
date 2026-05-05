@@ -4,6 +4,8 @@ use crate::{
     initialisation::get_db_connection, ports::db::TransactionsDB,
 };
 use ark_bn254::Fr as Fr254;
+use ark_ff::Zero;
+use configuration::settings::get_settings;
 use futures::Future;
 use lib::client_models::{ProposerSwapCancelRequest, SwapCancelResponse};
 use lib::hex_conversion::HexConvertible;
@@ -32,6 +34,7 @@ where
 {
     path!("v1" / "swap" / "cancel-request")
         .and(warp::post())
+        .and(warp::header::optional::<String>("x-nf4-swap-cancel-auth"))
         .and(warp::body::json())
         .and_then(handle_cancel_swap_request::<P>)
 }
@@ -73,13 +76,20 @@ where
 }
 
 async fn handle_cancel_swap_request<P>(
+    auth_header: Option<String>,
     request: ProposerSwapCancelRequest,
 ) -> Result<impl warp::Reply, warp::Rejection>
 where
     P: Proof,
 {
-    let swap_link = Fr254::from_hex_string(&request.swap_link)
-        .map_err(|_| warp::reject::custom(ProposerRejection::ClientTransactionFailed))?;
+    let expected_auth_token = get_settings()
+        .swap_cancel_auth_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    authorize_swap_cancel_request(auth_header.as_deref(), expected_auth_token)
+        .map_err(warp::reject::custom)?;
+    let swap_link = parse_swap_link(&request.swap_link).map_err(warp::reject::custom)?;
     let db = get_db_connection().await;
 
     let cancelled =
@@ -118,8 +128,7 @@ where
         } else if cancelled > 0 {
             SwapCancelResponse {
                 status: "already_cancelled".to_string(),
-                message: "Matching swap legs were already cancelled in proposer state"
-                    .to_string(),
+                message: "Matching swap legs were already cancelled in proposer state".to_string(),
                 matched: cancelled as usize,
             }
         } else {
@@ -135,6 +144,39 @@ where
         warp::reply::json(&response),
         StatusCode::OK,
     ))
+}
+
+fn authorize_swap_cancel_request(
+    provided_auth_token: Option<&str>,
+    expected_auth_token: Option<&str>,
+) -> Result<(), ProposerRejection> {
+    let Some(expected_auth_token) = expected_auth_token else {
+        return Err(ProposerRejection::SwapCancelUnavailable);
+    };
+
+    if provided_auth_token == Some(expected_auth_token) {
+        Ok(())
+    } else {
+        Err(ProposerRejection::UnauthorizedSwapCancelRequest)
+    }
+}
+
+fn parse_swap_link(swap_link: &str) -> Result<Fr254, ProposerRejection> {
+    let normalized = swap_link
+        .trim()
+        .strip_prefix("0x")
+        .unwrap_or(swap_link.trim());
+    if normalized.is_empty() {
+        return Err(ProposerRejection::InvalidSwapCancelRequest);
+    }
+
+    let parsed = Fr254::from_hex_string(swap_link)
+        .map_err(|_| ProposerRejection::InvalidSwapCancelRequest)?;
+    if parsed.is_zero() {
+        return Err(ProposerRejection::InvalidSwapCancelRequest);
+    }
+
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -286,7 +328,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_cancel_swap_route_rejects_invalid_payload_shape() {
-        let filter = cancel_swap_request::<MockProof>().recover(handle_rejection);
+        let filter = path!("v1" / "swap" / "cancel-request")
+            .and(warp::post())
+            .and(warp::header::optional::<String>("x-nf4-swap-cancel-auth"))
+            .and(warp::body::json())
+            .and_then(
+                |_auth_header: Option<String>, request: ProposerSwapCancelRequest| async move {
+                    let _ = request;
+                    Ok::<_, warp::Rejection>(StatusCode::OK)
+                },
+            )
+            .recover(handle_rejection);
         let res = warp::test::request()
             .method("POST")
             .path("/v1/swap/cancel-request")
@@ -302,22 +354,119 @@ mod tests {
     async fn test_cancel_swap_route_rejects_invalid_swap_link_hex() {
         let filter = path!("v1" / "swap" / "cancel-request")
             .and(warp::post())
+            .and(warp::header::optional::<String>("x-nf4-swap-cancel-auth"))
             .and(warp::body::json())
-            .and_then(|request: ProposerSwapCancelRequest| async move {
-                let parsed = Fr254::from_hex_string(&request.swap_link).map_err(|_| {
-                    warp::reject::custom(ProposerRejection::ClientTransactionFailed)
-                })?;
-                Ok::<_, warp::Rejection>(warp::reply::json(
-                    &serde_json::json!({ "swapLink": parsed.to_string() }),
-                ))
+            .and_then(
+                |_auth_header: Option<String>, request: ProposerSwapCancelRequest| async move {
+                    let parsed =
+                        parse_swap_link(&request.swap_link).map_err(warp::reject::custom)?;
+                    Ok::<_, warp::Rejection>(warp::reply::json(
+                        &serde_json::json!({ "swapLink": parsed.to_string() }),
+                    ))
+                },
+            )
+            .recover(handle_rejection);
+
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/swap/cancel-request")
+            .header("x-nf4-swap-cancel-auth", "secret")
+            .json(&ProposerSwapCancelRequest {
+                swap_link: "not-hex".to_string(),
             })
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_parse_swap_link_rejects_empty_and_zero_values() {
+        assert!(matches!(
+            parse_swap_link(""),
+            Err(ProposerRejection::InvalidSwapCancelRequest)
+        ));
+        assert!(matches!(
+            parse_swap_link("0x"),
+            Err(ProposerRejection::InvalidSwapCancelRequest)
+        ));
+        assert!(matches!(
+            parse_swap_link("00"),
+            Err(ProposerRejection::InvalidSwapCancelRequest)
+        ));
+        assert!(matches!(
+            parse_swap_link("0x00"),
+            Err(ProposerRejection::InvalidSwapCancelRequest)
+        ));
+    }
+
+    #[test]
+    fn test_authorize_swap_cancel_requires_configured_matching_token() {
+        assert!(matches!(
+            authorize_swap_cancel_request(Some("secret"), None),
+            Err(ProposerRejection::SwapCancelUnavailable)
+        ));
+        assert!(matches!(
+            authorize_swap_cancel_request(None, Some("secret")),
+            Err(ProposerRejection::UnauthorizedSwapCancelRequest)
+        ));
+        assert!(matches!(
+            authorize_swap_cancel_request(Some("wrong"), Some("secret")),
+            Err(ProposerRejection::UnauthorizedSwapCancelRequest)
+        ));
+        assert!(authorize_swap_cancel_request(Some("secret"), Some("secret")).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_swap_route_rejects_missing_auth_header() {
+        let filter = path!("v1" / "swap" / "cancel-request")
+            .and(warp::post())
+            .and(warp::header::optional::<String>("x-nf4-swap-cancel-auth"))
+            .and(warp::body::json())
+            .and_then(
+                |auth_header: Option<String>, request: ProposerSwapCancelRequest| async move {
+                    authorize_swap_cancel_request(auth_header.as_deref(), Some("secret"))
+                        .map_err(warp::reject::custom)?;
+                    let _ = parse_swap_link(&request.swap_link).map_err(warp::reject::custom)?;
+                    Ok::<_, warp::Rejection>(StatusCode::OK)
+                },
+            )
             .recover(handle_rejection);
 
         let res = warp::test::request()
             .method("POST")
             .path("/v1/swap/cancel-request")
             .json(&ProposerSwapCancelRequest {
-                swap_link: "not-hex".to_string(),
+                swap_link: "01".to_string(),
+            })
+            .reply(&filter)
+            .await;
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_swap_route_rejects_empty_swap_link_before_db_access() {
+        let filter = path!("v1" / "swap" / "cancel-request")
+            .and(warp::post())
+            .and(warp::header::optional::<String>("x-nf4-swap-cancel-auth"))
+            .and(warp::body::json())
+            .and_then(
+                |auth_header: Option<String>, request: ProposerSwapCancelRequest| async move {
+                    authorize_swap_cancel_request(auth_header.as_deref(), Some("secret"))
+                        .map_err(warp::reject::custom)?;
+                    let _ = parse_swap_link(&request.swap_link).map_err(warp::reject::custom)?;
+                    Ok::<_, warp::Rejection>(warp::reply::json(&serde_json::json!({ "ok": true })))
+                },
+            )
+            .recover(handle_rejection);
+
+        let res = warp::test::request()
+            .method("POST")
+            .path("/v1/swap/cancel-request")
+            .header("x-nf4-swap-cancel-auth", "secret")
+            .json(&ProposerSwapCancelRequest {
+                swap_link: "".to_string(),
             })
             .reply(&filter)
             .await;
