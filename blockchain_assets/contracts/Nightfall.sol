@@ -450,17 +450,14 @@ contract Nightfall is
         uint256 nfTokenId = sha256_and_shift(abi.encode(ercAddress, tokenId));
         tokenIdMapping[nfTokenId] = TokenIdValue(ercAddress, tokenId, token_type);
 
-        uint256 nativeSlotId = (token_type == TokenType.ERC3525)
-            ? IERC3525(ercAddress).slotOf(tokenId)
-            : tokenId;
-
-        uint256 nfSlotId = (token_type == TokenType.ERC3525)
-            ? uint256(
-                keccak256(
-                    abi.encode(ercAddress, IERC3525(ercAddress).slotOf(tokenId))
-                )
-            ) >> 4
-            : nfTokenId;
+        uint256 nativeSlotId = tokenId;
+        uint256 nfSlotId = nfTokenId;
+        if (token_type == TokenType.ERC3525) {
+            nativeSlotId = IERC3525(ercAddress).slotOf(tokenId);
+            nfSlotId = uint256(
+                keccak256(abi.encode(ercAddress, nativeSlotId))
+            ) >> 4;
+        }
         slotIdMapping[nfSlotId] = SlotIdValue(ercAddress, nativeSlotId, token_type);
 
         DepositCommitment memory valueCommitment = DepositCommitment(
