@@ -191,6 +191,24 @@ AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
 AZURE_TENANT_ID= .
 
+### Advisory swap cancellation auth
+
+For advisory swap cancellation, both the `client` and every `proposer` must be given the same shared secret via:
+
+```sh
+NF4_SWAP_CANCEL_AUTH_TOKEN=choose-a-long-random-secret
+```
+
+This token is a transport-level mitigation for the proposer-facing `POST /v1/swap/cancel-request` endpoint. It is intended for trusted/internal deployment boundaries only. It is not proof that the caller is the owner of a swap and it must not be treated as owner-level authorization.
+
+Operational notes:
+- Set `NF4_SWAP_CANCEL_AUTH_TOKEN` on the `client` and every `proposer` that is expected to participate in advisory swap cancellation.
+- The value should be long, random, and kept out of source control.
+- The value must not be logged or copied into application diagnostics.
+- If the token is absent on the `client`, advisory cancel requests cannot be sent to proposers and the client will report `cancelRequestStatus=delivery_failed` while keeping commitments locked.
+- If the token is absent on a `proposer`, that proposer returns `503 Swap cancel unavailable` for the proposer-facing cancel endpoint.
+- If the token header is missing or wrong on a `proposer`, that proposer returns `401 Unauthorized swap cancel request`.
+
 Not all of the configuration items can be static (i.e. known at compile-time). In particular, the addresses of the deployed contracts are not known in advance. The `deployer` saves addresses by writing directly to a shared file (`/app/configuration/toml/addresses.toml`) in the Docker volume (`address_data`). The Nightfall applications read addresses at startup, first attempting to load from the local file, then falling back to HTTP GET from the `configuration` service (nginx) with retry logic if the file is unavailable. The file must include a `chain_id` field for validation. Note that the `NF4_RUN_MODE` environment variable must be set for address validation to work correctly, with private IPs allowed in development mode to support Docker networking.
 
 ## Deployment on a testnet for integration testing
@@ -237,6 +255,8 @@ Generate three Ethereum addresses and private keys. These should be stored in a 
 Set the environment variable `NF4_RUN_MODE=base_sepolia`. This will cause Nightfall to use the `[base_sepolia]` section of `nightfall.toml` rather than the `[development]` section.
 
 If you need to, override the `deploy_contracts` configuration item, e.g.: `NF4_CONTRACTS__DEPLOY_CONTRACTS=false` (note the double underscore, which replaces the more common 'dot' notation).
+
+If you intend to use advisory swap cancellation, also set `NF4_SWAP_CANCEL_AUTH_TOKEN` on the `client` and every `proposer` as described in [Advisory swap cancellation auth](#advisory-swap-cancellation-auth).
 
 Set `ethereum_client_url`: The url of the rpc endpoint of your layer 1 client. Alternatively, you can set this via `NF4_ETHEREUM_CLIENT_URL` in the `local.env` file.
 
@@ -506,6 +526,7 @@ curl -i \
   --data-raw '{
     "ercAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     "tokenId": "0x00",
+    "tokenType": "0",
     "recipientData": {
       "values": ["0x01"],
       "recipientCompressedZkpPublicKeys": ["0572aa70f4e62bcb8f53a28a1c259bd6d3538818afcccc0d8598486973ec2f2a"]
@@ -525,10 +546,171 @@ The components of the JSON object have the following meaning:
 
 - ercAddress: The Ethereum address of the ERC20|721|1155|3525 contract that we are using as a source of funds to move into Layer 2.
 - tokenId: The token ID of the token, for a 721|1155|3525 contract. It should be set to "0x00" for an ERC20 contract.
+- tokenType: The type of token being transacted: 0 => ERC20, 1 => ERC1155, 2 => ERC721, 3 => ERC3525. This field defaults to ERC20 for backwards compatibility, but should be provided explicitly for NFT and semi-fungible transfers.
 - recipientData: information about the owner(s) of the commitment(s) that will be created.
-- recipientData.values: values of the commitments for ERC20 tokens
+- recipientData.values: values of the commitments for the transfer. For ERC20 and fungible ERC1155 transfers this should be greater than zero. For ERC721 and non-fungible ERC1155 transfers, use "0x00".
 - recipientData.recipientCompressedZkpPublic: The ZKP public keys of the recipients. This acts as their Layer 2 addresses. See the section on key derivation for more details.
 - fee: The amount that will be paid to the `proposer` which processes this transaction.
+
+***
+
+POST /v1/swap
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/v1/swap' \
+  --data-raw '{
+    "partyA": {
+      "ercAddress": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+      "tokenId": "0x00",
+      "tokenType": "0x00",
+      "value": "0x0a",
+      "publicKey": "0572aa70f4e62bcb8f53a28a1c259bd6d3538818afcccc0d8598486973ec2f2a"
+    },
+    "partyB": {
+      "ercAddress": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+      "tokenId": "0x00",
+      "tokenType": "0x00",
+      "value": "0x05",
+      "publicKey": "1a3b5c7d9e0f2a4b6c8d0e1f3a5b7c9d0e2f4a6b8c0d1e3f5a7b9c0d2e4f6a8"
+    },
+    "swapNonce": "0x01",
+    "deadline": "0x1000",
+    "fee": "0x00"
+  }'
+
+```
+Returns: `202 Accepted` on success, `503 Service Unavailable` if the transaction queue is full (set at 1000)
+
+Webhook returns: TransactionEvent object with a `uuid` field containing the `X-Request-ID` value from the corresponding transaction and a `response` field containing a json array that contains: the Client Transaction object and; the transaction receipt if the swap transaction was placed on chain, otherwise (the normal situation) "null".
+
+This call allows two parties to atomically exchange different token types. Both parties must submit the same request with identical parameters, including the exact same `partyA`/`partyB` ordering. The client detects the caller's role automatically from their ZKP key. Each party's transaction will nullify their own input commitments and create an output commitment for the counterparty. The swap is atomic: either both sides settle or neither does.
+
+**Important:** If the `partyA`/`partyB` ordering is reversed between the two parties, the computed `swap_link` will differ and the proposer will not match the two transactions. This results in pairing failure, not a security issue.
+
+The proposer matches two swap transactions by their `swap_link` (a hash of all swap parameters computed inside the circuit) and includes them in the same block. If the `deadline` has passed (i.e. the current L2 block number exceeds the deadline), the swap is rejected.
+
+The components of the JSON object have the following meaning:
+
+- `partyA`: The swap initiator's token details and identity.
+  - `ercAddress`: The Ethereum address of the ERC20|721|1155|3525 contract for party A's token.
+  - `tokenId`: The token ID of the token, for a 721|1155|3525 contract. It should be set to `"0x00"` for an ERC20 contract.
+  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721, `"0x03"` for ERC3525.
+  - `value`: The amount party A is offering in the swap.
+  - `publicKey`: The compressed ZKP public key of party A. See the section on key derivation for more details.
+- `partyB`: The counterparty's token details and identity.
+  - `ercAddress`: The Ethereum address of the ERC20|721|1155|3525 contract for party B's token.
+  - `tokenId`: The token ID of the token, for a 721|1155|3525 contract. It should be set to `"0x00"` for an ERC20 contract.
+  - `tokenType` (optional): The token type. `"0x00"` for ERC20 (default), `"0x01"` for ERC1155, `"0x02"` for ERC721, `"0x03"` for ERC3525.
+  - `value`: The amount party B is offering in the swap.
+  - `publicKey`: The compressed ZKP public key of party B. See the section on key derivation for more details.
+- `swapNonce`: A unique nonce to identify this swap. Must be non-zero and fit within 64 bits.
+- `deadline`: The L2 block number after which the swap expires. Must be non-zero and fit within 64 bits. Deadline expiry is enforced by the proposer against the current L2 block number.
+- `fee`: The amount that will be paid to the `proposer` which processes this transaction. Must fit within 96 bits.
+- `partyA.value`, `partyB.value`: must each fit within 96 bits.
+
+***
+
+POST /v1/swap/cancel-request
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/v1/swap/cancel-request' \
+  --data-raw '{
+    "requestId": "33333333-3333-3333-3333-333333333333"
+  }'
+```
+
+Returns:
+- `200 OK` when the advisory cancel request was delivered or when proposers returned an informative result such as `accepted`, `already_cancelled`, `not_found`, `too_late`, or `delivery_failed`.
+- `409 CONFLICT` when the request is not in a cancel-requestable state, or when the deadline has already passed and the client should use `settle-expired` instead.
+- `404 NOT FOUND` if `requestId` does not exist.
+- `400 BAD REQUEST` if `requestId` is not a valid UUID.
+
+Response body (200/409):
+
+```json
+{
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "cancelRequestStatus": "accepted",
+  "matched": 2,
+  "commitmentsRemainLocked": true,
+  "message": "Swap cancel request accepted by proposer(s); commitments remain locked until local trustless settlement"
+}
+```
+
+This call is advisory only. The client uses `requestId` to load the swap metadata it stored locally, translates that into the swap's `swap_link`, and then asks proposers to best-effort remove matching swap legs from proposer mempools. This can reduce the chance of inclusion before expiry, but it does not unlock anything locally.
+
+Security note:
+- The proposer response is informational only and has no safety value.
+- Commitments remain locked after `cancel-request`, even if every proposer replies `accepted`.
+- This endpoint does not modify on-chain state and does not bypass circuit or proposer validation.
+
+Proposer-facing endpoint:
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -H 'x-nf4-swap-cancel-auth: <NF4_SWAP_CANCEL_AUTH_TOKEN>' \
+  -X POST 'http://localhost:3001/v1/swap/cancel-request' \
+  --data-raw '{
+    "swapLink": "0x1234"
+  }'
+```
+
+Response body:
+
+```json
+{
+  "status": "accepted",
+  "message": "Swap cancel request accepted; matching mempool swap legs were marked cancelled",
+  "matched": 2
+}
+```
+
+- Client API uses `requestId` because that is the client-side request identifier persisted in the local DB.
+- Proposer API uses `swapLink` because that is the proposer/mempool matching key for swap pairing.
+- The proposer response is advisory only and never authorizes commitment unlock.
+- Advisory swap cancel auth and failure modes are described in [Advisory swap cancellation auth](#advisory-swap-cancellation-auth).
+
+***
+
+POST /v1/swap/settle-expired
+
+```sh
+curl -i \
+  -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/v1/swap/settle-expired' \
+  --data-raw '{
+    "requestId": "33333333-3333-3333-3333-333333333333"
+  }'
+```
+
+Returns:
+- `200 OK` when one or more swap input commitments are unlocked locally, or when the swap was already fully reconciled.
+- `409 CONFLICT` when the deadline has not passed, when the client is not synchronised with L2, or when no safe local unlock can be proven.
+- `404 NOT FOUND` if `requestId` does not exist.
+- `400 BAD REQUEST` if `requestId` is not a valid UUID.
+
+Response body (200/409):
+
+```json
+{
+  "requestId": "33333333-3333-3333-3333-333333333333",
+  "unlocked": 1,
+  "skipped": 0,
+  "message": "Swap expired and commitments were unlocked locally"
+}
+```
+
+This call is the manual trustless settlement path for expired swaps. It uses the same reconciliation helper as the block listener and request-status path, but applies it immediately on demand.
+
+Security note:
+- `settle-expired` is the only manual endpoint that can unlock locally reserved swap commitments (`PendingSpend` -> `Unspent`).
+- Unlock is only allowed when the client can verify safety locally: the client must be synchronised with L2, the swap deadline must have passed, and every tracked spend commitment must still be locally verifiable as `PendingSpend` or already `Unspent`.
+- `settle-expired` does not depend on any prior `cancel-request`. An expired swap can always be settled trustlessly when the local safety checks pass.
 
 ***
 
@@ -594,6 +776,30 @@ Returns all the commitment entries in the database. Use with care!
 
 ***
 
+GET /v1/commitments/token_type/:token_type
+
+```sh
+curl -i 'http://localhost:3000/v1/commitments/token_type/ERC20'
+```
+
+Returns: on success `200 OK` with a JSON array of CommitmentEntry objects filtered by token type. Returns `400 BAD REQUEST` if `:token_type` is not a supported Nightfall token type.
+
+Use this endpoint to inspect only the commitments matching a given asset class such as `ERC20`, `ERC721`, `ERC1155`, or `ERC3525`.
+
+***
+
+GET /v1/commitments/max_transferable_amount/:token_type/:nf_token_id
+
+```sh
+curl -i 'http://localhost:3000/v1/commitments/max_transferable_amount/ERC20/0x1234abcd...'
+```
+
+Returns: on success `200 OK` with the maximum transferable amount encoded as a big-endian hex string. Returns `400 BAD REQUEST` if either `:token_type` or `:nf_token_id` is invalid.
+
+For fungible assets this value is computed from the two largest available commitments for that token. For ERC721 it returns `01` when at least one matching commitment exists, otherwise `00`.
+
+***
+
 GET /v1/health
 
 ```sh
@@ -618,6 +824,18 @@ This is to obtain a list of proposers from their on-chain registrations. The Pro
 
 ***
 
+GET /v1/synchronisation
+
+```sh
+curl -i 'http://localhost:3000/v1/synchronisation'
+```
+
+Returns: on success `200 OK` with a JSON object describing whether the client is synchronised with the chain. Returns `503 SERVICE UNAVAILABLE` if the synchronisation status cannot be determined.
+
+The response contains the current synchronisation phase, for example `Synchronized`, `Desynchronized`, or `AheadOfChain`.
+
+***
+
 POST /v1/deriveKey
 
 ```sh
@@ -628,6 +846,20 @@ curl -i --request POST 'http://localhost:3000/v1/deriveKey' \
 Returns: on success `200 OK` and a JSON encoded hex string encoding the spending key in compressed and big-endian form.
 
 This is a convenience function for generating a set of ZKP keys. They are generated from the input path and mnemonic using the BIP32 protocol.
+
+***
+
+POST /v1/keys_validation
+
+```sh
+curl -i --request POST 'http://localhost:3000/v1/keys_validation' \
+    --header 'Content-Type: application/json' \
+    --json '{ "configuration_url": "http://configuration:80", "concurrency": 2 }'
+```
+
+Returns: on success `200 OK` with a JSON report covering downloaded key hashes, regenerated key hashes, and the on-chain decider verification key comparison. Returns `400 BAD REQUEST` when the JSON body is malformed or required fields are missing.
+
+Use this endpoint to verify that the proving and verification keys served by the configuration service and published on-chain are consistent with locally regenerated keys.
 
 ***
 
@@ -685,6 +917,18 @@ Note that internal failures of the client will cause the request state to be unr
 
 ***
 
+GET /v1/queue
+
+```sh
+curl -i 'http://localhost:3000/v1/queue'
+```
+
+Returns: on success `200 OK` with a JSON encoded integer representing the current number of transaction requests waiting in the client queue.
+
+This is useful for operational monitoring when the client is receiving deposit, transfer, and withdraw requests concurrently.
+
+***
+
 GET /v1/token/:nf_token_id
 
 ```sh
@@ -704,6 +948,7 @@ This endpoint allows you to retrieve detailed information about a token using it
 - `200 OK`: Returns a JSON object with token information, derived from the `TokenData` struct:
     - `erc_address`: The ERC contract address for the token, as a hex string.
     - `token_id`: The token ID (for ERC721/1155/3525), as a hex string.
+    - `token_type`: The token standard as a string such as `ERC20`, `ERC721`, `ERC1155`, or `ERC3525`.
 - `400 BAD REQUEST`: Returned if the provided token ID is not a valid field element.
 - `404 NOT FOUND`: Returned if no token exists for the given ID.
 
@@ -712,7 +957,8 @@ This endpoint allows you to retrieve detailed information about a token using it
 ```json
 {
   "erc_address": "0x6fcb6af7f7947f8480c36e8ffca0c66f6f2be32b",
-  "token_id": "0x00"
+  "token_id": "0x00",
+  "token_type": "ERC20"
 }
 ```
 
@@ -732,8 +978,8 @@ POST /v1/certification
 ```sh
 curl -i --request POST 'http://localhost:3001/v1/certification' \
     --header 'Content-Type: multipart/form-data' \
-    --form 'file=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.der' \
-    --form 'file=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.priv_key'
+    --form 'certificate=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.der' \
+    --form 'priv_key=@blockchain_assets/test_contracts/X509/_certificates/user/user-2.priv_key'
 ```
 
 Returns: `StatusCode: Accepted` on success.
@@ -749,6 +995,18 @@ curl -i 'http://localhost:3001/v1/blockdata'
 ```
 
 Returns: on success `200 OK` with a body containing the current Layer 2 block number.
+
+***
+
+GET /v1/synchronisation
+
+```sh
+curl -i 'http://localhost:3001/v1/synchronisation'
+```
+
+Returns: on success `200 OK` with a body containing either `"Synchronised"` or `"Not synchronised"`.
+
+This endpoint reports whether the proposer believes it is currently synchronised with the blockchain and ready to assemble blocks from an up-to-date view of the Layer 2 state.
 
 ***
 
@@ -770,15 +1028,61 @@ This is just a health-check, useful for finding out if the application is runnin
 
 ***
 
-GET v1/rotate
+### GET /v1/rotate
+
+Rotates the active proposer if it has exceeded its allowed proposal window.
+
+The rotation is permitted only when the current `proposer` has been active for more
+than `ROTATION_BLOCKS` Layer 1 blocks, as configured in `RoundRobin.sol`.
 
 ```sh
 curl -i 'http://localhost:3001/v1/rotate'
 ```
 
-Returns: on success `200 OK` if the active `proposer` was rotated, `423 LOCKED` if proposer rotation was not allowed by the smart contract.
+**Responses**
 
-This endpoint will rotate the proposers if the current `proposer` has been active for more than the number of Layer 1 blocks that a `proposer` is allowed to propose for (ROTATION_BlOCKS). This value is set in the construction of RoundRobin.sol.
+| Status | Condition |
+|--------|-----------|
+| `200 OK` | Rotation succeeded |
+| `423 Locked` | Rotation rejected by the smart contract because the proposer is still within its allowed window |
+
+**Response body**: empty
+
+***
+
+GET /v1/pause
+
+```sh
+curl -i 'http://localhost:3001/v1/pause'
+```
+
+Returns: on success `200 OK`.
+
+This endpoint pauses proposer block assembly. Incoming client transactions may still be received, but the proposer will stop assembling new Layer 2 blocks until block assembly is resumed.
+
+***
+
+GET /v1/resume
+
+```sh
+curl -i 'http://localhost:3001/v1/resume'
+```
+
+Returns: on success `200 OK`.
+
+This endpoint resumes proposer block assembly after a previous pause.
+
+***
+
+GET /v1/status
+
+```sh
+curl -i 'http://localhost:3001/v1/status'
+```
+
+Returns: on success `200 OK` with a JSON string body containing either `"Running"` or `"Paused"`.
+
+This endpoint reports whether block assembly is currently active inside the proposer.
 
 ***
 
@@ -792,14 +1096,14 @@ curl -i -X POST http://localhost:3001/v1/register \
 
 Returns: on success `200 OK`
 
-Adds (registers) a new proposer. The URL, at which clients can reach the proposer, should be provided.
+Adds (registers) a new proposer. The request body must be a JSON string containing the absolute proposer URL, and the URL must use the `http` or `https` scheme. Invalid, empty, or malformed JSON bodies return `400 BAD REQUEST`.
 
 ***
 
 GET /v1/deregister
 
 ```sh
-curl -i 'http://localhost:3000/v1/deregister'
+curl -i 'http://localhost:3001/v1/deregister'
 ```
 
 Returns: on success `200 OK`
@@ -811,13 +1115,14 @@ Removes (de-registers) a proposer. Only the proposer itself can successfully cal
 POST /v1/withdraw
 
 ```sh
-curl -i --request POST 'http://localhost:3000/v1/withdraw' \
-    --json '{ "amount": 20 }'
+curl -i --request POST 'http://localhost:3001/v1/withdraw' \
+    --header 'Content-Type: application/json' \
+    --data '20'
 ```
 
 Returns: on success `200 OK`
 
-Withdraws the stake of a de-registered proposer, actually, the amount withdrawn can be up to the amount of the stake. This can only be called by the de-registered proposer, otherwise the withdraw will fail.
+Withdraws the stake of a de-registered proposer, actually, the amount withdrawn can be up to the amount of the stake. This can only be called by the de-registered proposer, otherwise the withdraw will fail. The request body must be a positive JSON integer amount. Zero or malformed JSON bodies return `400 BAD REQUEST`.
 
 ***
 

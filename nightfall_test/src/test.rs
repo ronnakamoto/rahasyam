@@ -1,11 +1,11 @@
 use alloy::{
     primitives::{keccak256, Address, B256, I256},
-    rpc::types::Filter,
+    rpc::types::{Filter, TransactionReceipt},
     signers::local::PrivateKeySigner as LocalWallet,
 };
 use ark_bn254::Fr as Fr254;
 use ark_ec::twisted_edwards::Affine as TEAffine;
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::{BigInteger, PrimeField, Zero};
 use ark_std::{
     collections::HashMap,
     rand::{self, Rng},
@@ -15,6 +15,7 @@ use configuration::{
     addresses::get_addresses,
     settings::{get_settings, Settings},
 };
+use futures::TryStreamExt;
 
 use hex::ToHex;
 use jf_primitives::{
@@ -24,8 +25,8 @@ use jf_primitives::{
 use lib::{
     blockchain_client::BlockchainClientConnection,
     client_models::{
-        DeEscrowDataReq, KeyRequest, NF3DepositRequest, NF3RecipientData, NF3TransferRequest,
-        NF3WithdrawRequest, WithdrawDataReq,
+        DeEscrowDataReq, KeyRequest, NF3DepositRequest, NF3RecipientData, NF3SwapRequest,
+        NF3TransferRequest, NF3WithdrawRequest, SwapParty, WithdrawDataReq,
     },
     commitments::Commitment,
     derive_key::ZKPKeys,
@@ -40,6 +41,7 @@ use lib::{
     shared_entities::{DepositSecret, Preimage, Salt},
 };
 use log::{debug, info, warn};
+use mongodb::bson::doc;
 use nf_curves::ed_on_bn254::{BabyJubjub as BabyJubJub, Fr as BJJScalar};
 use nightfall_client::{
     domain::{
@@ -48,6 +50,7 @@ use nightfall_client::{
     },
     driven::db::mongo::CommitmentEntry,
 };
+use nightfall_proposer::driven::db::mongo_db::{StoredBlock, DB, PROPOSED_BLOCKS_COLLECTION};
 use num_bigint::BigUint;
 use reqwest::{
     multipart::{Form, Part},
@@ -773,6 +776,90 @@ pub async fn wait_on_chain(
     Ok(())
 }
 
+fn swap_field(tx: &Value, field: &str) -> Result<Fr254, TestError> {
+    let raw = tx
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| TestError::new(format!("Swap tx missing {field}")))?;
+
+    Fr254::from_hex_string(raw).map_err(|e| TestError::new(format!("Invalid swap {field}: {e}")))
+}
+
+pub fn assert_swap_pairing_public_inputs(tx_a: &Value, tx_b: &Value) -> Result<(), TestError> {
+    let link_a = swap_field(tx_a, "swap_link")?;
+    let link_b = swap_field(tx_b, "swap_link")?;
+
+    if link_a.is_zero() {
+        return Err(TestError::new("swap_link must be non-zero".to_string()));
+    }
+    if link_a != link_b {
+        return Err(TestError::new(
+            "swap legs have different swap_link values".to_string(),
+        ));
+    }
+
+    let side_a = swap_field(tx_a, "swap_side")?;
+    let side_b = swap_field(tx_b, "swap_side")?;
+    let sides_ok = (side_a.is_zero() && side_b == Fr254::from(1u64))
+        || (side_a == Fr254::from(1u64) && side_b.is_zero());
+
+    if !sides_ok {
+        return Err(TestError::new(
+            "swap legs must have complementary swap_side values".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+pub async fn assert_swap_pairing_in_proposer_block(
+    commitment_a: Fr254,
+    commitment_b: Fr254,
+) -> Result<(), TestError> {
+    let settings = get_settings();
+    let client = mongodb::Client::with_uri_str(&settings.nightfall_proposer.db_url)
+        .await
+        .map_err(|e| TestError::new(format!("Could not connect to proposer DB: {e}")))?;
+
+    let mut cursor = client
+        .database(DB)
+        .collection::<StoredBlock>(PROPOSED_BLOCKS_COLLECTION)
+        .find(doc! {})
+        .await
+        .map_err(|e| TestError::new(format!("Could not read ProposedBlocks: {e}")))?;
+
+    let commitment_a = commitment_a.to_hex_string();
+    let commitment_b = commitment_b.to_hex_string();
+
+    while let Some(block) = cursor
+        .try_next()
+        .await
+        .map_err(|e| TestError::new(format!("Could not iterate ProposedBlocks: {e}")))?
+    {
+        let slot_a = block.commitments.iter().position(|c| c == &commitment_a);
+        let slot_b = block.commitments.iter().position(|c| c == &commitment_b);
+
+        if let (Some(slot_a), Some(slot_b)) = (slot_a, slot_b) {
+            const COMMITMENTS_PER_TX: usize = 4;
+            let tx_a = slot_a / COMMITMENTS_PER_TX;
+            let tx_b = slot_b / COMMITMENTS_PER_TX;
+
+            if tx_a.abs_diff(tx_b) != 1 || tx_a / 2 != tx_b / 2 {
+                return Err(TestError::new(format!(
+                    "swap legs are in block {} but not sibling txs: slots {slot_a}/{slot_b}",
+                    block.layer2_block_number,
+                )));
+            }
+
+            return Ok(());
+        }
+    }
+
+    Err(TestError::new(
+        "swap output commitments were not found together in one proposer block".to_string(),
+    ))
+}
+
 /// Wait until each withdraw nullifier appears in the client DB as spent.
 pub async fn wait_for_withdraws_on_chain(
     withdraws: &[DeEscrowDataReq],
@@ -954,6 +1041,110 @@ pub async fn create_nf3_transfer_transaction(
     Ok(Uuid::parse_str(&returned_id).unwrap())
 }
 
+pub async fn create_nf3_swap_transaction(
+    client: &reqwest::Client,
+    url: Url,
+    swap_request: NF3SwapRequest,
+) -> Result<Uuid, TestError> {
+    let id = Uuid::new_v4().to_string();
+    info!("Creating swap transaction offchain {}", &id);
+    let res = client
+        .post(url.clone())
+        .json(&serde_json::json!(swap_request))
+        .header(REQUEST_ID, &id)
+        .send()
+        .await
+        .map_err(|e| TestError::new(e.to_string()))?;
+    res.error_for_status_ref()
+        .map_err(|e| TestError::new(e.to_string()))?;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let returned_id = res
+        .headers()
+        .get(REQUEST_ID)
+        .unwrap()
+        .to_str()
+        .map_err(|e| TestError::new(e.to_string()))?
+        .to_string();
+    info!("Swap transaction {returned_id} has been accepted by the client");
+    Ok(Uuid::parse_str(&returned_id).unwrap())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn submit_swap_pair_and_assert_paired(
+    http_client: &reqwest::Client,
+    swap_url_client1: &Url,
+    swap_url_client2: &Url,
+    request_client1: NF3SwapRequest,
+    request_client2: NF3SwapRequest,
+    responses: Arc<Mutex<Vec<Value>>>,
+    client1_url: &str,
+    client2_url: &str,
+    context: &str,
+) -> Result<(), TestError> {
+    let client1_swap_id =
+        create_nf3_swap_transaction(http_client, swap_url_client1.clone(), request_client1).await?;
+    let client2_swap_id =
+        create_nf3_swap_transaction(http_client, swap_url_client2.clone(), request_client2).await?;
+
+    let swap_request_ids = vec![client1_swap_id, client2_swap_id];
+    let swap_responses = wait_for_all_responses(&swap_request_ids, responses).await;
+    let swap_responses_by_uuid: HashMap<Uuid, String> = swap_responses.into_iter().collect();
+
+    let tx_client1 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
+        swap_responses_by_uuid
+            .get(&client1_swap_id)
+            .ok_or_else(|| TestError::new(format!("Missing first swap response for {context}")))?,
+    )
+    .map_err(|e| {
+        TestError::new(format!(
+            "Failed to parse first swap response for {context}: {e}"
+        ))
+    })?
+    .0;
+    let tx_client2 = serde_json::from_str::<(Value, Option<TransactionReceipt>)>(
+        swap_responses_by_uuid
+            .get(&client2_swap_id)
+            .ok_or_else(|| TestError::new(format!("Missing second swap response for {context}")))?,
+    )
+    .map_err(|e| {
+        TestError::new(format!(
+            "Failed to parse second swap response for {context}: {e}"
+        ))
+    })?
+    .0;
+
+    assert_swap_pairing_public_inputs(&tx_client1, &tx_client2)?;
+
+    let client1_receives =
+        Fr254::from_hex_string(tx_client2["commitments"][0].as_str().ok_or_else(|| {
+            TestError::new(format!(
+                "Missing first counterparty commitment for {context}"
+            ))
+        })?)
+        .map_err(|e| {
+            TestError::new(format!(
+                "Invalid first counterparty commitment for {context}: {e}"
+            ))
+        })?;
+    let client2_receives =
+        Fr254::from_hex_string(tx_client1["commitments"][0].as_str().ok_or_else(|| {
+            TestError::new(format!(
+                "Missing second counterparty commitment for {context}"
+            ))
+        })?)
+        .map_err(|e| {
+            TestError::new(format!(
+                "Invalid second counterparty commitment for {context}: {e}"
+            ))
+        })?;
+
+    wait_on_chain(&[client1_receives], client1_url).await?;
+    wait_on_chain(&[client2_receives], client2_url).await?;
+    assert_swap_pairing_in_proposer_block(client1_receives, client2_receives).await?;
+
+    Ok(())
+}
+
 pub async fn create_nf3_withdraw_transaction(
     client: &reqwest::Client,
     url: Url,
@@ -1106,6 +1297,7 @@ fn create_nf3_transfer_request(
     Ok(NF3TransferRequest {
         erc_address: token_type.address(),
         token_id,
+        token_type: token_type.to_string(),
         recipient_data: NF3RecipientData {
             values: vec![value],
             recipient_compressed_zkp_public_keys: vec![recipient_zkp_key],
@@ -1131,37 +1323,100 @@ fn create_nf3_withdraw_request(
     }
 }
 
-fn generate_random_path(leaf_value: Fr254, rng: &mut impl Rng) -> (MembershipProof<Fr254>, Fr254) {
-    let mut root = leaf_value;
+#[allow(clippy::too_many_arguments)]
+pub fn create_nf3_swap_request(
+    party_a_public_key: String,
+    party_b_public_key: String,
+    party_a_token_type: TokenType,
+    party_a_token_id: String,
+    value_a: String,
+    party_b_token_type: TokenType,
+    party_b_token_id: String,
+    value_b: String,
+    fee: String,
+    swap_nonce: String,
+    deadline: String,
+) -> NF3SwapRequest {
+    NF3SwapRequest {
+        party_a: SwapParty {
+            erc_address: format!("0x{}", party_a_token_type.address()),
+            token_id: party_a_token_id,
+            token_type: party_a_token_type.to_string(),
+            value: value_a,
+            public_key: party_a_public_key,
+        },
+        party_b: SwapParty {
+            erc_address: format!("0x{}", party_b_token_type.address()),
+            token_id: party_b_token_id,
+            token_type: party_b_token_type.to_string(),
+            value: value_b,
+            public_key: party_b_public_key,
+        },
+        swap_nonce,
+        deadline,
+        fee,
+    }
+}
+fn generate_random_paths_with_shared_root(
+    leaf_values: [Fr254; 4],
+    rng: &mut impl Rng,
+) -> ([MembershipProof<Fr254>; 4], Fr254) {
     let poseidon = Poseidon::<Fr254>::new();
-    let leaf_index = u32::rand(rng);
-    let mut path_elements = Vec::<PathElement<Fr254>>::new();
-    for i in 0..32 {
-        let dir = leaf_index >> i & 1;
-        let value = Fr254::rand(rng);
-        if dir == 0 {
-            root = poseidon.tree_hash(&[root, value]).unwrap();
-            path_elements.push(PathElement {
-                direction: Directions::HashWithThisNodeOnRight,
-                value,
-            })
-        } else {
-            root = poseidon.tree_hash(&[value, root]).unwrap();
-            path_elements.push(PathElement {
-                direction: Directions::HashWithThisNodeOnLeft,
-                value,
-            })
+    let leaf_indices = [0usize, 1usize, 2usize, 3usize];
+    let mut proofs: [MembershipProof<Fr254>; 4] = std::array::from_fn(|i| MembershipProof {
+        node_value: leaf_values[i],
+        sibling_path: Vec::with_capacity(32),
+        leaf_index: leaf_indices[i],
+    });
+    let mut current_nodes = std::collections::BTreeMap::from([
+        (leaf_indices[0], leaf_values[0]),
+        (leaf_indices[1], leaf_values[1]),
+        (leaf_indices[2], leaf_values[2]),
+        (leaf_indices[3], leaf_values[3]),
+    ]);
+
+    for level in 0..32 {
+        for i in 0..4 {
+            let idx = leaf_indices[i] >> level;
+            let sibling_idx = idx ^ 1;
+            let sibling_value = *current_nodes
+                .entry(sibling_idx)
+                .or_insert_with(|| Fr254::rand(rng));
+            let direction = if idx & 1 == 0 {
+                Directions::HashWithThisNodeOnRight
+            } else {
+                Directions::HashWithThisNodeOnLeft
+            };
+            proofs[i].sibling_path.push(PathElement {
+                direction,
+                value: sibling_value,
+            });
         }
+
+        let mut next_nodes = std::collections::BTreeMap::new();
+        let mut pairs_done = std::collections::BTreeSet::new();
+        let keys: Vec<usize> = current_nodes.keys().copied().collect();
+        for idx in keys {
+            let pair_base = idx & !1;
+            if !pairs_done.insert(pair_base) {
+                continue;
+            }
+            let left = *current_nodes
+                .get(&pair_base)
+                .expect("Left child should exist when building parent");
+            let right = *current_nodes
+                .get(&(pair_base + 1))
+                .expect("Right child should exist when building parent");
+            let parent = poseidon.tree_hash(&[left, right]).unwrap();
+            next_nodes.insert(pair_base >> 1, parent);
+        }
+        current_nodes = next_nodes;
     }
 
-    (
-        MembershipProof {
-            node_value: leaf_value,
-            sibling_path: path_elements,
-            leaf_index: leaf_index as usize,
-        },
-        root,
-    )
+    let root = *current_nodes
+        .get(&0)
+        .expect("Root should exist after building shared Merkle paths");
+    (proofs, root)
 }
 
 // Creates a random 96 bit element of Fr254
@@ -1281,16 +1536,8 @@ pub fn build_valid_transfer_inputs(rng: &mut impl Rng) -> (PublicInputs, Private
         nullified_three,
         nullified_four,
     ];
-    let mut membership_proofs = vec![];
-    let mut roots = vec![];
-    for nullifier in spend_commitments.iter() {
-        let (membership_proof, root) = generate_random_path(nullifier.hash().unwrap(), rng);
-        membership_proofs.push(membership_proof);
-        roots.push(root);
-    }
-
-    let mem_proofs: [MembershipProof<Fr254>; 4] = membership_proofs.try_into().unwrap();
-    let roots: [Fr254; 4] = roots.try_into().unwrap();
+    let spend_commitment_hashes = spend_commitments.map(|commitment| commitment.hash().unwrap());
+    let (mem_proofs, root) = generate_random_paths_with_shared_root(spend_commitment_hashes, rng);
 
     // Work out what the change values will be
     let value_change = nullified_value_one + nullified_value_two - value;
@@ -1299,7 +1546,7 @@ pub fn build_valid_transfer_inputs(rng: &mut impl Rng) -> (PublicInputs, Private
     // Salts for new commitments
     let new_salts = [Salt::new_transfer_salt().get_salt(); 3];
 
-    let public_inputs = PublicInputs::new().fee(fee).roots(&roots).build();
+    let public_inputs = PublicInputs::new().fee(fee).root(root).build();
 
     let private_inputs = PrivateInputs::new()
         .nf_address(nf_address)
@@ -1307,7 +1554,7 @@ pub fn build_valid_transfer_inputs(rng: &mut impl Rng) -> (PublicInputs, Private
         .nf_token_a_id(nf_token_id)
         .nf_slot_id(nf_slot_id)
         .ephemeral_key(ephemeral_key)
-        .recipient_public_key(recipient_public_key)
+        .party_b_public_key(recipient_public_key)
         .nullifiers_values(&[
             nullified_one.get_value(),
             nullified_two.get_value(),

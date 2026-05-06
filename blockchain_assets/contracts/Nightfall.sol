@@ -79,6 +79,7 @@ struct Block {
     OnChainTransaction[] transactions;
     // rollup_proof contains fee_sum for transfers and withdrawals || 2 BN254 accumulators, each includes 1 G1 commitment and 1 G1 proof. || one ultra plonk proof.
     bytes rollup_proof;
+    uint256 block_number;
 }
 
 struct TokenIdValue {
@@ -204,6 +205,10 @@ contract Nightfall is
         require(
             proposer_manager.get_current_proposer_address() == msg.sender,
             "Only the current proposer can propose a block"
+        );
+        require(
+            blk.block_number == uint256(layer2_block_number),
+            "Nightfall: block number mismatch"
         );
 
         // Hash the transactions for the public data
@@ -804,4 +809,3 @@ contract Nightfall is
 
     uint256[50] private __gap;
 }
-

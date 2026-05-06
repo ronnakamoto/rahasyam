@@ -190,6 +190,17 @@ impl RequestDB for Client {
             .ok()?
     }
 
+    async fn get_requests_by_status(&self, status: RequestStatus) -> Option<Vec<Request>> {
+        let filter = doc! { "status": status.to_string() };
+        let cursor = self
+            .database(DB)
+            .collection::<Request>("requests")
+            .find(filter)
+            .await
+            .ok()?;
+        cursor.try_collect().await.ok()
+    }
+
     async fn update_request(&self, request_id: &str, status: RequestStatus) -> Option<()> {
         let filter = doc! { "uuid": request_id };
         let update = doc! {"$set": { "status": status.to_string() }};
