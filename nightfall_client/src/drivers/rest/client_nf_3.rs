@@ -2316,6 +2316,8 @@ mod tests {
             key,
             nullifier: Fr254::zero(),
             token_type: TokenType::ERC20,
+            native_token_id: None,
+            native_slot_id: None,
             layer_1_transaction_hash: None,
             layer_2_block_number: Some(7),
         }
