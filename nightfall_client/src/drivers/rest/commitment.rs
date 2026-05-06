@@ -17,8 +17,6 @@ pub struct CommitmentsQuery {
 pub struct FilteredCommitmentEntry {
     #[serde(rename = "Value")]
     pub value: String,
-    pub token_id: String,
-    pub slot_id: String,
     pub native_token_id: Option<String>,
     pub native_slot_id: Option<String>,
     #[serde(rename = "Status")]
@@ -31,8 +29,6 @@ impl From<CommitmentEntry> for FilteredCommitmentEntry {
     fn from(entry: CommitmentEntry) -> Self {
         Self {
             value: hex::encode(entry.preimage.value.into_bigint().to_bytes_be()),
-            token_id: hex::encode(entry.preimage.nf_token_id.into_bigint().to_bytes_be()),
-            slot_id: hex::encode(entry.preimage.nf_slot_id.into_bigint().to_bytes_be()),
             native_token_id: entry.native_token_id,
             native_slot_id: entry.native_slot_id,
             status: entry.status,
@@ -104,8 +100,10 @@ pub async fn handle_get_commitments_by_token_type(
         .await
         .map_err(|_| warp::reject::custom(crate::domain::error::ClientRejection::DatabaseError))?;
     if query.filter.unwrap_or(false) {
-        let values: Vec<FilteredCommitmentEntry> =
-            res.into_iter().map(|c| FilteredCommitmentEntry::from(c.1)).collect();
+        let values: Vec<FilteredCommitmentEntry> = res
+            .into_iter()
+            .map(|c| FilteredCommitmentEntry::from(c.1))
+            .collect();
         Ok(reply::with_status(reply::json(&values), StatusCode::OK))
     } else {
         let values: Vec<CommitmentEntry> = res.into_iter().map(|c| c.1).collect();
