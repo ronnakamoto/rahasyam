@@ -15,7 +15,10 @@ use warp::{
 };
 
 use self::{
-    client_nf_3::{deposit_request, transfer_request, withdraw_request},
+    client_nf_3::{
+        cancel_swap_request, deposit_request, settle_expired_swap_request, swap_request,
+        transfer_request, withdraw_request,
+    },
     commitment::{
         get_all_commitments, get_commitment, get_commitments_by_token_type,
         get_max_transferable_amount_by_token_type,
@@ -32,7 +35,7 @@ pub mod client_operation;
 mod commitment;
 mod keys;
 pub mod proposers;
-mod request_status;
+pub(crate) mod request_status;
 mod synchronisation;
 mod token_info;
 pub mod withdraw;
@@ -46,6 +49,9 @@ where
         .or(deposit_request::<P>())
         .or(transfer_request::<P>())
         .or(withdraw_request::<P>())
+        .or(swap_request::<P>())
+        .or(cancel_swap_request())
+        .or(settle_expired_swap_request())
         .or(get_commitment())
         .or(get_all_commitments())
         .or(get_commitments_by_token_type())
@@ -57,7 +63,7 @@ where
         .or(get_balance())
         .or(get_fee_balance())
         .or(synchronisation::<N>())
-        .or(get_request_status())
+        .or(get_request_status::<N>())
         .or(get_queue_length())
         .or(get_token_info::<N>())
         .or(get_l1_balance())
@@ -131,7 +137,9 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::In
 mod tests {
     use super::*;
     use crate::{
-        domain::entities::TokenData, driven::queue::get_queue, ports::contracts::NightfallContract,
+        domain::entities::{SlotData, TokenData},
+        driven::queue::get_queue,
+        ports::contracts::NightfallContract,
     };
     use alloy::primitives::{Address, I256};
     use ark_bn254::Fr as Fr254;
@@ -195,6 +203,10 @@ mod tests {
             }
         }
 
+        async fn get_slot_info(_nf_slot_id: Fr254) -> Result<SlotData, NightfallContractError> {
+            panic!("get_slot_info should not be called in these route tests")
+        }
+
         async fn get_layer2_block_by_number(
             _block_number: I256,
         ) -> Result<(Address, Nightfall::Block), NightfallContractError> {
@@ -240,6 +252,10 @@ mod tests {
 
         async fn get_token_info(_nf_token_id: Fr254) -> Result<TokenData, NightfallContractError> {
             panic!("get_token_info should not be called in these route tests")
+        }
+
+        async fn get_slot_info(_nf_slot_id: Fr254) -> Result<SlotData, NightfallContractError> {
+            panic!("get_slot_info should not be called in these route tests")
         }
 
         async fn get_layer2_block_by_number(
