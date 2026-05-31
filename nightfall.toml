@@ -42,6 +42,10 @@ block_assembly_initial_interval_secs = 15
 max_event_listener_attempts = 10
 block_size = 64
 
+[development.nightfall_proposer.proving_system]
+active = "nova-v1"
+enabled = ["nova-v1"]
+
 [development.verifier]
 # VK values that the UUPS provider will initialize with
 domain_size = 0x2000000
@@ -111,6 +115,17 @@ proposer_exit_penalty = 2                                               # how mu
 proposer_cooling_blocks = 4                                             # how many blocks before a de-registered proposer can register again
 proposer_rotation_blocks = 4                                            # how many blocks before we rotate proposers
 proposer_grace_blocks = 1                                               # how many blocks of inactivity allowed before anyone can skip the current proposer
+[development.nova_verifier]
+g2_x_x0 = "0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2"
+g2_x_x1 = "0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed"
+g2_x_y0 = "0x90689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b"
+g2_x_y1 = "0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"
+g2_one_x0 = "0x1"
+g2_one_x1 = "0x0"
+g2_one_y0 = "0x2"
+g2_one_y1 = "0x0"
+commitment_scheme = 1
+
 [development.nightfall_test]
 log_level = "info"
 
@@ -245,6 +260,17 @@ proposer_exit_penalty = 2                                               # how mu
 proposer_cooling_blocks = 4                                             # how many blocks before a de-registered proposer can register again
 proposer_rotation_blocks = 4                                            # how many blocks before we rotate proposers
 proposer_grace_blocks = 1                                               # how many blocks of inactivity allowed before anyone can skip the current proposer
+
+[base_sepolia.nova_verifier]
+g2_x_x0 = "0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2"
+g2_x_x1 = "0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed"
+g2_x_y0 = "0x90689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b"
+g2_x_y1 = "0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"
+g2_one_x0 = "0x1"
+g2_one_x1 = "0x0"
+g2_one_y0 = "0x2"
+g2_one_y1 = "0x0"
+commitment_scheme = 1
 
 [base_sepolia.nightfall_test]
 log_level = "info"

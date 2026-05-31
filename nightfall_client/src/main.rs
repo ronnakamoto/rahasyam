@@ -1,5 +1,8 @@
 use ark_bn254::Fr as Fr254;
-use configuration::{logging::init_logging, settings::get_settings};
+use configuration::{
+    logging::init_logging,
+    settings::{get_settings, ProvingSystemIdConfig},
+};
 use lib::{
     merkle_trees::trees::TreeMetadata,
     plonk_prover::plonk_proof::{PlonkProof, PlonkProvingEngine},
@@ -19,14 +22,15 @@ use tokio::task::JoinError;
 async fn main() -> Result<(), JoinError> {
     // declare the types of wallet that we're using
     type N = Nightfall::NightfallCalls;
+    let settings = get_settings();
     init_logging(
-        get_settings().nightfall_client.log_level.as_str(),
-        get_settings().log_app_only,
+        settings.nightfall_client.log_level.as_str(),
+        settings.log_app_only,
     );
     // ── clear desynchronised tree metadata/requests ───────────────────────────
     // drop the commitment merkle tree data because it will be out of date and need resynching. The commitments are retained.
     // status reflected in the DB
-    let url = &get_settings().nightfall_client.db_url;
+    let url = &settings.nightfall_client.db_url;
     utils::drop_collection::<TreeMetadata<Fr254>>(
         url.as_str(),
         "nightfall",
@@ -45,23 +49,54 @@ async fn main() -> Result<(), JoinError> {
         .await
         .expect("Failed to drop Requests collection");
 
-    // ── start the (owned) event listener once ─────────────────────────────────
-    ensure_running::<N>().await;
+    // We fetch active config from proposer's proving system to determine which system is enabled globally.
+    // (A more global config might be better, but this suffices for now).
+    let active_id =
+        ProvingSystemIdConfig::from_str(settings.nightfall_proposer.proving_system.active.as_str())
+            .unwrap_or(ProvingSystemIdConfig::PlonkV1);
+        
+    let active_id = match active_id {
+        ProvingSystemIdConfig::PlonkV1 => lib::proving::ProofSystemId::PlonkV1,
+        ProvingSystemIdConfig::NovaV1 => lib::proving::ProofSystemId::NovaV1,
+    };
 
-    // ── start Warp server and the queue worker as independent tasks ───────────
-    let routes = routes::<PlonkProof, Nightfall::NightfallCalls>();
-    let task_warp = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
+    match active_id {
+        lib::proving::ProofSystemId::PlonkV1 => {
+            type P = PlonkProof;
+            type E = PlonkProvingEngine;
+            type N = Nightfall::NightfallCalls;
 
-    let task_queue = tokio::spawn(process_queue::<
-        PlonkProof,
-        PlonkProvingEngine,
-        Nightfall::NightfallCalls,
-    >());
+            ensure_running::<N>().await;
+            let routes = routes::<P, N>();
+            let task_warp = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
+            let task_queue = tokio::spawn(process_queue::<P, E, N>());
 
-    info!("Starting warp server and request queue (event listener managed separately)");
-    // Both tasks are long-lived; if either returns, treat as unexpected
-    let (_r2, _r3) = (task_warp.await?, task_queue.await?);
+            info!("Starting warp server and request queue for PlonkV1 (event listener managed separately)");
+            let (_r2, _r3) = (task_warp.await?, task_queue.await?);
+        }
+        lib::proving::ProofSystemId::NovaV1 => {
+            #[cfg(feature = "nova-v1")]
+            {
+                type P = lib::proving::nova_v1::proof::NovaClientProof;
+                type E = lib::proving::nova_v1::client_engine::NovaClientEngine;
+                type N = Nightfall::NightfallCalls;
+
+                ensure_running::<N>().await;
+                let routes = routes::<P, N>();
+                let task_warp = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
+                let task_queue = tokio::spawn(process_queue::<P, E, N>());
+
+                info!("Starting warp server and request queue for NovaV1 (event listener managed separately)");
+                let (_r2, _r3) = (task_warp.await?, task_queue.await?);
+            }
+            #[cfg(not(feature = "nova-v1"))]
+            {
+                panic!("NovaV1 proving system selected but 'nova-v1' feature is not enabled");
+            }
+        }
+        _ => panic!("Unsupported proving system"),
+    }
+
     error!("Client exited unexpectedly.");
-
     Ok(())
 }

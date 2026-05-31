@@ -76,6 +76,7 @@ harness = false
 default = ["parallel"]
 std = ["ark-std/std", "ark-serialize/std", "ark-ff/std", "ark-ec/std"]
 test_apis = [] # exposing apis for testing purpose
+nova-v1 = ["lib/nova-v1"]
 parallel = [
     "ark-ff/parallel",
     "ark-ec/parallel",

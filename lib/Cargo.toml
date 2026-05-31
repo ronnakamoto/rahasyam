@@ -5,6 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+nova-v1 = ["dep:nova-snark", "dep:ff", "dep:generic-array"]
+
 [dependencies]
 tokio-util = "0.7.16"
 anyhow = "1.0.100"
@@ -31,6 +35,7 @@ ark-poly = { version = "0.4.2", features = ["parallel"] }
 ark-serialize = "0.4.2"
 ark-std = { version = "0.4.0", default-features = false }
 ark-bn254 = "0.4.0"
+ark-grumpkin = "0.6.0"
 alloy-rlp = "0.3.12" 
 jf-plonk = { git = "https://git@github.com/EYBlockchain/nightfish_CE.git", features = [
     "test-srs",
@@ -59,6 +64,12 @@ azure_security_keyvault = "0.21.0"
 bincode = "1.3.3"
 base64 = "0.22.1"
 zeroize = { version = "1.6", features = ["derive"] }
+nova-snark = { version = "0.71.1", optional = true, default-features = false, features = ["io", "test-utils"] }
+ff = { version = "0.13", optional = true, features = ["derive"] }
+# Matches nova-snark 0.71.1's transitive dep so the `typenum::U2` arity tags
+# we hand to `PoseidonConstants` resolve to the same types nova-snark itself
+# instantiates internally. Bump in lockstep with nova-snark upgrades.
+generic-array = { version = "1.4", optional = true }
 [build-dependencies]
 configuration = { path = "../configuration" }
 tokio = { version = "1.45.0", features = ["full"] }
@@ -71,3 +82,4 @@ jf-plonk = { git = "https://git@github.com/EYBlockchain/nightfish_CE.git", featu
 [dev-dependencies]
 url = "2.5.4"
 serde_json = "1.0.140"
+tempfile = "3.10"

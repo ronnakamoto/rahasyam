@@ -1,9 +1,18 @@
-# nightfall_4_CE
-Community edition of Nightfall_4
+# Nightfall 4
 
-_This code is not owned by EY and EY provides no warranty and disclaims any and all liability for use of this code. Users must conduct their own diligence with respect to use for their purposes and any and all usage is on an as-is basis and at your own risk._
+Nightfall 4 enables the secure and private transfer of various token standards, including ERC-20, ERC-721, ERC-1155, and ERC-3525. By leveraging ZK cryptography, it groups transactions into succinct Layer 2 blocks, drastically reducing gas costs while preserving the confidentiality of transaction data.
 
-Nightfall_4 is a ZK rollup build around the ZK Privacy of Nightfall. It enables one to transfer ERC20, ERC721, ERC1155 and ERC3525 tokens in privacy. Full details can be found in the /doc folder of this repository.
+This experimental fork extends the core Nightfall protocol with a modular **Multi-Proving System**:
+- **Dynamic Proving Backends:** Seamlessly switch between the **Nova** and **PLONK** proving systems based on configuration.
+- **Architectural Flexibility:** Abstractions allow different proving backends to generate Rollup proofs independently without changing the core block assembly logic.
 
-Please note that this software should be treated as experimental. It should not be used to make significant value transactions.
+![Nightfall Architecture Diagram](doc/images/nf_multi_proving.png)
+
+## Documentation
+
+Comprehensive details regarding the architecture, APIs, local installation, and testnet deployment can be found in the [Documentation](doc/nf_4.md).
+
+## Disclaimer
+
+> This software is experimental and intended for research, development, and community evaluation. **It should not be used in production environments or to process significant value transactions.**
 

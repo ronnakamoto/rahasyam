@@ -28,6 +28,8 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client:
         condition: service_healthy
@@ -72,6 +74,9 @@ services:
       start_period: 0s
     networks:
       - nightfall_network
+    volumes:
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client:
         condition: service_healthy
@@ -114,6 +119,8 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client2:
         condition: service_healthy
@@ -165,6 +172,7 @@ services:
         target: /app/configuration/toml
         read_only: true
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer:
         condition: service_healthy
@@ -181,6 +189,7 @@ services:
       - NF4_NETWORK__LOG_CHUNK_SIZE=${NF4_NETWORK__LOG_CHUNK_SIZE:-}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=30
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.10
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_INITIAL_INTERVAL_SECS=5
@@ -210,6 +219,9 @@ services:
       start_period: 0s
     networks:
       - nightfall_network
+    volumes:
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer:
         condition: service_healthy
@@ -220,6 +232,7 @@ services:
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_ETHEREUM_CLIENT_URL
       - NF4_CONTRACTS__DEPLOY_CONTRACTS=${NF4_CONTRACTS__DEPLOY_CONTRACTS:-false}
 
@@ -249,6 +262,7 @@ services:
         target: /app/configuration/toml
         read_only: true
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer2:
         condition: service_healthy
@@ -262,6 +276,7 @@ services:
       - NF4_SIGNING_KEY=${PROPOSER_2_SIGNING_KEY}
       - NF4_PROPOSER_CONFIG=nightfall_proposer2
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=30
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.10
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_INITIAL_INTERVAL_SECS=5
@@ -398,6 +413,7 @@ services:
         target: /app/configuration/toml
         read_only: false
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       anvil:
         condition: service_healthy
@@ -439,6 +455,7 @@ services:
         source: toml_data
         target: /app/configuration/toml
         read_only: false
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     stdin_open: true # keep stdin open, so we can print things in docker compose up
     tty: true # required for logs to print in colour
     environment:
