@@ -32,6 +32,7 @@ contract NightfallProposeBlockTest is Test {
     SanctionsListMock private sanctions;
     MockVerifier private verifier;
     PMMock private pm;
+    ProofSystemRouter router;
 
     function setUp() public {
         // Deploy X509 through proxy because implementation disables initializers in constructor.
@@ -45,6 +46,9 @@ contract NightfallProposeBlockTest is Test {
         sanctions = new SanctionsListMock(address(0x1234));
         verifier = new MockVerifier();
 
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
+
         Nightfall impl = new Nightfall();
         uint256 initialNullifierRoot = 5626012003977595441102792096342856268135928990590954181023475305010363075697;
         bytes memory init = abi.encodeCall(
@@ -54,7 +58,7 @@ contract NightfallProposeBlockTest is Test {
                 uint256(0),
                 uint256(0),
                 int256(0),
-                verifier,
+                router,
                 address(x509),
                 address(sanctions)
             )

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0
 pragma solidity ^0.8.20;
 
-import "./proof_verification/INFVerifier.sol";
+import "./proof_verification/ProofSystemRouter.sol";
 import {
     ERC3525,
     IERC721Receiver,
@@ -134,7 +134,7 @@ contract Nightfall is
     uint256 internal historicRootsRoot; // set in initialize to 0
 
     ProposerManager internal proposer_manager;
-    INFVerifier internal verifier;
+    ProofSystemRouter internal router;
     uint256 internal feeId;
 
     /// @notice Proxy initializer
@@ -143,7 +143,7 @@ contract Nightfall is
         uint256 initialCommitmentRoot,
         uint256 initialHistoricRootsRoot,
         int256 initialLayer2BlockNumber,
-        INFVerifier addr_verifier,
+        ProofSystemRouter addr_router,
         address x509_address,
         address sanctionsListAddress
     ) public initializer {
@@ -161,7 +161,7 @@ contract Nightfall is
         x509 = X509(x509_address);
         sanctionsList = SanctionsListInterface(sanctionsListAddress);
 
-        verifier = addr_verifier;
+        router = addr_router;
 
         uint256 computedFeeId;
         assembly {
@@ -711,9 +711,9 @@ contract Nightfall is
         Block calldata blk,
         uint256 public_hash
     ) public view returns (bool, uint256) {
-        // We need to split the proof into the public data and the actual proof
-        // The first 32 bytes of the proof are the sum of fees
-        bytes32 feeSum = abi.decode(blk.rollup_proof[:32], (bytes32));
+        // The first byte of rollup_proof is the proof system ID
+        // The next 32 bytes (1 to 33) are the sum of fees
+        bytes32 feeSum = bytes32(blk.rollup_proof[1:33]);
         uint256 feeSumAsNumber = uint256(feeSum);
         bytes32[] memory publicInputs = new bytes32[](24); // we need to pass in 24 public inputs
         publicInputs[0] = feeSum;
@@ -728,28 +728,28 @@ contract Nightfall is
         uint256[8] memory acc_low;
         uint256[8] memory acc_high;
         (acc_low[0], acc_high[0]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[32:64], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[33:65]))
         );
         (acc_low[1], acc_high[1]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[64:96], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[65:97]))
         );
         (acc_low[2], acc_high[2]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[96:128], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[97:129]))
         );
         (acc_low[3], acc_high[3]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[128:160], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[129:161]))
         );
         (acc_low[4], acc_high[4]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[160:192], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[161:193]))
         );
         (acc_low[5], acc_high[5]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[192:224], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[193:225]))
         );
         (acc_low[6], acc_high[6]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[224:256], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[225:257]))
         );
         (acc_low[7], acc_high[7]) = splitToLowHigh(
-            uint256(abi.decode(blk.rollup_proof[256:288], (bytes32)))
+            uint256(bytes32(blk.rollup_proof[257:289]))
         );
 
         // Assign to publicInputs
@@ -764,18 +764,16 @@ contract Nightfall is
         publicInputsBytes_computed =
             publicInputsBytes_computed %
             21888242871839275222246405745257275088548364400416034343698204186575808495617;
-        bytes memory publicInputsBytes = abi.encodePacked(
-            publicInputsBytes_computed
-        );
 
         uint256 n = blk.transactions.length;
-        bytes calldata accBytes = blk.rollup_proof[32:288];
-        bytes calldata proofBytes = blk.rollup_proof[288:];
-        bool is_proof_valid = verifier.verify(
-            accBytes,
-            proofBytes,
-            publicInputsBytes,
-            n
+        
+        uint256[] memory pi = new uint256[](2);
+        pi[0] = publicInputsBytes_computed;
+        pi[1] = n;
+
+        bool is_proof_valid = router.verify(
+            blk.rollup_proof,
+            pi
         );
 
         return (

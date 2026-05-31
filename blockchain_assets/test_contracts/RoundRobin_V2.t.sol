@@ -12,6 +12,7 @@ import {Nightfall} from "../contracts/Nightfall.sol";
 import {MockVerifier} from "../contracts/proof_verification/MockVerifier.sol";
 import {SanctionsListMock} from "../contracts/SanctionsListMock.sol";
 import {X509} from "../contracts/X509/X509.sol";
+import "../contracts/proof_verification/ProofSystemRouter.sol";
 
 // minimal UUPS interface to go through the proxy
 interface IUUPS {
@@ -36,6 +37,7 @@ contract RoundRobinUpgradeTest is Test {
     X509 x509;
     Nightfall nf;
     RoundRobin rr;
+    ProofSystemRouter router;
 
     function setUp() public {
         vm.deal(address(this), 100 ether);
@@ -52,6 +54,9 @@ contract RoundRobinUpgradeTest is Test {
         // Verifier
         MockVerifier verifier = new MockVerifier();
 
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
+
         // ---- Nightfall (UUPS proxy) ----
         Nightfall nfImpl = new Nightfall();
         uint256 initialNullifierRoot = 5626012003977595441102792096342856268135928990590954181023475305010363075697;
@@ -62,7 +67,7 @@ contract RoundRobinUpgradeTest is Test {
                 uint256(0),
                 uint256(0),
                 int256(0),
-                verifier,
+                router,
                 address(x509),
                 address(sanctions)
             )

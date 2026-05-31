@@ -2,6 +2,7 @@ use ark_bn254::Fr as Fr254;
 use ark_serialize::SerializationError;
 use lib::{
     serialization::{ark_de_hex, ark_se_hex},
+    proving::ProofSystemId,
     shared_entities::DepositData,
     shared_entities::{ClientTransaction, OnChainTransaction},
 };
@@ -11,24 +12,33 @@ use sha3::{Digest, Keccak256};
 use std::fmt::Debug;
 
 /// A Block struct representing NF block
-/// NOTE: This is not finalised yet, we may need to change fields to this struct
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Block {
-    // The root of the merkle tree of all commitments in this block.
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub commitments_root: Fr254,
-    // The root of the merkle tree of all nullifiers in this block.
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub nullifiers_root: Fr254,
-    // The new root of the tree of all previous commitments_roots.
     #[serde(serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
     pub commitments_root_root: Fr254,
-    // The hash of the block.
-    // The list of transactions in this block.
     pub transactions: Vec<OnChainTransaction>,
     pub rollup_proof: Vec<u8>,
     #[serde(default)]
     pub block_number: u64,
+    #[serde(default)]
+    pub proof_system_id: ProofSystemId,
+}
+
+impl Block {
+    pub fn rollup_proof_bytes(&self) -> &[u8] {
+        &self.rollup_proof
+    }
+
+    pub fn tagged_rollup_proof(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.rollup_proof.len() + 1);
+        bytes.push(self.proof_system_id as u8);
+        bytes.extend_from_slice(&self.rollup_proof);
+        bytes
+    }
 }
 
 /// Struct used to represent deposit data, used in making deposit proofs by the proposer.

@@ -11,8 +11,9 @@ import "../contracts/X509/Sha.sol";
 
 // Verifier stack
 import "../contracts/proof_verification/MockVerifier.sol";
-import "../contracts/proof_verification/RollupProofVerifier.sol";
-import "../contracts/proof_verification/INFVerifier.sol";
+import "../contracts/proof_verification/plonk_v1/RollupProofVerifier.sol";
+import "../contracts/proof_verification/ProofSystemRouter.sol";
+import "../contracts/proof_verification/IRollupVerifier.sol";
 import "../contracts/proof_verification/IVKProvider.sol";
 import "../contracts/proof_verification/RollupProofVerificationKey.sol";
 import "../contracts/proof_verification/lib/Types.sol";
@@ -39,7 +40,7 @@ contract Deployer is Script {
 
     struct Deployed {
         address vkProxy;
-        INFVerifier verifier;
+        ProofSystemRouter verifier;
         SanctionsListInterface sanctionsList;
         address x509Proxy;
         X509Interface x509;
@@ -147,7 +148,7 @@ contract Deployer is Script {
         internal
         returns (
             address vkProxy,
-            INFVerifier verifier,
+            ProofSystemRouter router,
             SanctionsListInterface sanctionsList
         )
     {
@@ -166,6 +167,9 @@ contract Deployer is Script {
             );
         }
 
+        // router
+        router = new ProofSystemRouter(owners.deployer);
+
         // verifier
         // Check environment variable first, then fall back to TOML
         bool mockProver;
@@ -177,18 +181,21 @@ contract Deployer is Script {
             console.log("Using mock_prover from TOML:", mockProver);
         }
         
+        IRollupVerifier plonkVerifier;
         if (mockProver) {
-            verifier = new MockVerifier();
+            plonkVerifier = new MockVerifier();
         } else {
             address verifierProxy = Upgrades.deployUUPSProxy(
-                "RollupProofVerifier.sol:RollupProofVerifier",
+                "plonk_v1/RollupProofVerifier.sol:RollupProofVerifier",
                 abi.encodeCall(
                     RollupProofVerifier.initialize,
                     (vkProxy, owners.verifierOwner)
                 )
             );
-            verifier = INFVerifier(verifierProxy);
+            plonkVerifier = IRollupVerifier(verifierProxy);
         }
+        
+        router.register(1, plonkVerifier);
 
         vm.stopBroadcast();
     }
@@ -227,7 +234,7 @@ contract Deployer is Script {
 
     function _deployNightfall(
         Owners memory owners,
-        INFVerifier verifier,
+        ProofSystemRouter verifier,
         X509Interface x509,
         SanctionsListInterface sanctionsList
     ) internal returns (address nightfallProxy, Nightfall nightfall) {

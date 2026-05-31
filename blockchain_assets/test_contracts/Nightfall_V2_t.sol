@@ -12,6 +12,7 @@ import {NightfallV2} from "../contracts/Nightfall_V2.sol";
 import {ProposerManager} from "../contracts/ProposerManager.sol";
 import {MockVerifier} from "../contracts/proof_verification/MockVerifier.sol";
 import {SanctionsListMock} from "../contracts/SanctionsListMock.sol";
+import "../contracts/proof_verification/ProofSystemRouter.sol";
 import {X509} from "../contracts/X509/X509.sol";
 
 // Minimal UUPS iface to upgrade through the proxy
@@ -55,6 +56,7 @@ contract NightfallUpgradeTest is Test {
     X509 private x509;
     SanctionsListMock private sanctions;
     MockVerifier private verifier;
+    ProofSystemRouter private router;
     PMMock private pm;
 
     address private owner = address(this);
@@ -73,6 +75,9 @@ contract NightfallUpgradeTest is Test {
         sanctions = new SanctionsListMock(address(0x1234));
         verifier = new MockVerifier();
 
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
+
         // Nightfall implementation
         Nightfall impl = new Nightfall();
 
@@ -86,7 +91,7 @@ contract NightfallUpgradeTest is Test {
                 uint256(0), // commitment root
                 uint256(0), // historic roots root
                 int256(0), // layer2 block number
-                verifier, // INFVerifier
+                router, // INFVerifier -> ProofSystemRouter
                 address(x509),
                 address(sanctions)
             )
