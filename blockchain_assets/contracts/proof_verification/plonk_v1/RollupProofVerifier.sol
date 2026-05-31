@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 pragma solidity >=0.8.20;
-import "./lib/BytesLib.sol";
-import "./lib/Types.sol";
-import "./IVKProvider.sol";
+import "../lib/BytesLib.sol";
+import "../lib/Types.sol";
+import "../IVKProvider.sol";
 
-import {INFVerifier} from "./INFVerifier.sol";
+import "../IRollupVerifier.sol";
 
 import {
     Initializable
@@ -16,10 +16,10 @@ import {
 import {
     OwnableUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import {Transcript} from "./lib/Transcript.sol";
-import {Bn254Crypto} from "./lib/Bn254Crypto.sol";
-import {PolynomialEval} from "./lib/PolynomialEval.sol";
-import ".././X509/Certified.sol";
+import {Transcript} from "../lib/Transcript.sol";
+import {Bn254Crypto} from "../lib/Bn254Crypto.sol";
+import {PolynomialEval} from "../lib/PolynomialEval.sol";
+import "../../X509/Certified.sol";
 
 /**
 @title RollupProofVerifier
@@ -27,7 +27,7 @@ import ".././X509/Certified.sol";
 */
 
 contract RollupProofVerifier is
-    INFVerifier,
+    IRollupVerifier,
     OwnableUpgradeable,
     UUPSUpgradeable
 {
@@ -114,28 +114,23 @@ contract RollupProofVerifier is
     }
 
     /**
-     * @dev Verify a rollup proof and accumulators
-     * @param acc_proof- array of serialized accumulators data: every elements is 32 bytes
-     * @param proofBytes- array of serialized proof data: every elements is 32 bytes
-     * @param publicInputsHashBytes- bytes of public data
+     * @dev Verify a rollup proof (IRollupVerifier implementation)
      */
-    function verify(
-        bytes calldata acc_proof,
-        bytes calldata proofBytes,
-        bytes calldata publicInputsHashBytes,
-        uint256 rollup_batch_size
-    ) external view override returns (bool result) {
+    function verifyProof(bytes calldata proof, uint256[] calldata publicInputs) external view override returns (bool) {
+        // publicInputs:
+        // pi[0] = publicInputsBytes_computed
+        // pi[1] = n (rollup_batch_size)
+        require(publicInputs.length == 2, "Invalid public inputs length");
+        
+        // proof contains: feeSum (32 bytes) + acc_proof (256 bytes) + proofBytes
+        bytes calldata acc_proof = proof[32:288];
+        bytes calldata proofBytes = proof[288:];
+        
+        uint256 public_inputs_hash = publicInputs[0];
+        uint256 rollup_batch_size = publicInputs[1];
+        
         // parse the hardecoded vk and construct a vk object
         Types.VerificationKey memory vk = get_verification_key();
-        // parse the second part of calldata to get public input
-        // we hashed all public inputs into a single value
-        uint256 public_inputs_hash;
-
-        assembly {
-            public_inputs_hash := calldataload(
-                add(publicInputsHashBytes.offset, 0)
-            )
-        }
 
         // parse the input calldata and construct a proof object and public_inputs
         Types.Proof memory decoded_proof = deserialize_proof(proofBytes);

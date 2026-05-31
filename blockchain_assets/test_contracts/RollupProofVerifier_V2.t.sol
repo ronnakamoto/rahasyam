@@ -13,7 +13,7 @@ import "../contracts/X509/X509.sol";
 import "../contracts/SanctionsListMock.sol";
 
 // Verifier V1 (UUPS)
-import "../contracts/proof_verification/RollupProofVerifier.sol"; // contract RollupProofVerifier
+import "../contracts/proof_verification/plonk_v1/RollupProofVerifier.sol"; // contract RollupProofVerifier
 // Verifier V2 (returns false in verify_OpeningProof)
 import "../contracts/proof_verification/RollupProofVerifierV2.sol";
 
@@ -586,6 +586,7 @@ contract RollupProofVerifierUpgradeTest is Test {
 
     Nightfall private nightfall;
     X509 private x509Contract;
+    ProofSystemRouter router;
 
     function setUp() public {
         // --- Deploy VK provider ---
@@ -599,6 +600,9 @@ contract RollupProofVerifierUpgradeTest is Test {
         );
         verifierProxyAddr = address(new ERC1967Proxy(address(implV1), init));
         verifier = RollupProofVerifier(verifierProxyAddr);
+
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
 
         // --- X509 + sanctions (like your existing setup) ---
         // IMPORTANT: if X509 (or its base) disables initializers in the constructor,
@@ -622,7 +626,7 @@ contract RollupProofVerifierUpgradeTest is Test {
                 uint256(0),
                 uint256(0),
                 int256(0),
-                verifier, // proxied verifier
+                router, // proxied verifier
                 address(x509Contract),
                 address(sanctionsListMock)
             )
@@ -709,7 +713,8 @@ contract RollupProofVerifierUpgradeTest is Test {
                 "./blockchain_assets/test_contracts/blockRollupProof.json"
             )
         );
-        bytes memory rollupProof = vm.parseBytes(hexString);
+        bytes memory rollupProofBytes = vm.parseBytes(hexString);
+        bytes memory rollupProof = abi.encodePacked(uint8(1), rollupProofBytes);
 
         // Transactions (same layout you used previously)
         OnChainTransaction[] memory transactions = new OnChainTransaction[](64);

@@ -7,7 +7,7 @@ import "../contracts/X509/X509.sol";
 import "../contracts/SanctionsListMock.sol";
 
 // Verifier + VK interface/types
-import "../contracts/proof_verification/RollupProofVerifier.sol";
+import "../contracts/proof_verification/plonk_v1/RollupProofVerifier.sol";
 import "../contracts/proof_verification/IVKProvider.sol";
 import "../contracts/proof_verification/lib/Types.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -555,6 +555,7 @@ contract RollupProofVerifierTest is Test {
     Nightfall nightfall;
     RollupProofVerifier verifier;
     X509 x509Contract;
+    ProofSystemRouter router;
 
     function setUp() public {
         // Use the test VK provider (full VK in assembly)
@@ -570,6 +571,9 @@ contract RollupProofVerifierTest is Test {
         );
         ERC1967Proxy verifierProxy = new ERC1967Proxy(address(impl), initData);
         verifier = RollupProofVerifier(address(verifierProxy));
+
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
 
         // -------------------------------
         // X509 + sanctions
@@ -597,7 +601,7 @@ contract RollupProofVerifierTest is Test {
                 uint256(0),
                 uint256(0),
                 int256(0),
-                verifier,
+                router,
                 address(x509Contract),
                 address(sanctionsListMock)
             )
@@ -616,7 +620,8 @@ contract RollupProofVerifierTest is Test {
                 "./blockchain_assets/test_contracts/blockRollupProof.json"
             )
         );
-        bytes memory rollupProof = vm.parseBytes(hexString);
+        bytes memory rollupProofBytes = vm.parseBytes(hexString);
+        bytes memory rollupProof = abi.encodePacked(uint8(1), rollupProofBytes);
 
         OnChainTransaction[] memory transactions = new OnChainTransaction[](64);
         transactions[0] = OnChainTransaction({
@@ -683,7 +688,8 @@ contract RollupProofVerifierTest is Test {
                 "./blockchain_assets/test_contracts/blockRollupProof.json"
             )
         );
-        bytes memory rollupProof = vm.parseBytes(hexString);
+        bytes memory rollupProofBytes = vm.parseBytes(hexString);
+        bytes memory rollupProof = abi.encodePacked(uint8(1), rollupProofBytes);
 
         OnChainTransaction[] memory transactions = new OnChainTransaction[](64);
         OnChainTransaction memory emptyTx = OnChainTransaction({

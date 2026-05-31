@@ -20,6 +20,7 @@ contract RoundRobinTest is Test {
     RoundRobin roundRobin;
     Nightfall nightfall;
     MockVerifier verifier;
+    ProofSystemRouter router;
 
     function setUp() public {
         vm.deal(address(this), 100 ether); // give the test contract funds
@@ -39,6 +40,9 @@ contract RoundRobinTest is Test {
         // Verifier (mock implements INFVerifier)
         verifier = new MockVerifier();
 
+        router = new ProofSystemRouter(address(this));
+        router.register(1, verifier);
+
         // ---------------------------
         // Nightfall (UUPS + initialize)
         // ---------------------------
@@ -51,7 +55,7 @@ contract RoundRobinTest is Test {
                 uint256(0),
                 uint256(0),
                 int256(0),
-                verifier,
+                router,
                 address(x509Contract),
                 address(sanctionsListMock)
             )

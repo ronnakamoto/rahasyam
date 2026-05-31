@@ -74,6 +74,32 @@ pub struct ClientConfig {
     pub max_queue_size: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, Default, Serialize, PartialEq, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvingSystemIdConfig {
+    #[default]
+    PlonkV1,
+    NovaV1,
+}
+
+impl ProvingSystemIdConfig {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProvingSystemIdConfig::PlonkV1 => "plonk-v1",
+            ProvingSystemIdConfig::NovaV1 => "nova-v1",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default, Serialize)]
+#[allow(unused)]
+pub struct ProvingSystemConfig {
+    #[serde(default)]
+    pub active: ProvingSystemIdConfig,
+    #[serde(default)]
+    pub enabled: Vec<ProvingSystemIdConfig>,
+}
+
 #[derive(Debug, Deserialize, Default, Serialize)]
 #[allow(unused)]
 pub struct ProposerConfig {
@@ -86,6 +112,8 @@ pub struct ProposerConfig {
     pub block_assembly_initial_interval_secs: u64,
     pub max_event_listener_attempts: Option<u32>,
     pub block_size: u64,
+    #[serde(default)]
+    pub proving_system: ProvingSystemConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]

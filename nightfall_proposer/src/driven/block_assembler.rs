@@ -306,6 +306,20 @@ impl From<Block> for Nightfall::Block {
 impl TryFrom<Nightfall::Block> for Block {
     type Error = ConversionError;
     fn try_from(nblk: Nightfall::Block) -> Result<Self, Self::Error> {
+        let proof_bytes = nblk.rollup_proof.to_vec();
+        let proof_system_id = if proof_bytes.is_empty() {
+            lib::proving::ProofSystemId::default()
+        } else {
+            lib::proving::ProofSystemId::from_u8(proof_bytes[0])
+                .unwrap_or_default()
+        };
+
+        let proof_content = if proof_bytes.is_empty() {
+            proof_bytes
+        } else {
+            proof_bytes[1..].to_vec()
+        };
+
         Ok(Self {
             commitments_root: FrBn254::try_from(nblk.commitments_root)?.into(),
             nullifiers_root: FrBn254::try_from(nblk.nullifier_root)?.into(),
@@ -315,11 +329,12 @@ impl TryFrom<Nightfall::Block> for Block {
                 .into_iter()
                 .map(OnChainTransaction::from)
                 .collect::<Vec<OnChainTransaction>>(),
-            rollup_proof: nblk.rollup_proof.to_vec(),
+            rollup_proof: proof_content,
             block_number: nblk
                 .block_number
                 .try_into()
                 .map_err(|_| ConversionError::ParseFailed)?,
+            proof_system_id,
         })
     }
 }

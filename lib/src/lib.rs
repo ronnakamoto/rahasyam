@@ -17,6 +17,7 @@ pub mod models;
 pub mod nf_client_proof;
 pub mod nf_token_id;
 pub mod plonk_prover;
+pub mod proving;
 pub mod rollup_circuit_checks;
 pub mod secret_hash;
 pub mod serialization;
