@@ -26,6 +26,32 @@ pub struct Block {
     pub block_number: u64,
     #[serde(default)]
     pub proof_system_id: ProofSystemId,
+    /// Optional per-system IVC / accumulator state. Populated by the
+    /// Nova proposer; left at the default for Plonk blocks. The
+    /// fields are not on-chain consensus inputs (the on-chain
+    /// verifier only reads `rollup_proof`), but they make the
+    /// in-memory Block self-describing for debugging and for
+    /// off-chain consumers.
+    #[serde(default)]
+    pub nova_ivc_state: NovaIvcBlockState,
+}
+
+/// Optional Nova-specific per-block IVC state. The three roots are
+/// hex-encoded `Fr254` (the JF / on-chain field) for ergonomic
+/// log/JSON inspection. The Neptune-Poseidon root values are converted
+/// via the canonical F1 -> Fr254 byte reinterpretation (both are
+/// 254-bit fields; a Nova-issued F1 element is a valid Fr254 element
+/// because the BN254 scalar field is the same).
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct NovaIvcBlockState {
+    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub nova_commitments_root: Fr254,
+    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub nova_nullifiers_root: Fr254,
+    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    pub nova_historic_root_root: Fr254,
+    #[serde(default)]
+    pub transaction_count: u64,
 }
 
 impl Block {
@@ -192,6 +218,13 @@ mod tests {
 
         fn from_compressed(_compressed: Bytes) -> Result<Self, SerializationError> {
             Ok(Self::default())
+        }
+
+        fn system_id() -> lib::proving::ProofSystemId {
+            // Mock proofs are only ever used in PlonkV1-mode (no Nova
+            // mock exists). Reusing the PlonkV1 ID here keeps the
+            // Block-level system_id stable.
+            lib::proving::ProofSystemId::PlonkV1
         }
     }
 

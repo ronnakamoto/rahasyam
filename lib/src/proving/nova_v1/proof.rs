@@ -56,6 +56,19 @@ impl Proof for NovaClientProof {
     fn from_compressed(compressed: Bytes) -> Result<Self, SerializationError> {
         Self::from_bytes(compressed.as_ref())
     }
+
+    fn system_id() -> crate::proving::ProofSystemId {
+        crate::proving::ProofSystemId::NovaV1
+    }
+
+    /// On-wire layout is the bincode blob of the struct (the proof-system
+    /// ID is added separately by the proposer as the leading byte of
+    /// `Block::tagged_rollup_proof`, which is what reaches the on-chain
+    /// `verify_rollup_proof`).
+    fn to_wire_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        let bytes = bincode::serialize(self).map_err(|_| SerializationError::InvalidData)?;
+        Ok(bytes)
+    }
 }
 
 /// Nova Block Proof
@@ -118,6 +131,18 @@ impl Proof for NovaProof {
 
     fn from_compressed(compressed: Bytes) -> Result<Self, SerializationError> {
         Self::from_bytes(compressed.as_ref())
+    }
+
+    fn system_id() -> crate::proving::ProofSystemId {
+        crate::proving::ProofSystemId::NovaV1
+    }
+
+    /// On-wire layout: raw bincode blob of `NovaProof`. The proposer is
+    /// responsible for prefixing it with the system-id byte via
+    /// `Block::tagged_rollup_proof`.
+    fn to_wire_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        let bytes = bincode::serialize(self).map_err(|_| SerializationError::InvalidData)?;
+        Ok(bytes)
     }
 }
 

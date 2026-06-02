@@ -219,7 +219,10 @@ contract Nightfall is
             )
         }
 
-        // block_transactions_length can only be 64 or 256
+        // block_transactions_length can only be 64 or 256 (each block produces
+        // 4 commitments per transaction, so block_transactions_length * 4 must be
+        // a multiple of the client/proposer commitment-tree sub-tree capacity of 8,
+        // which holds for 64 and 256).
         require(
             block_transactions_length == 64 ||
                 block_transactions_length == 256,

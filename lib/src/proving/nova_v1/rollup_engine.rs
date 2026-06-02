@@ -103,11 +103,24 @@ mod nova_integration {
     static SNARK_VK: OnceLock<Arc<nova_snark::nova::VerifierKey<E1, E2, RollupCircuit, S1, S2>>> = OnceLock::new();
 
     impl NovaRollupEngine {
+        /// Default upper bound on the number of IVC steps per block.
+        ///
+        /// **MUST match the on-chain `MAX_STEPS` constant** in
+        /// `blockchain_assets/contracts/proof_verification/nova_v1/NovaRollupVerifier.sol`.
+        /// Operators can override this at proposer startup via
+        /// `settings.nightfall_proposer.nova_max_steps`.
+        pub const DEFAULT_MAX_STEPS: usize = 10_000;
+
         pub fn new() -> Self {
-            Self { max_steps: 1000 }
+            Self {
+                max_steps: Self::DEFAULT_MAX_STEPS,
+            }
         }
 
-        #[allow(dead_code)]
+        /// Construct a Nova rollup engine with an explicit per-block
+        /// step cap. Production code should obtain the value from
+        /// `settings.nightfall_proposer.nova_max_steps` so that
+        /// off-chain and on-chain limits stay in lockstep.
         pub fn with_max_steps(max_steps: usize) -> Self {
             Self { max_steps }
         }
@@ -119,20 +132,19 @@ mod nova_integration {
 
         /// Build the IVC step circuits for a given list of transactions.
         ///
-        /// **TODO (follow-up to 1.1):** wire actual Merkle inclusion paths
-        /// from the proposer's commitment tree and IMT non-inclusion
-        /// witnesses from the nullifier tree into each step circuit via
-        /// [`RollupCircuit::new_real`]. The witnesses must be computed
-        /// off-chain by the proposer at block-construction time and
-        /// passed through the proving pipeline.
+        /// This is the **legacy** zero-witness step builder kept for
+        /// unit tests and benchmarks. **Production code MUST use**
+        /// [`crate::proving::nova_v1::witness::build_rollup_circuits`]
+        /// which builds steps with real Merkle inclusion and IMT
+        /// non-inclusion witnesses.
         ///
-        /// Until that plumbing lands, every step is emitted as a padding
-        /// step: the IVC chain still folds correctly (Nova's soundness is
-        /// preserved), but the chain does **not** advance the
-        /// `commitments_root` / `nullifiers_root` state. This keeps the
-        /// rollup engine structurally functional for tests and
-        /// benchmarking while signalling clearly that production block
-        /// proving requires the missing plumbing.
+        /// The legacy builder emits padding steps that do not advance
+        /// `commitments_root` / `nullifiers_root`; Nova's folding
+        /// soundness is preserved (the IVC still verifies), but the
+        /// per-step Merkle gadgets accept all-zero witnesses because
+        /// the step is gated on `is_padding = true`. This is fine for
+        /// IVC setup testing, but it is not a sound proof of a state
+        /// transition.
         fn build_circuits(
             _deposits: &[DepositData],
             client_txs: &[OnChainTransaction],
@@ -144,8 +156,12 @@ mod nova_integration {
         }
 
         /// Starting state vector for the IVC sequence.
+        ///
+        /// Uses the neptune-Poseidon empty-tree roots so that the first
+        /// step's Merkle / IMT witnesses (built against those roots)
+        /// satisfy the circuit constraints.
         fn initial_z0() -> Vec<F1> {
-            vec![F1::ZERO, F1::ZERO, F1::ZERO, F1::ZERO]
+            crate::proving::nova_v1::commitment_tree::compute_initial_z0()
         }
 
         /// Extract the IVC state from the `z` output vector.
@@ -166,6 +182,14 @@ mod nova_integration {
                 historic_root_root: f1_to_bytes(z_out[2]),
                 transaction_count: {
                     let repr = z_out[3].to_repr();
+                    let bytes = repr.as_ref();
+                    let mut arr = [0u8; 8];
+                    let len = bytes.len().min(8);
+                    arr[..len].copy_from_slice(&bytes[..len]);
+                    u64::from_le_bytes(arr)
+                },
+                nullifier_count: {
+                    let repr = z_out[4].to_repr();
                     let bytes = repr.as_ref();
                     let mut arr = [0u8; 8];
                     let len = bytes.len().min(8);
@@ -215,11 +239,95 @@ mod nova_integration {
 
             let num_steps = circuits.len();
             let z0 = Self::initial_z0();
+            log::info!(
+                "[nova-v1] z0 = [{:?}, {:?}, {:?}, {:?}]",
+                z0[0], z0[1], z0[2], z0[3]
+            );
 
             // ------------------------------------------------------------------
             // 2. IVC folding.
             // ------------------------------------------------------------------
             let first_circuit = circuits.first().unwrap();
+
+            // [DIAG] Sanity-check the first circuit's witness against z0
+            // before we hand it to Nova. If the inclusion / non-inclusion
+            // paths don't recompute to z0[0] / z0[1] the IVC will fail
+            // verify with "Relaxed R1CS is unsatisfiable", and this check
+            // tells us which one is wrong.
+            {
+                use crate::proving::nova_v1::hash::poseidon_constants;
+                use crate::proving::nova_v1::merkle::{compute_merkle_root_native, imt_leaf_hash_native};
+
+                let constants = poseidon_constants::<F1>();
+                // Print the is_padding flag and the new_*_root fields for both first and last circuits.
+                let last_circuit = circuits.last().unwrap();
+                log::info!(
+                    "[nova-v1 DIAG] num_circuits={}, first.is_padding={}, first.new_commitments_root={:?}, first.new_nullifiers_root={:?}, first.new_historic_root={:?}",
+                    circuits.len(),
+                    first_circuit.is_padding,
+                    first_circuit.new_commitments_root,
+                    first_circuit.new_nullifiers_root,
+                    first_circuit.new_historic_root,
+                );
+                log::info!(
+                    "[nova-v1 DIAG] last.is_padding={}, last.new_commitments_root={:?}, last.new_nullifiers_root={:?}, last.new_historic_root={:?}",
+                    last_circuit.is_padding,
+                    last_circuit.new_commitments_root,
+                    last_circuit.new_nullifiers_root,
+                    last_circuit.new_historic_root,
+                );
+                // Commitment inclusion: path should recompute to first_circuit.new_commitments_root
+                let commit_root_recomputed = compute_merkle_root_native(
+                    &constants,
+                    first_circuit.commitment,
+                    &first_circuit.commitment_path,
+                );
+                let commit_ok = commit_root_recomputed == first_circuit.new_commitments_root;
+                log::info!(
+                    "[nova-v1 DIAG step-0] commitment: leaf={:?}, path_len={}, recomputed_root={:?}, declared_new_root={:?}, matches={}",
+                    first_circuit.commitment,
+                    first_circuit.commitment_path.len(),
+                    commit_root_recomputed,
+                    first_circuit.new_commitments_root,
+                    commit_ok,
+                );
+
+                // Nullifier non-inclusion: low-leaf hash + path should recompute to z0[1]
+                let low_leaf_hash = imt_leaf_hash_native(
+                    &constants,
+                    first_circuit.nullifier_witness.low_value,
+                    first_circuit.nullifier_witness.low_next_index,
+                    first_circuit.nullifier_witness.low_next_value,
+                );
+                let null_root_recomputed = compute_merkle_root_native(
+                    &constants,
+                    low_leaf_hash,
+                    &first_circuit.nullifier_witness.path,
+                );
+                let null_ok = null_root_recomputed == z0[1];
+                log::info!(
+                    "[nova-v1 DIAG step-0] nullifier: nullifier={:?}, low_value={:?}, low_next_index={:?}, low_next_value={:?}, path_len={}, recomputed_root={:?}, expected_z0[1]={:?}, matches={}",
+                    first_circuit.nullifier_witness.nullifier,
+                    first_circuit.nullifier_witness.low_value,
+                    first_circuit.nullifier_witness.low_next_index,
+                    first_circuit.nullifier_witness.low_next_value,
+                    first_circuit.nullifier_witness.path.len(),
+                    null_root_recomputed,
+                    z0[1],
+                    null_ok,
+                );
+
+                if !commit_ok {
+                    log::error!(
+                        "[nova-v1 DIAG] COMMITMENT PATH MISMATCH at step 0 — IVC verify will fail."
+                    );
+                }
+                if !null_ok {
+                    log::error!(
+                        "[nova-v1 DIAG] NULLIFIER PATH MISMATCH at step 0 — IVC verify will fail."
+                    );
+                }
+            }
 
             let mut rs = RecursiveSNARK::<E1, E2, RollupCircuit>::new(&**pp, first_circuit, &z0)
                 .map_err(|e| ProvingError::ProvingFailed(format!("RecursiveSNARK::new: {e}")))?;
@@ -228,6 +336,29 @@ mod nova_integration {
                 rs.prove_step(&**pp, circuit).map_err(|e| {
                     ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}"))
                 })?;
+                // [DIAG] After each prove_step, read the running IVC state
+                // and compare the step's expected z_out against it.
+                let zi = rs.outputs().to_vec();
+                let expected_zi = vec![
+                    circuit.new_commitments_root,
+                    circuit.new_nullifiers_root,
+                    circuit.new_historic_root,
+                    // tx_count: we don't know the running value cheaply, so skip.
+                    F1::ZERO,
+                    // nullifier_count: we don't know the running value cheaply, so skip.
+                    F1::ZERO,
+                ];
+                let matches = zi[0] == expected_zi[0]
+                    && zi[1] == expected_zi[1]
+                    && zi[2] == expected_zi[2];
+                if i < 3 || i == circuits.len() - 1 || !matches {
+                    log::info!(
+                        "[nova-v1 DIAG step-{i}] zi=[{:?},{:?},{:?},{:?},{:?}] expected_zi=[{:?},{:?},{:?},_,_] state_matches={}",
+                        zi[0], zi[1], zi[2], zi[3], zi[4],
+                        expected_zi[0], expected_zi[1], expected_zi[2],
+                        matches,
+                    );
+                }
             }
 
             // Extract final IVC state from the output z vector.
@@ -281,12 +412,20 @@ mod nova_integration {
         {
             let key_manager = crate::proving::nova_v1::keys::NovaKeyManager::with_default_dir();
 
+            // The circuit's arity is the canonical fingerprint for the
+            // persisted PublicParams / SNARK keys. A mismatch on load
+            // (e.g. a `nova_ivc_pk_v1.bin` generated against the old
+            // arity-4 step circuit) is detected by the key manager's
+            // envelope and the stale file is deleted and regenerated.
+            let expected_arity =
+                crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
+
             // Initialize global parameters if not already loaded.
             // PublicParams are loaded from disk when available; otherwise
             // generated via the supplied closure and persisted.
             PUBLIC_PARAMS.get_or_init(|| {
                 let pp = key_manager
-                    .load_or_generate_ivc_pk(|| {
+                    .load_or_generate_ivc_pk(expected_arity, || {
                         let dummy_circuit = RollupCircuit::padding();
                         PublicParams::<E1, E2, RollupCircuit>::setup(
                             &dummy_circuit,
@@ -304,10 +443,13 @@ mod nova_integration {
             SNARK_PK.get_or_init(|| {
                 let pp = PUBLIC_PARAMS.get().unwrap();
                 let (pk, vk) = key_manager
-                    .load_or_generate_snark_keys::<E1, E2, RollupCircuit, S1, S2>(|| {
-                        RollupCompressedSNARK::setup(pp)
-                            .expect("Failed to setup CompressedSNARK")
-                    })
+                    .load_or_generate_snark_keys::<E1, E2, RollupCircuit, S1, S2>(
+                        expected_arity,
+                        || {
+                            RollupCompressedSNARK::setup(pp)
+                                .expect("Failed to setup CompressedSNARK")
+                        },
+                    )
                     .expect("Failed to load or generate CompressedSNARK keys");
                 let _ = SNARK_VK.set(Arc::new(vk));
                 Arc::new(pk)
@@ -484,4 +626,4 @@ mod nova_integration {
 }
 
 // Re-export for use in parent module.
-pub use nova_integration::{NovaRollupEngine, RollupCircuit, F1};
+pub use nova_integration::{NovaRollupEngine, RollupCircuit, F1, E1};

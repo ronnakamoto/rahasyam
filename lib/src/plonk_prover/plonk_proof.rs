@@ -53,6 +53,10 @@ impl Proof for PlonkProof {
 
         Ok(proof)
     }
+
+    fn system_id() -> crate::proving::ProofSystemId {
+        crate::proving::ProofSystemId::PlonkV1
+    }
 }
 
 impl ProvingEngine<PlonkProof> for PlonkProvingEngine {

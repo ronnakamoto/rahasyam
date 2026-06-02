@@ -286,8 +286,15 @@ impl Default for BlockAssemblyStatus {
 // this will need updating as the NightfallBlockStruct type becomes more complex.
 impl From<Block> for Nightfall::Block {
     fn from(blk: Block) -> Self {
+        // The on-chain `verify_rollup_proof` reads the leading byte of
+        // `rollup_proof` as the proof-system ID and dispatches to the
+        // matching verifier. Therefore the wire payload must be the
+        // `tagged_rollup_proof` (system_id byte || proof body). The
+        // Round-Trip via `TryFrom<Nightfall::Block> for Block` below
+        // strips the leading byte back off so the in-memory `Block`
+        // keeps a clean `rollup_proof` field.
         Self {
-            rollup_proof: Bytes::from(blk.rollup_proof.clone()),
+            rollup_proof: Bytes::from(blk.tagged_rollup_proof()),
             commitments_root_root: Uint256::from(blk.commitments_root_root).into(),
             commitments_root: Uint256::from(blk.commitments_root).into(),
             nullifier_root: Uint256::from(blk.nullifiers_root).into(),
@@ -335,6 +342,10 @@ impl TryFrom<Nightfall::Block> for Block {
                 .try_into()
                 .map_err(|_| ConversionError::ParseFailed)?,
             proof_system_id,
+            // On-chain blocks do not carry the Nova IVC state; the
+            // round-trip through the contract always yields the default
+            // for these fields.
+            nova_ivc_state: Default::default(),
         })
     }
 }

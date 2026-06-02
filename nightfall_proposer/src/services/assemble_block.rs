@@ -333,8 +333,10 @@ where
     let block_size = get_block_size()?;
     let transaction_count = deposit_proofs.len() + client_transactions.len();
     info!("Current transaction count: {transaction_count}, block size: {block_size}");
-    // append default deposit proof if the transaction count is less than block size
-    if transaction_count < block_size {
+    // append default deposit proof if the transaction count is less than block size,
+    // but only if the proving engine requires fixed-arity blocks (e.g. Plonk).
+    // IVC engines such as Nova can fold a variable number of steps and don't need padding.
+    if transaction_count < block_size && R::requires_padding() {
         let default_deposits_count = block_size - transaction_count;
         info!(
             "Adding {} default deposit proofs to fill block",
@@ -347,6 +349,11 @@ where
         (0..default_deposits_count).for_each(|_| {
             deposit_proofs.push((proof.clone(), public_inputs));
         });
+    } else if transaction_count < block_size {
+        info!(
+            "Skipping deposit padding for engine without padding requirement \
+             (transactions: {transaction_count}, block_size: {block_size})"
+        );
     }
     compute_block::<P, R>(deposit_proofs, client_transactions).await
 }

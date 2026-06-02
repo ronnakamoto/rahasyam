@@ -9,7 +9,7 @@ azure_vault_url = "vault url is not set"
 azure_key_name = "key name not set"
 log_app_only = true
 test_x509_certificates = true
-mock_prover = true
+mock_prover = false
 genesis_block = 0
 ethereum_client_url = "ws://anvil:8545"
 # RPC rate limit (calls per second). 0 = unlimited.
@@ -41,6 +41,11 @@ block_assembly_target_fill_ratio = 0.25
 block_assembly_initial_interval_secs = 15
 max_event_listener_attempts = 10
 block_size = 64
+# Must stay false: the client/proposer merkle tree uses sub_tree_height=3
+# (sub-tree capacity 8), so blocks must contain a multiple of 8 commitments
+# (== 2 transactions). The Nightfall contract enforces block_transactions_length
+# in {64, 256} and the proposer pads up to block_size (64) when needed.
+nova_dynamic_block_size = false
 
 [development.nightfall_proposer.proving_system]
 active = "nova-v1"

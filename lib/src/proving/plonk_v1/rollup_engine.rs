@@ -26,6 +26,10 @@ impl Proof for PlonkBlockProof {
         bincode::deserialize(&compressed)
             .map_err(|_| SerializationError::InvalidData)
     }
+
+    fn system_id() -> ProofSystemId {
+        ProofSystemId::PlonkV1
+    }
 }
 
 #[derive(Debug)]

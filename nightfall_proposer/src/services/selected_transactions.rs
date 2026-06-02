@@ -233,6 +233,10 @@ mod tests {
                 c: vec![3],
             })
         }
+
+        fn system_id() -> lib::proving::ProofSystemId {
+            lib::proving::ProofSystemId::PlonkV1
+        }
     }
 
     fn sample_selected_transaction(

@@ -155,7 +155,7 @@ services:
     build:
       dockerfile: nightfall_proposer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: Rosetta emulation makes Nova key deserialization 10+ min. Build native on Apple Silicon.
     ports:
       - "3001:3000"
     healthcheck:
@@ -188,7 +188,7 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
       - NF4_NETWORK__LOG_CHUNK_SIZE=${NF4_NETWORK__LOG_CHUNK_SIZE:-}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
-      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
+      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}  # NovaV1 does not support MockProver
       - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=30
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.10
@@ -245,7 +245,7 @@ services:
     build:
       dockerfile: nightfall_proposer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: Rosetta emulation makes Nova key deserialization 10+ min. Build native on Apple Silicon.
     ports:
       - "3003:3000"
     healthcheck:

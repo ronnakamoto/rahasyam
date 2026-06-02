@@ -479,12 +479,20 @@ where
             .map_err(MerkleTreeError::DatabaseError)?
             .ok_or(MerkleTreeError::ItemNotFound)?;
 
+        let sub_tree_capacity = 1usize << metadata.sub_tree_height;
+        let total_chunks = (nullifiers.len() + sub_tree_capacity - 1) / sub_tree_capacity;
+        log::info!("[batch_insert_nullifiers] tree={}, sub_tree_height={}, sub_tree_capacity={}, total_nullifiers={}, chunks={}",
+            tree_id, metadata.sub_tree_height, sub_tree_capacity, nullifiers.len(), total_chunks);
+
         let mut circuit_infos = vec![];
-        for leaf_chunk in nullifiers.chunks(1 << metadata.sub_tree_height) {
+        for (idx, leaf_chunk) in nullifiers.chunks(sub_tree_capacity).enumerate() {
+            let step_start = std::time::Instant::now();
             let circuit_info = self
                 .insert_nullifiers_for_circuit(leaf_chunk, tree_id)
                 .await?;
             circuit_infos.push(circuit_info);
+            log::info!("[batch_insert_nullifiers] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
         }
         Ok(circuit_infos)
     }

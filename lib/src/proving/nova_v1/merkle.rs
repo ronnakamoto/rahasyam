@@ -202,6 +202,40 @@ where
     )
 }
 
+/// Enforces that the `is_right` bits of a Merkle path perfectly reconstruct the `expected_index`.
+/// In an append-only tree, the insertion path matches the binary representation of the leaf index.
+///
+/// If `enabled` is true, this forces `expected_index == sum(path[i].is_right * 2^i)`.
+/// This prevents malicious provers from overwriting existing leaves by picking arbitrary paths.
+pub fn enforce_path_index<F, CS>(
+    mut cs: CS,
+    path: &[AllocatedMerkleHop<F>],
+    expected_index: &AllocatedNum<F>,
+    enabled: &Boolean,
+) -> Result<(), SynthesisError>
+where
+    F: PrimeField,
+    CS: ConstraintSystem<F>,
+{
+    // Constraint: enabled * (expected_index - sum(is_right * 2^i)) == 0
+    cs.enforce(
+        || "enforce_path_index",
+        |_| enabled.lc(CS::one(), F::ONE),
+        |mut lc| {
+            lc = lc + expected_index.get_variable();
+            let mut coeff = F::ONE;
+            for hop in path {
+                lc = lc - &hop.is_right.lc(CS::one(), coeff);
+                coeff = coeff.double();
+            }
+            lc
+        },
+        |lc| lc,
+    );
+    Ok(())
+}
+
+
 // ---------------------------------------------------------------------------
 // Indexed-Merkle-Tree non-inclusion.
 // ---------------------------------------------------------------------------
@@ -263,8 +297,8 @@ impl<F: PrimeField> AllocatedImtNonInclusion<F> {
 /// Enforce that `a < b` as field elements, by checking
 /// `(b - a - 1)` fits in `num_bits` bits.  Caller must guarantee both `a`
 /// and `b` live below `2^num_bits` for the check to be meaningful; for
-/// nullifiers we conservatively use `num_bits = 253` (BN254 Fr is
-/// 254-bit), but tests use smaller bounds.
+/// nullifiers we conservatively use `num_bits = 252` (BN254 Fr capacity is
+/// 253-bit, so using 252 prevents wrap-around vulnerabilities).
 ///
 /// Emits exactly `num_bits` boolean-allocation constraints plus a
 /// linear-combination consistency constraint, regardless of values.
@@ -311,8 +345,30 @@ where
             &Boolean::constant(false),
         )?;
     }
+    
+    // FIX (from Formal Verification): Explicitly enforce that `a` and `b` are within
+    // `num_bits` bounds. If they are not bounded, a malicious prover can set `a = p - 1`
+    // and `b = 0`, bypassing the difference check.
+    let a_bits = a.to_bits_le(cs.namespace(|| "a_bits"))?;
+    for (i, bit) in a_bits.iter().enumerate().skip(num_bits) {
+        Boolean::enforce_equal(
+            cs.namespace(|| format!("a_top_bit_{i}_zero")),
+            bit,
+            &Boolean::constant(false),
+        )?;
+    }
+    let b_bits = b.to_bits_le(cs.namespace(|| "b_bits"))?;
+    for (i, bit) in b_bits.iter().enumerate().skip(num_bits) {
+        Boolean::enforce_equal(
+            cs.namespace(|| format!("b_top_bit_{i}_zero")),
+            bit,
+            &Boolean::constant(false),
+        )?;
+    }
+
     Ok(())
 }
+
 
 /// Conditionally enforce `a < b`, gated on `enabled`.  When `enabled` is
 /// false the constraint is trivially satisfied; the number of constraints
@@ -370,7 +426,7 @@ where
 ///
 /// Standard zero-test gadget: introduces an auxiliary inverse witness
 /// `inv` so that `x * inv == 1 - is_zero` and `x * is_zero == 0`.
-fn is_zero<F, CS>(
+pub fn is_zero<F, CS>(
     mut cs: CS,
     x: &AllocatedNum<F>,
 ) -> Result<Boolean, SynthesisError>
@@ -475,6 +531,187 @@ where
         &witness.low_next_value,
         num_bits,
         &upper_check_enabled,
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Indexed-Merkle-Tree insertion (state transition gadget).
+// ---------------------------------------------------------------------------
+
+/// Witness for the IMT insertion (state transition) gadget.
+///
+/// In addition to the non-inclusion witness (which proves `nullifier`
+/// is not yet in the tree), the insertion witness proves that
+/// `new_nullifiers_root` is the result of inserting `nullifier` at
+/// `new_leaf_index` and updating the low leaf to point to it. Two
+/// co-path walks are required:
+///
+/// 1. **Low-leaf update path**: starting at `low_leaf_index`, the
+///    low leaf is re-hashed with `next_value = nullifier` and
+///    `next_index = new_leaf_index`; the path is walked to the
+///    root; the result must equal `new_nullifiers_root`.
+///
+/// 2. **New-leaf insertion path**: starting at `new_leaf_index`, the
+///    new leaf is hashed as `(nullifier, low_next_index,
+///    low_next_value)` (inheriting the low leaf's old next pointer);
+///    its own co-path is walked to the root; the result must also
+///    equal `new_nullifiers_root`.
+///
+/// Both walks must land at the same root; this is what binds the
+/// new state. Without this gadget a malicious proposer could assert
+/// any `new_nullifiers_root` they like.
+#[derive(Debug, Clone)]
+pub struct ImtInsertionWitness<F: PrimeField> {
+    /// The tree index at which the new nullifier is inserted.
+    /// Provided as a private witness; the circuit only needs to use
+    /// it as a co-path index, so it must fit in `merkle_depth` bits.
+    pub new_leaf_index: F,
+    /// Co-path from `low_leaf_index` (the existing low leaf) to the
+    /// root, after the low leaf's hash is updated to point to the
+    /// new leaf. Length MUST equal `merkle_depth`.
+    pub updated_low_path: Vec<MerklePathHop<F>>,
+    /// Co-path from `new_leaf_index` to the root, after the new leaf
+    /// is hashed and inserted. Length MUST equal `merkle_depth`.
+    pub new_leaf_path: Vec<MerklePathHop<F>>,
+}
+
+/// Allocated form of [`ImtInsertionWitness`].
+pub struct AllocatedImtInsertion<F: PrimeField> {
+    pub new_leaf_index: AllocatedNum<F>,
+    pub updated_low_path: Vec<AllocatedMerkleHop<F>>,
+    pub new_leaf_path: Vec<AllocatedMerkleHop<F>>,
+}
+
+impl<F: PrimeField> AllocatedImtInsertion<F> {
+    pub fn alloc<CS: ConstraintSystem<F>>(
+        mut cs: CS,
+        witness: &ImtInsertionWitness<F>,
+    ) -> Result<Self, SynthesisError> {
+        let new_leaf_index = AllocatedNum::alloc(cs.namespace(|| "new_leaf_index"), || {
+            Ok(witness.new_leaf_index)
+        })?;
+        let mut updated_low_path = Vec::with_capacity(witness.updated_low_path.len());
+        for (i, hop) in witness.updated_low_path.iter().enumerate() {
+            updated_low_path.push(AllocatedMerkleHop::alloc(
+                cs.namespace(|| format!("updated_low_hop_{i}")),
+                *hop,
+            )?);
+        }
+        let mut new_leaf_path = Vec::with_capacity(witness.new_leaf_path.len());
+        for (i, hop) in witness.new_leaf_path.iter().enumerate() {
+            new_leaf_path.push(AllocatedMerkleHop::alloc(
+                cs.namespace(|| format!("new_leaf_hop_{i}")),
+                *hop,
+            )?);
+        }
+        Ok(Self {
+            new_leaf_index,
+            updated_low_path,
+            new_leaf_path,
+        })
+    }
+}
+
+/// In-circuit IMT insertion (state transition) check, gated on
+/// `enabled`.
+///
+/// Given the **non-inclusion** witness (which locates the low leaf in
+/// the pre-state tree) and the **insertion** witness (which carries
+/// the two co-paths for the post-state tree), this gadget proves:
+///
+/// 1. `H(low_value, new_leaf_index, nullifier)` walked up the
+///    `updated_low_path` recomputes to `new_nullifiers_root`.
+/// 2. `H(nullifier, low_next_index, low_next_value)` walked up the
+///    `new_leaf_path` ALSO recomputes to `new_nullifiers_root`.
+///
+/// Together with the non-inclusion check, this proves the full state
+/// transition: a brand-new leaf is inserted and the linked-list
+/// pointers are updated consistently.
+///
+/// `num_bits` bounds the size of the new leaf index for the in-circuit
+/// range check that prevents malicious provers from supplying
+/// out-of-bounds indices.
+pub fn verify_imt_insertion_circuit<F, CS>(
+    constants: &PoseidonConstants<F, U2>,
+    mut cs: CS,
+    non_inclusion: &AllocatedImtNonInclusion<F>,
+    insertion: &AllocatedImtInsertion<F>,
+    new_nullifiers_root: &AllocatedNum<F>,
+    num_bits: usize,
+    enabled: &Boolean,
+) -> Result<(), SynthesisError>
+where
+    F: PrimeField + PrimeFieldBits,
+    CS: ConstraintSystem<F>,
+{
+    // --- 1. Updated low leaf -------------------------------------------
+    // The new low leaf hash is H(low_value, new_leaf_index, nullifier).
+    let updated_low_hash = poseidon_hash3_circuit(
+        constants,
+        cs.namespace(|| "updated_low_hash"),
+        &non_inclusion.low_value,
+        &insertion.new_leaf_index,
+        &non_inclusion.nullifier,
+    )?;
+    verify_merkle_inclusion_circuit(
+        constants,
+        cs.namespace(|| "updated_low_inclusion"),
+        &updated_low_hash,
+        &insertion.updated_low_path,
+        new_nullifiers_root,
+        enabled,
+    )?;
+
+    // --- 2. New leaf ---------------------------------------------------
+    // The new leaf hash is H(nullifier, low_next_index, low_next_value).
+    // It inherits the low leaf's old next pointer.
+    let new_leaf_hash = poseidon_hash3_circuit(
+        constants,
+        cs.namespace(|| "new_leaf_hash"),
+        &non_inclusion.nullifier,
+        &non_inclusion.low_next_index,
+        &non_inclusion.low_next_value,
+    )?;
+    verify_merkle_inclusion_circuit(
+        constants,
+        cs.namespace(|| "new_leaf_inclusion"),
+        &new_leaf_hash,
+        &insertion.new_leaf_path,
+        new_nullifiers_root,
+        enabled,
+    )?;
+
+    // --- 3. new_leaf_index < 2^merkle_depth ---------------------------
+    // Bind the new-leaf tree index so a malicious prover cannot insert
+    // a leaf at an arbitrary 256-bit field element (which would
+    // produce a different path-walk than the witness's `new_leaf_path`).
+    //
+    // The upper bound is `2^num_bits - 1`; the witness's `new_leaf_path`
+    // length is `merkle_depth`, which is the path-walk cost for
+    // indices in `[0, 2^merkle_depth)`. Callers SHOULD pass
+    // `num_bits = merkle_depth + 1` so the bound is
+    // `2^(merkle_depth + 1) - 1 > 2^merkle_depth`, which is the smallest
+    // power-of-two bound strictly above the index space that still fits
+    // in `num_bits` bits (required by `enforce_less_than`).
+    let mut pow = F::ONE;
+    for _ in 0..num_bits {
+        pow = pow.double();
+    }
+    // Subtract 1 so the bound fits in `num_bits` bits.  For a tree of
+    // depth `d`, valid indices are `[0, 2^d)`, and `2^(d+1) - 1` is
+    // still safely above the maximum valid index.
+    pow = pow - F::ONE;
+    let upper_bound = AllocatedNum::alloc_infallible(
+        cs.namespace(|| "new_leaf_index_upper_bound"),
+        || pow,
+    );
+    conditional_enforce_less_than(
+        cs.namespace(|| "new_leaf_index_in_range"),
+        &insertion.new_leaf_index,
+        &upper_bound,
+        num_bits,
+        enabled,
     )?;
     Ok(())
 }
@@ -900,5 +1137,54 @@ mod tests {
         )
         .unwrap();
         assert!(cs.is_satisfied(), "disabled non-inclusion must accept anything");
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+    use nova_snark::provider::Bn256EngineKZG;
+    use nova_snark::traits::Engine;
+
+    type F = <Bn256EngineKZG as Engine>::Scalar;
+
+    fn any_f() -> F {
+        let bytes = kani::any::<[u8; 32]>();
+        let mut repr = F::ZERO.to_repr();
+        repr.as_mut().copy_from_slice(&bytes);
+        F::from_repr(repr).unwrap_or(F::ZERO)
+    }
+
+    /// Prove that `compute_merkle_root_native` never panics on a
+    /// fixed-size path of up to 4 hops.  Kani unwinds the loop;
+    /// 4 is enough to catch off-by-one errors without exploding
+    /// verification time.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn prove_merkle_root_native_no_panic() {
+        let constants = crate::proving::nova_v1::hash::poseidon_constants::<F>();
+        let leaf = any_f();
+
+        // Symbolic path of exactly 4 hops.
+        let path: [MerklePathHop<F>; 4] = [
+            MerklePathHop { sibling: any_f(), is_right: kani::any() },
+            MerklePathHop { sibling: any_f(), is_right: kani::any() },
+            MerklePathHop { sibling: any_f(), is_right: kani::any() },
+            MerklePathHop { sibling: any_f(), is_right: kani::any() },
+        ];
+
+        let _root = compute_merkle_root_native(&constants, leaf, &path);
+    }
+
+    /// Prove that `imt_leaf_hash_native` never panics for arbitrary
+    /// field element inputs.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn prove_imt_leaf_hash_native_no_panic() {
+        let constants = crate::proving::nova_v1::hash::poseidon_constants::<F>();
+        let value = any_f();
+        let next_index = any_f();
+        let next_value = any_f();
+        let _hash = imt_leaf_hash_native(&constants, value, next_index, next_value);
     }
 }

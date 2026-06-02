@@ -798,31 +798,43 @@ where
         commitments: &[F],
         tree_id: &str,
     ) -> Result<Vec<CircuitInsertionInfo<F>>, Self::Error> {
+        // Diagnostic: use eprintln to bypass any log buffering
+        eprintln!("[DIAG] batch_insert_with_circuit_info ENTERED: tree={}, leaves={}", tree_id, commitments.len());
         // Basic data validation
         // get the tree metadata
         let metadata_collection_name = format!("{}_{}", tree_id, "metadata");
         let metadata_collection = self
             .database(<Self as MutableTree<F>>::MUT_DB_NAME)
             .collection::<TreeMetadata<F>>(&metadata_collection_name);
+        eprintln!("[DIAG] batch_insert: querying {metadata_collection_name}...");
         let metadata = metadata_collection
             .find_one(doc! {"_id": 0})
             .await
             .map_err(MerkleTreeError::DatabaseError)?
             .ok_or(MerkleTreeError::TreeNotFound)?;
+        eprintln!("[DIAG] batch_insert: metadata loaded — tree_height={}, sub_tree_height={}", metadata.tree_height, metadata.sub_tree_height);
         let sub_tree_leaf_capacity = pow2_usize(metadata.sub_tree_height).ok_or_else(|| {
             Self::Error::Error("sub_tree_height too large to compute capacity safely".to_string())
         })?;
         if commitments.len() % sub_tree_leaf_capacity != 0 {
+            eprintln!("[DIAG] batch_insert: IncorrectBatchSize! leaves={} % capacity={} = {} (expected 0)",
+                commitments.len(), sub_tree_leaf_capacity, commitments.len() % sub_tree_leaf_capacity);
             return Err(Self::Error::IncorrectBatchSize);
         }
+        let total_chunks = commitments.len() / sub_tree_leaf_capacity;
+        log::info!("[batch_insert_with_circuit_info] tree={}, sub_tree_leaf_capacity={}, total_leaves={}, chunks={}",
+            tree_id, sub_tree_leaf_capacity, commitments.len(), total_chunks);
         // call insert circuit for each sub_tree
         let mut circuit_infos = vec![];
-        for chunk in commitments.chunks(sub_tree_leaf_capacity) {
+        for (idx, chunk) in commitments.chunks(sub_tree_leaf_capacity).enumerate() {
+            let step_start = std::time::Instant::now();
             let circuit_info = self
                 .insert_for_circuit(chunk, tree_id)
                 .await
                 .expect("Could not insert for circuit");
             circuit_infos.push(circuit_info);
+            log::info!("[batch_insert_with_circuit_info] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
         }
         Ok(circuit_infos)
     }

@@ -229,3 +229,58 @@ mod tests {
         assert_ne!(h2, h3, "Poseidon must be order-sensitive");
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+    use ff::Field;
+    use nova_snark::provider::Bn256EngineKZG;
+    use nova_snark::traits::Engine;
+
+    type F = <Bn256EngineKZG as Engine>::Scalar;
+
+    /// Helper: build an arbitrary field element from 32 symbolic bytes.
+    /// If the bytes are not canonical (>= modulus) we fall back to ZERO
+    /// so the proof still covers all canonical values.
+    fn any_f() -> F {
+        let bytes = kani::any::<[u8; 32]>();
+        let mut repr = F::ZERO.to_repr();
+        repr.as_mut().copy_from_slice(&bytes);
+        F::from_repr(repr).unwrap_or(F::ZERO)
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn prove_poseidon_hash2_native_no_panic() {
+        let constants = poseidon_constants::<F>();
+        let a = any_f();
+        let b = any_f();
+        let _out = poseidon_hash2_native(&constants, a, b);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn prove_poseidon_hash3_native_no_panic() {
+        let constants = poseidon_constants::<F>();
+        let a = any_f();
+        let b = any_f();
+        let c = any_f();
+        let _out = poseidon_hash3_native(&constants, a, b, c);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn prove_poseidon_constants_idempotent() {
+        // Poseidon constants are pure functions of arity + strength.
+        // Calling twice must yield identical constants.
+        let c1 = poseidon_constants::<F>();
+        let c2 = poseidon_constants::<F>();
+        // We cannot directly compare PoseidonConstants (it lacks Eq),
+        // but we can verify hashing with both produces identical results.
+        let a = any_f();
+        let b = any_f();
+        let h1 = poseidon_hash2_native(&c1, a, b);
+        let h2 = poseidon_hash2_native(&c2, a, b);
+        assert_eq!(h1, h2, "poseidon_constants must be deterministic");
+    }
+}

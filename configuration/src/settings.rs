@@ -122,6 +122,34 @@ pub struct ProposerConfig {
     pub block_size: u64,
     #[serde(default)]
     pub proving_system: ProvingSystemConfig,
+    /// When `true`, Nova (IVC) blocks are allowed to contain fewer than
+    /// `block_size` transactions without padding the deposit list with dummy
+    /// proofs. Defaults to `false` because the on-chain `propose_block` path
+    /// (see `blockchain_assets/contracts/Nightfall.sol`) still requires the
+    /// submitted block to have exactly 64 or 256 transactions; enabling this
+    /// flag only makes sense once that contract guard has been relaxed.
+    /// The Plonk path ignores this flag and always pads.
+    #[serde(default)]
+    pub nova_dynamic_block_size: bool,
+    /// Upper bound on the number of IVC steps (transactions) the Nova
+    /// rollup engine will fold in a single block. **This value MUST be
+    /// kept in sync with the on-chain `MAX_STEPS` constant in
+    /// `blockchain_assets/contracts/proof_verification/nova_v1/NovaRollupVerifier.sol`**.
+    /// Off-chain we reject any block whose transaction count exceeds
+    /// this; on-chain the same value is enforced by the contract. If
+    /// the two values drift, off-chain will accept blocks the chain
+    /// rejects (or vice versa).
+    ///
+    /// Default matches the on-chain constant as of the current
+    /// deployment (`10000`). The `DEFAULT_MAX_STEPS` constant in
+    /// `lib::proving::nova_v1::rollup_engine` defaults to the same
+    /// value.
+    #[serde(default = "default_nova_max_steps")]
+    pub nova_max_steps: usize,
+}
+
+fn default_nova_max_steps() -> usize {
+    10_000
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]

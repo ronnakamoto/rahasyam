@@ -40,10 +40,24 @@ pub mod initialisation {
                 let client = MongoClient::with_uri_str(&get_settings().nightfall_client.db_url)
                     .await
                     .expect("Could not create database connection");
-                // Initialize the commitment tree in the database
-                <MongoClient as CommitmentTree<Fr254>>::new_commitment_tree(&client, 29, 3)
-                    .await
-                    .expect("Could not create commitment tree");
+                // Initialize the commitment tree in the database.
+                // Tree dimensions must match the active proving system on the
+                // proposer, otherwise the on-chain `commitments_root` (computed
+                // with the proposer's tree) will not match the client's tree
+                // state and the client will fail to verify blocks.
+                // - NovaV1: tree_height=32, sub_tree_height=0 (capacity=1 per
+                //   insert) — matches the proposer's per-circuit insertion.
+                // - Plonk: tree_height=29, sub_tree_height=3 (capacity=8).
+                let is_nova = get_settings().nightfall_proposer.proving_system.active
+                    == configuration::settings::ProvingSystemIdConfig::NovaV1;
+                let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
+                <MongoClient as CommitmentTree<Fr254>>::new_commitment_tree(
+                    &client,
+                    tree_height,
+                    sub_tree_height,
+                )
+                .await
+                .expect("Could not create commitment tree");
                 client
             })
             .await

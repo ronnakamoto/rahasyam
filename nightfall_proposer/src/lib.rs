@@ -5,30 +5,10 @@ pub mod ports;
 pub mod services;
 
 use ark_bn254::Fr as Fr254;
-use jf_primitives::{
-    poseidon::Poseidon,
-    trees::{
-        imt::{IndexedMerkleTree, LeafDBEntry},
-        timber::Timber,
-    },
-};
-use std::{
-    collections::HashMap,
-    sync::{OnceLock, RwLock},
-};
-type AppendOnlyTree = Timber<Fr254, Poseidon<Fr254>>;
+use jf_primitives::{poseidon::Poseidon, trees::timber::Timber};
+use std::sync::{OnceLock, RwLock};
 
-type NullifierTree = IndexedMerkleTree<Fr254, Poseidon<Fr254>, HashMap<Fr254, LeafDBEntry<Fr254>>>;
-/// This function is used so that we can work with one nullifier tree across the entire application.
-pub fn get_nullifier_tree() -> &'static RwLock<NullifierTree> {
-    static IMT_TREE: OnceLock<RwLock<NullifierTree>> = OnceLock::new();
-    IMT_TREE.get_or_init(|| {
-        RwLock::new(
-            IndexedMerkleTree::new(Poseidon::<Fr254>::new(), 32)
-                .expect("Invalid indexed Merkle tree"),
-        )
-    })
-}
+type AppendOnlyTree = Timber<Fr254, Poseidon<Fr254>>;
 
 /// This function is used so that we can work with one historic root tree across the entire application.
 pub fn get_historic_root_tree() -> &'static RwLock<AppendOnlyTree> {
@@ -71,16 +51,20 @@ pub mod initialisation {
                 let client = Client::with_uri_str(uri)
                     .await
                     .expect("Could not create database connection");
-                // it's not enough just to connect to a database, we need to initialise some trees in it
-                <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(&client, 29, 3)
+                // Use the correct tree dimensions for the active proving system.
+                // Nova uses sub_tree_height=0 (capacity=1 per insert), Plonk uses 3 (capacity=8).
+                let is_nova = get_settings().nightfall_proposer.proving_system.active
+                    == configuration::settings::ProvingSystemIdConfig::NovaV1;
+                let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
+                <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(&client, tree_height, sub_tree_height)
                     .await
                     .expect("Could not create commitment tree");
                 <mongodb::Client as HistoricRootTree<Fr254>>::new_historic_root_tree(&client, 32)
                     .await
                     .expect("Could not create historic root tree");
-                <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(&client, 29, 3)
+                <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(&client, tree_height, sub_tree_height)
                     .await
-                    .expect("Could not create historic root tree");
+                    .expect("Could not create nullifier tree");
 
                 <Client as HistoricRootTree<Fr254>>::append_historic_commitment_root(
                     &client,

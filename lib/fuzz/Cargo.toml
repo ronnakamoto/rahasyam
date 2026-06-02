@@ -1,0 +1,48 @@
+[package]
+name = "nightfall_client-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+ark-bn254 = "0.6.0"
+ark-ff = "0.6.0"
+ff = "0.13.0"
+libfuzzer-sys = "0.4"
+
+[dependencies.lib]
+path = ".."
+features = ["nova-v1"]
+
+[[bin]]
+name = "fuzz_target_1"
+path = "fuzz_targets/fuzz_target_1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_poseidon"
+path = "fuzz_targets/fuzz_poseidon.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_append_only"
+path = "fuzz_targets/fuzz_append_only.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_indexed"
+path = "fuzz_targets/fuzz_indexed.rs"
+test = false
+doc = false
+bench = false

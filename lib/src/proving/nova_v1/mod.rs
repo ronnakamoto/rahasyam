@@ -19,13 +19,22 @@
 
 pub mod client_engine;
 #[cfg(feature = "nova-v1")]
+pub mod commitment_tree;
+#[cfg(feature = "nova-v1")]
 pub mod hash;
+#[cfg(all(test, feature = "nova-v1"))]
+pub mod ivc_integration_tests;
 pub mod keys;
 #[cfg(feature = "nova-v1")]
 pub mod merkle;
 pub mod proof;
+#[cfg(all(test, feature = "nova-v1"))]
+pub mod proposer_repro_tests;
+pub mod r1cs_export;
 pub mod rollup_engine;
 pub mod step_circuit;
+#[cfg(feature = "nova-v1")]
+pub mod witness;
 
 use alloy::primitives::Address;
 
@@ -64,7 +73,14 @@ fn get_nova_verifier_address() -> Address {
         }
     }
 
-    // Final fallback: placeholder for tests / pre-deployment
+    // Final fallback: deterministic zero-addr with the low bit set so
+    // it is distinguishable from `Address::ZERO` (the PlonkV1 sentinel).
+    // A production deployment MUST override this with
+    // `NF4_NOVA_VERIFIER_ADDRESS` (or `nova_verifier` in
+    // `addresses.toml`); the value below is intentionally a
+    // well-known, non-zero placeholder that causes a loud
+    // misconfiguration to be observable on-chain (any call to the
+    // verifier at this address will revert).
     alloy::primitives::address!("0x0000000000000000000000000000000000000001")
 }
 
