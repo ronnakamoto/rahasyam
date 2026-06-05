@@ -72,11 +72,25 @@ where
         let metadata_collection = self
             .database(<Self as MutableTree<F>>::MUT_DB_NAME)
             .collection::<TreeMetadata<F>>(&metadata_collection_name);
-        metadata_collection
-            .insert_one(metadata)
-            .await
-            .map_err(MerkleTreeError::DatabaseError)?;
-        Ok(())
+        // Make idempotent: a previous test or operator may have left
+        // the metadata document with `_id: 0` in place. Mongo's
+        // `insert_one` raises E11000 on duplicate `_id`; we treat
+        // that as a successful no-op so the init block can be safely
+        // re-run (e.g. by tests that share a `OnceCell` client).
+        match metadata_collection.insert_one(metadata).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(
+                    we,
+                )) = e.kind.as_ref()
+                {
+                    if we.code == 11000 {
+                        return Ok(());
+                    }
+                }
+                Err(MerkleTreeError::DatabaseError(e))
+            }
+        }
     }
 
     async fn get_root(&self, tree_id: &str) -> Result<F, Self::Error> {
@@ -798,27 +812,21 @@ where
         commitments: &[F],
         tree_id: &str,
     ) -> Result<Vec<CircuitInsertionInfo<F>>, Self::Error> {
-        // Diagnostic: use eprintln to bypass any log buffering
-        eprintln!("[DIAG] batch_insert_with_circuit_info ENTERED: tree={}, leaves={}", tree_id, commitments.len());
         // Basic data validation
         // get the tree metadata
         let metadata_collection_name = format!("{}_{}", tree_id, "metadata");
         let metadata_collection = self
             .database(<Self as MutableTree<F>>::MUT_DB_NAME)
             .collection::<TreeMetadata<F>>(&metadata_collection_name);
-        eprintln!("[DIAG] batch_insert: querying {metadata_collection_name}...");
         let metadata = metadata_collection
             .find_one(doc! {"_id": 0})
             .await
             .map_err(MerkleTreeError::DatabaseError)?
             .ok_or(MerkleTreeError::TreeNotFound)?;
-        eprintln!("[DIAG] batch_insert: metadata loaded — tree_height={}, sub_tree_height={}", metadata.tree_height, metadata.sub_tree_height);
         let sub_tree_leaf_capacity = pow2_usize(metadata.sub_tree_height).ok_or_else(|| {
             Self::Error::Error("sub_tree_height too large to compute capacity safely".to_string())
         })?;
         if commitments.len() % sub_tree_leaf_capacity != 0 {
-            eprintln!("[DIAG] batch_insert: IncorrectBatchSize! leaves={} % capacity={} = {} (expected 0)",
-                commitments.len(), sub_tree_leaf_capacity, commitments.len() % sub_tree_leaf_capacity);
             return Err(Self::Error::IncorrectBatchSize);
         }
         let total_chunks = commitments.len() / sub_tree_leaf_capacity;

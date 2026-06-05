@@ -85,8 +85,8 @@ where
                 process_deposit_escrowed_event::<P, E>(tx_hash, filter)
                     .await
                     .map_err(|e| {
-                        debug!("{e}");
-                        EventHandlerError::InvalidCalldata
+                        error!("DepositEscrowed processing failed: {e}");
+                        EventHandlerError::Other(format!("DepositEscrowed: {e}"))
                     })?;
             }
             Nightfall::NightfallEvents::Initialized(_filter) => {
@@ -291,6 +291,13 @@ where
         .map_err(|_| {
             EventHandlerError::IOError("Could not retrieve commitment root".to_string())
         })?;
+    // Compute the historic root once. We only APPEND it to the historic-root
+    // tree inside the guard below so a block proposed by us doesn't
+    // double-append the same historic root. The value is still needed for
+    // the post-guard verification check (commitment root vs historic root).
+    let historic_root: Fr254 = FrBn254::try_from(blk.commitments_root)
+        .map_err(|_| EventHandlerError::IOError("Could not convert to Fr254".to_string()))?
+        .into();
     if our_address != sender_address
         || !sync_status.is_synchronised()
         || commitment_root.0.is_zero()
@@ -328,23 +335,16 @@ where
         )
         .await
         .map_err(|_| EventHandlerError::IOError("Could not store nullifiers".to_string()))?;
-    }
-    // and next,the commitments root (historic_root) is stored in the historic root tree
-    let historic_root: Fr254 = FrBn254::try_from(blk.commitments_root)
-        .map_err(|_| EventHandlerError::IOError("Could not convert to Fr254".to_string()))?
-        .into();
 
-    db.append_historic_commitment_root(&historic_root, true)
-        .await
-        .map_err(|_| EventHandlerError::IOError("Could not store historic root".to_string()))?;
-    debug!("Stored new commitments tree root in historic root timber tree: {historic_root}");
+        // and next, the commitments root (historic_root) is stored in the historic root tree
+        db.append_historic_commitment_root(&historic_root, true)
+            .await
+            .map_err(|_| {
+                EventHandlerError::IOError("Could not store historic root".to_string())
+            })?;
+    }
 
     // it's worth checking that the historic root agrees with what's in the commitment tree
-    let commitment_root = <Client as CommitmentTree<Fr254>>::get_root(db)
-        .await
-        .map_err(|_| {
-            EventHandlerError::IOError("Could not retrieve commitment root".to_string())
-        })?;
     if commitment_root != historic_root {
         error!(
             "Historic root does not match commitment tree root. Historic root: {historic_root}, Commitment tree root: {commitment_root}"

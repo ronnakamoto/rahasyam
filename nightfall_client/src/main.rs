@@ -18,6 +18,16 @@ use nightfall_client::{
 };
 use tokio::task::JoinError;
 
+// ── Global allocator: jemalloc ────────────────────────────────────────────
+// The default glibc allocator fragments badly under the Plonk recursive
+// prover's pattern of "allocate a few hundred MB of field elements, do
+// parallel FFT on them, drop, repeat". jemalloc's per-size-class binning
+// reuses the same pages across iterations and keeps RSS noticeably below
+// the high-water mark that we hit with the system allocator (the swap
+// proof was being OOM-killed at 8 GiB before this change).
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), JoinError> {
     // declare the types of wallet that we're using

@@ -66,12 +66,13 @@ impl NovaKeyManager {
     pub fn new(key_dir: PathBuf) -> Self {
         Self {
             key_dir,
-            // v1 keys were generated against the arity-4 step circuit
-            // (no `nullifier_count` state element). Bumping to v2 makes
-            // any pre-existing v1 file invisible to `load_or_generate_*`
-            // so it is replaced by a fresh, arity-5 envelope on first
-            // use. Operators can also call [`Self::rotate`] explicitly.
-            version: 2,
+            // Version history:
+            // v1: arity-4 step circuit (no `nullifier_count`).
+            // v2: arity-5 step circuit, envelope format v1 (arity only).
+            // v3: arity-5 step circuit, envelope format v2 (arity + constraint_count).
+            //     Bumped because stale v2 keys survived a circuit shape change
+            //     (the nullifier insertion gadget) that arity alone could not detect.
+            version: 3,
         }
     }
 
@@ -109,15 +110,16 @@ impl NovaKeyManager {
     /// from disk, or generate via `generator` and persist if not present.
     ///
     /// `expected_arity` is the `StepCircuit::arity()` the caller is going
-    /// to use. If the persisted envelope was generated against a different
-    /// arity (e.g. an older `RollupStepCircuit` whose state vector was
-    /// `[commitments_root, nullifiers_root, historic_root, tx_count]`
-    /// rather than the current 5-element one), the stale file is deleted
-    /// and the keys are regenerated. This is what prevents the live
-    /// failure mode `RecursiveSNARK::new: InvalidInitialInputLength`.
+    /// to use. `expected_constraint_count` is the number of constraints
+    /// produced by the dummy circuit (e.g. from `TestConstraintSystem`).
+    /// If either value mismatches the persisted envelope, the stale file
+    /// is deleted and the keys are regenerated. This catches both arity
+    /// changes (e.g. adding a state element) and shape changes that keep
+    /// arity constant (e.g. adding a new gadget).
     pub fn load_or_generate_ivc_pk<E1, E2, C>(
         &self,
         expected_arity: usize,
+        expected_constraint_count: usize,
         generator: impl FnOnce() -> nova_snark::nova::PublicParams<E1, E2, C>,
     ) -> Result<nova_snark::nova::PublicParams<E1, E2, C>, KeyManagerError>
     where
@@ -126,7 +128,7 @@ impl NovaKeyManager {
         C: nova_snark::traits::circuit::StepCircuit<E1::Scalar>,
     {
         let path = self.ivc_pk_path();
-        if let Some(pp) = read_envelope(&path, "PublicParams", expected_arity)? {
+        if let Some(pp) = read_envelope(&path, "PublicParams", expected_arity, expected_constraint_count)? {
             return Ok(pp);
         }
         log::info!(
@@ -135,19 +137,22 @@ impl NovaKeyManager {
         );
         let pp = generator();
         ensure_parent_dir(&path)?;
-        write_envelope(&path, &pp, expected_arity, "PublicParams")?;
+        write_envelope(&path, &pp, expected_arity, expected_constraint_count, "PublicParams")?;
         log::info!("[nova-v1] Persisted PublicParams to {}", path.display());
         Ok(pp)
     }
 
     /// Backwards-compatible alias for [`Self::load_or_generate_ivc_pk`].
     ///
-    /// Pass `expected_arity` to enable stale-cache self-healing; the
-    /// canonical call site is the arity of
-    /// `crate::proving::nova_v1::step_circuit::ROLLUP_ARITY`.
+    /// Pass `expected_arity` and `expected_constraint_count` to enable
+    /// stale-cache self-healing; the canonical call site is the arity of
+    /// `crate::proving::nova_v1::step_circuit::ROLLUP_ARITY` and the
+    /// constraint count from `TestConstraintSystem` run against
+    /// `RollupCircuit::padding()`.
     pub fn get_public_params<E1, E2, C>(
         &self,
         expected_arity: usize,
+        expected_constraint_count: usize,
         generator: impl FnOnce() -> nova_snark::nova::PublicParams<E1, E2, C>,
     ) -> Result<nova_snark::nova::PublicParams<E1, E2, C>, KeyManagerError>
     where
@@ -155,7 +160,7 @@ impl NovaKeyManager {
         E2: nova_snark::traits::Engine<Base = <E1 as nova_snark::traits::Engine>::Scalar>,
         C: nova_snark::traits::circuit::StepCircuit<E1::Scalar>,
     {
-        self.load_or_generate_ivc_pk(expected_arity, generator)
+        self.load_or_generate_ivc_pk(expected_arity, expected_constraint_count, generator)
     }
 
     /// Load the Spartan `CompressedSNARK` prover and verifier keys from
@@ -163,19 +168,14 @@ impl NovaKeyManager {
     ///
     /// `generator` is invoked **only** when at least one of the two cache
     /// files is missing or the persisted envelope reports a different
-    /// `expected_arity`.  In that case the closure must produce the full
-    /// `(ProverKey, VerifierKey)` pair (this is what
-    /// `CompressedSNARK::setup(&pp)` returns).
+    /// `expected_arity` or `expected_constraint_count`.
     ///
     /// Both files are read or written atomically (one after the other) so
-    /// the on-disk state stays consistent for the next boot. The
-    /// `expected_arity` argument must match the arity the `PublicParams`
-    /// were generated against; the SNARK VK embeds this value internally,
-    /// so a mismatch here would also produce an on-chain verification
-    /// failure (the verifier checks `F_arity`).
+    /// the on-disk state stays consistent for the next boot.
     pub fn load_or_generate_snark_keys<E1, E2, C, S1, S2>(
         &self,
         expected_arity: usize,
+        expected_constraint_count: usize,
         generator: impl FnOnce() -> (
             nova_snark::nova::ProverKey<E1, E2, C, S1, S2>,
             nova_snark::nova::VerifierKey<E1, E2, C, S1, S2>,
@@ -198,8 +198,8 @@ impl NovaKeyManager {
         let vk_path = self.snark_vk_path();
 
         if pk_path.exists() && vk_path.exists() {
-            let pk = read_envelope(&pk_path, "CompressedSNARK ProverKey", expected_arity)?;
-            let vk = read_envelope(&vk_path, "CompressedSNARK VerifierKey", expected_arity)?;
+            let pk = read_envelope(&pk_path, "CompressedSNARK ProverKey", expected_arity, expected_constraint_count)?;
+            let vk = read_envelope(&vk_path, "CompressedSNARK VerifierKey", expected_arity, expected_constraint_count)?;
             if let (Some(pk), Some(vk)) = (pk, vk) {
                 log::info!(
                     "[nova-v1] Loaded CompressedSNARK PK/VK from disk ({} / {})",
@@ -213,8 +213,8 @@ impl NovaKeyManager {
         log::info!("[nova-v1] Generating CompressedSNARK PK/VK (cache miss)");
         let (pk, vk) = generator();
         ensure_parent_dir(&pk_path)?;
-        write_envelope(&pk_path, &pk, expected_arity, "CompressedSNARK ProverKey")?;
-        write_envelope(&vk_path, &vk, expected_arity, "CompressedSNARK VerifierKey")?;
+        write_envelope(&pk_path, &pk, expected_arity, expected_constraint_count, "CompressedSNARK ProverKey")?;
+        write_envelope(&vk_path, &vk, expected_arity, expected_constraint_count, "CompressedSNARK VerifierKey")?;
         log::info!(
             "[nova-v1] Persisted CompressedSNARK PK/VK ({} / {})",
             pk_path.display(),
@@ -269,21 +269,29 @@ pub fn get_default_key_dir() -> PathBuf {
 
 /// On-disk envelope used for every Nova key artifact.
 ///
-/// Records the arity the `StepCircuit::setup` was run with at the time of
-/// generation. On load, the envelope's `arity` is compared against the
-/// caller's expected arity; a mismatch is treated as a cache miss and
-/// the file is regenerated. This is the mechanism that lets the proposer
-/// recover automatically from a circuit shape change (e.g. adding the
-/// `nullifier_count` state element to `RollupStepCircuit`).
+/// Records the arity and constraint count the `StepCircuit::setup` was
+/// run with at the time of generation. On load, the envelope's `arity`
+/// and `constraint_count` are compared against the caller's expected
+/// values; a mismatch is treated as a cache miss and the file is
+/// regenerated. This is the mechanism that lets the proposer recover
+/// automatically from a circuit shape change (e.g. adding the
+/// `nullifier_count` state element to `RollupStepCircuit`, or changing
+/// the number of constraints while keeping arity the same).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NovaKeyEnvelope<T> {
     /// Bumped if the on-disk format itself changes (independent of
-    /// arity). The reader uses this to reject pre-envelope (v0) files.
+    /// arity / constraints). The reader uses this to reject pre-envelope
+    /// (v0/v1) files.
     format_version: u32,
     /// The `StepCircuit::arity()` that the wrapped payload was
     /// generated against. Compared against the caller's expected
     /// arity on load.
     arity: usize,
+    /// The number of constraints in the dummy circuit used for setup.
+    /// This catches shape changes that arity alone misses (e.g. adding
+    /// a new gadget inside the step circuit while keeping the state
+    /// vector length constant).
+    constraint_count: usize,
     /// The actual key material.
     payload: T,
 }
@@ -292,23 +300,26 @@ impl<T> NovaKeyEnvelope<T> {
     /// Bump this whenever the on-disk format itself changes (e.g. we
     /// add another field). Reads of envelopes with a mismatched
     /// `format_version` are rejected as stale.
-    const FORMAT_VERSION: u32 = 1;
+    const FORMAT_VERSION: u32 = 2;
 }
 
 /// Try to read the persisted envelope at `path` and return its payload
-/// if the envelope's `arity` matches `expected_arity`.
+/// if the envelope's `arity` matches `expected_arity` and its
+/// `constraint_count` matches `expected_constraint_count`.
 ///
 /// Returns:
 /// - `Ok(Some(payload))` on a clean cache hit.
 /// - `Ok(None)` if the file is missing, unreadable as an envelope, or
-///   the envelope's arity / format version does not match. The stale
-///   file is deleted in this case so the next caller regenerates it.
+///   the envelope's arity / constraint_count / format version does not
+///   match. The stale file is deleted in this case so the next caller
+///   regenerates it.
 /// - `Err(_)` only for unrecoverable I/O failures (permissions, disk
 ///   errors) that the caller must surface.
 fn read_envelope<T: DeserializeOwned>(
     path: &std::path::Path,
     label: &str,
     expected_arity: usize,
+    expected_constraint_count: usize,
 ) -> Result<Option<T>, KeyManagerError> {
     if !path.exists() {
         return Ok(None);
@@ -346,6 +357,16 @@ fn read_envelope<T: DeserializeOwned>(
                 let _ = std::fs::remove_file(path);
                 return Ok(None);
             }
+            if env.constraint_count != expected_constraint_count {
+                log::warn!(
+                    "[nova-v1] {label} constraint_count mismatch at {} (file={} expected={}); regenerating",
+                    path.display(),
+                    env.constraint_count,
+                    expected_constraint_count
+                );
+                let _ = std::fs::remove_file(path);
+                return Ok(None);
+            }
             log::info!("[nova-v1] Loading {label} from {}", path.display());
             Ok(Some(env.payload))
         }
@@ -366,11 +387,13 @@ fn write_envelope<T: Serialize>(
     path: &std::path::Path,
     payload: &T,
     arity: usize,
+    constraint_count: usize,
     label: &str,
 ) -> Result<(), KeyManagerError> {
     let env = NovaKeyEnvelope {
         format_version: NovaKeyEnvelope::<T>::FORMAT_VERSION,
         arity,
+        constraint_count,
         payload,
     };
     let bytes = bincode::serialize(&env).map_err(|e| {
@@ -474,7 +497,7 @@ pub fn pregenerate_nova_keys() -> Result<(), KeyManagerError> {
     let expected_arity =
         crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
 
-    let pp = km.load_or_generate_ivc_pk::<E1, E2, Circuit>(expected_arity, || {
+    let pp = km.load_or_generate_ivc_pk::<E1, E2, Circuit>(expected_arity, 0, || {
         log::info!("[nova-v1] Generating PublicParams (this may take several minutes)...");
         let dummy = Circuit::padding();
         PublicParams::<E1, E2, Circuit>::setup(&dummy, &*S1::ck_floor(), &*S2::ck_floor())
@@ -482,7 +505,7 @@ pub fn pregenerate_nova_keys() -> Result<(), KeyManagerError> {
     })?;
 
     let _snark_keys = km
-        .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(expected_arity, || {
+        .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(expected_arity, 0, || {
             log::info!("[nova-v1] Generating CompressedSNARK PK/VK...");
             CompressedSNARK::<E1, E2, Circuit, S1, S2>::setup(&pp)
                 .expect("CompressedSNARK::setup failed")
@@ -525,11 +548,11 @@ mod tests {
     fn paths_use_configured_version_and_dir() {
         let dir = std::env::temp_dir().join("nova_keys_paths");
         let km = NovaKeyManager::new(dir.clone());
-        // Default version is 2 (bumped from 1 when the arity-4 → arity-5
-        // circuit change made all v1 files stale).
-        assert_eq!(km.ivc_pk_path(), dir.join("nova_ivc_pk_v2.bin"));
-        assert_eq!(km.snark_pk_path(), dir.join("nova_snark_pk_v2.bin"));
-        assert_eq!(km.snark_vk_path(), dir.join("nova_snark_vk_v2.bin"));
+        // Default version is 3 (bumped from 2 when the envelope format
+        // gained constraint_count to detect arity-preserving shape changes).
+        assert_eq!(km.ivc_pk_path(), dir.join("nova_ivc_pk_v3.bin"));
+        assert_eq!(km.snark_pk_path(), dir.join("nova_snark_pk_v3.bin"));
+        assert_eq!(km.snark_vk_path(), dir.join("nova_snark_vk_v3.bin"));
     }
 
     #[test]
@@ -537,8 +560,8 @@ mod tests {
         let dir = std::env::temp_dir().join("nova_keys_rotate");
         let mut km = NovaKeyManager::new(dir.clone());
         km.rotate().unwrap();
-        assert_eq!(km.version(), 3);
-        assert_eq!(km.ivc_pk_path(), dir.join("nova_ivc_pk_v3.bin"));
+        assert_eq!(km.version(), 4);
+        assert_eq!(km.ivc_pk_path(), dir.join("nova_ivc_pk_v4.bin"));
     }
 
     /// 1.3.1 — `PublicParams` round-trips through disk: the second call to
@@ -553,7 +576,7 @@ mod tests {
         // First call: cache miss → generator runs, file is written.
         let mut gen_calls = 0;
         let pp1 = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, || {
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, || {
                 gen_calls += 1;
                 build_pp()
             })
@@ -564,7 +587,7 @@ mod tests {
         // Second call: cache hit → generator must NOT run.
         let mut gen_calls2 = 0;
         let pp2 = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, || {
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, || {
                 gen_calls2 += 1;
                 build_pp()
             })
@@ -601,7 +624,7 @@ mod tests {
         // First call: cache miss → generate + write both files.
         let mut gen_calls = 0;
         let (pk1, vk1) = km
-            .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(arity, || {
+            .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(arity, 0, || {
                 gen_calls += 1;
                 CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("setup failed")
             })
@@ -613,7 +636,7 @@ mod tests {
         // Second call: cache hit → generator must NOT run.
         let mut gen_calls2 = 0;
         let (_pk2, vk2) = km
-            .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(arity, || {
+            .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(arity, 0, || {
                 gen_calls2 += 1;
                 CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("setup failed")
             })
@@ -640,7 +663,7 @@ mod tests {
         let arity = crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
 
         let _ = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, build_pp)
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, build_pp)
             .unwrap();
         assert!(km.ivc_pk_path().exists());
 
@@ -649,7 +672,7 @@ mod tests {
 
         let mut gen_calls = 0;
         let _ = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, || {
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, || {
                 gen_calls += 1;
                 build_pp()
             })
@@ -680,6 +703,7 @@ mod tests {
         let stale = NovaKeyEnvelope::<Vec<u8>> {
             format_version: NovaKeyEnvelope::<Vec<u8>>::FORMAT_VERSION,
             arity: stale_arity,
+            constraint_count: 0,
             payload: vec![0u8; 8],
         };
         let stale_bytes = bincode::serialize(&stale).unwrap();
@@ -690,7 +714,7 @@ mod tests {
         // detect the mismatch, delete the stale file, and regenerate.
         let mut gen_calls = 0;
         let _ = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, || {
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, || {
                 gen_calls += 1;
                 build_pp()
             })
@@ -729,7 +753,7 @@ mod tests {
 
         let mut gen_calls = 0;
         let _ = km
-            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, || {
+            .load_or_generate_ivc_pk::<E1, E2, Circuit>(arity, 0, || {
                 gen_calls += 1;
                 build_pp()
             })

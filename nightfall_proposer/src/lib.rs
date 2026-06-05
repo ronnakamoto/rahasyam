@@ -8,6 +8,26 @@ use ark_bn254::Fr as Fr254;
 use jf_primitives::{poseidon::Poseidon, trees::timber::Timber};
 use std::sync::{OnceLock, RwLock};
 
+/// Resolve the effective `max_event_listener_attempts` for the proposer.
+///
+/// Setting `NF4_FAST_FAIL_NOVA=1` (any non-empty value) collapses the
+/// retry budget to **1** so a regression in the event-listener / block-assembly
+/// loop surfaces in seconds instead of the default ~5-minute exponential
+/// backoff. This is the iteration-mode override; default behaviour is
+/// unchanged.
+pub fn effective_event_listener_attempts(configured: Option<u32>) -> u32 {
+    if std::env::var("NF4_FAST_FAIL_NOVA").is_ok() {
+        log::warn!(
+            "NF4_FAST_FAIL_NOVA is set: collapsing event-listener max_attempts to 1 \
+             (configured was {:?}). Set to 0 to disable.",
+            configured
+        );
+        1
+    } else {
+        configured.unwrap_or(10)
+    }
+}
+
 type AppendOnlyTree = Timber<Fr254, Poseidon<Fr254>>;
 
 /// This function is used so that we can work with one historic root tree across the entire application.

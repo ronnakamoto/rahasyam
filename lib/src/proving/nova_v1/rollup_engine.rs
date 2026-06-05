@@ -249,86 +249,6 @@ mod nova_integration {
             // ------------------------------------------------------------------
             let first_circuit = circuits.first().unwrap();
 
-            // [DIAG] Sanity-check the first circuit's witness against z0
-            // before we hand it to Nova. If the inclusion / non-inclusion
-            // paths don't recompute to z0[0] / z0[1] the IVC will fail
-            // verify with "Relaxed R1CS is unsatisfiable", and this check
-            // tells us which one is wrong.
-            {
-                use crate::proving::nova_v1::hash::poseidon_constants;
-                use crate::proving::nova_v1::merkle::{compute_merkle_root_native, imt_leaf_hash_native};
-
-                let constants = poseidon_constants::<F1>();
-                // Print the is_padding flag and the new_*_root fields for both first and last circuits.
-                let last_circuit = circuits.last().unwrap();
-                log::info!(
-                    "[nova-v1 DIAG] num_circuits={}, first.is_padding={}, first.new_commitments_root={:?}, first.new_nullifiers_root={:?}, first.new_historic_root={:?}",
-                    circuits.len(),
-                    first_circuit.is_padding,
-                    first_circuit.new_commitments_root,
-                    first_circuit.new_nullifiers_root,
-                    first_circuit.new_historic_root,
-                );
-                log::info!(
-                    "[nova-v1 DIAG] last.is_padding={}, last.new_commitments_root={:?}, last.new_nullifiers_root={:?}, last.new_historic_root={:?}",
-                    last_circuit.is_padding,
-                    last_circuit.new_commitments_root,
-                    last_circuit.new_nullifiers_root,
-                    last_circuit.new_historic_root,
-                );
-                // Commitment inclusion: path should recompute to first_circuit.new_commitments_root
-                let commit_root_recomputed = compute_merkle_root_native(
-                    &constants,
-                    first_circuit.commitment,
-                    &first_circuit.commitment_path,
-                );
-                let commit_ok = commit_root_recomputed == first_circuit.new_commitments_root;
-                log::info!(
-                    "[nova-v1 DIAG step-0] commitment: leaf={:?}, path_len={}, recomputed_root={:?}, declared_new_root={:?}, matches={}",
-                    first_circuit.commitment,
-                    first_circuit.commitment_path.len(),
-                    commit_root_recomputed,
-                    first_circuit.new_commitments_root,
-                    commit_ok,
-                );
-
-                // Nullifier non-inclusion: low-leaf hash + path should recompute to z0[1]
-                let low_leaf_hash = imt_leaf_hash_native(
-                    &constants,
-                    first_circuit.nullifier_witness.low_value,
-                    first_circuit.nullifier_witness.low_next_index,
-                    first_circuit.nullifier_witness.low_next_value,
-                );
-                let null_root_recomputed = compute_merkle_root_native(
-                    &constants,
-                    low_leaf_hash,
-                    &first_circuit.nullifier_witness.path,
-                );
-                let null_ok = null_root_recomputed == z0[1];
-                log::info!(
-                    "[nova-v1 DIAG step-0] nullifier: nullifier={:?}, low_value={:?}, low_next_index={:?}, low_next_value={:?}, path_len={}, recomputed_root={:?}, expected_z0[1]={:?}, matches={}",
-                    first_circuit.nullifier_witness.nullifier,
-                    first_circuit.nullifier_witness.low_value,
-                    first_circuit.nullifier_witness.low_next_index,
-                    first_circuit.nullifier_witness.low_next_value,
-                    first_circuit.nullifier_witness.path.len(),
-                    null_root_recomputed,
-                    z0[1],
-                    null_ok,
-                );
-
-                if !commit_ok {
-                    log::error!(
-                        "[nova-v1 DIAG] COMMITMENT PATH MISMATCH at step 0 — IVC verify will fail."
-                    );
-                }
-                if !null_ok {
-                    log::error!(
-                        "[nova-v1 DIAG] NULLIFIER PATH MISMATCH at step 0 — IVC verify will fail."
-                    );
-                }
-            }
-
             let mut rs = RecursiveSNARK::<E1, E2, RollupCircuit>::new(&**pp, first_circuit, &z0)
                 .map_err(|e| ProvingError::ProvingFailed(format!("RecursiveSNARK::new: {e}")))?;
 
@@ -336,29 +256,6 @@ mod nova_integration {
                 rs.prove_step(&**pp, circuit).map_err(|e| {
                     ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}"))
                 })?;
-                // [DIAG] After each prove_step, read the running IVC state
-                // and compare the step's expected z_out against it.
-                let zi = rs.outputs().to_vec();
-                let expected_zi = vec![
-                    circuit.new_commitments_root,
-                    circuit.new_nullifiers_root,
-                    circuit.new_historic_root,
-                    // tx_count: we don't know the running value cheaply, so skip.
-                    F1::ZERO,
-                    // nullifier_count: we don't know the running value cheaply, so skip.
-                    F1::ZERO,
-                ];
-                let matches = zi[0] == expected_zi[0]
-                    && zi[1] == expected_zi[1]
-                    && zi[2] == expected_zi[2];
-                if i < 3 || i == circuits.len() - 1 || !matches {
-                    log::info!(
-                        "[nova-v1 DIAG step-{i}] zi=[{:?},{:?},{:?},{:?},{:?}] expected_zi=[{:?},{:?},{:?},_,_] state_matches={}",
-                        zi[0], zi[1], zi[2], zi[3], zi[4],
-                        expected_zi[0], expected_zi[1], expected_zi[2],
-                        matches,
-                    );
-                }
             }
 
             // Extract final IVC state from the output z vector.
@@ -400,6 +297,81 @@ mod nova_integration {
             );
             Ok(proof)
         }
+
+        /// Same as [`prove_circuits`] but accepts a custom initial IVC
+        /// state `z0`. This is required for blocks that follow prior
+        /// blocks with non-zero nullifiers: the Neptune IMT is hydrated
+        /// with the prior nullifiers, so `z0[1]` must be the hydrated
+        /// root (not the empty-tree root).
+        pub fn prove_circuits_with_z0(
+            &self,
+            circuits: Vec<RollupCircuit>,
+            z0: [F1; 5],
+        ) -> Result<NovaProof, ProvingError> {
+            if circuits.is_empty() {
+                return Ok(NovaProof {
+                    snark_proof: vec![],
+                    commitments_root: vec![0u8; 32],
+                    nullifiers_root: vec![0u8; 32],
+                    historic_root_root: vec![0u8; 32],
+                    transaction_count: 0,
+                });
+            }
+            if circuits.len() > self.max_steps {
+                return Err(ProvingError::ProvingFailed(format!(
+                    "circuits len ({}) exceeds configured max_steps ({})",
+                    circuits.len(),
+                    self.max_steps,
+                )));
+            }
+            let _ = Self::setup()?;
+            let pp = PUBLIC_PARAMS.get().expect("Public params not initialized");
+            let num_steps = circuits.len();
+            log::info!(
+                "[nova-v1] prove_circuits_with_z0: z0 = [{:?}, {:?}, {:?}, {:?}, {:?}]",
+                z0[0], z0[1], z0[2], z0[3], z0[4]
+            );
+
+            let first_circuit = circuits.first().unwrap();
+            let mut rs = RecursiveSNARK::<E1, E2, RollupCircuit>::new(&**pp, first_circuit, &z0)
+                .map_err(|e| ProvingError::ProvingFailed(format!("RecursiveSNARK::new: {e}")))?;
+
+            for (i, circuit) in circuits.iter().enumerate() {
+                rs.prove_step(&**pp, circuit).map_err(|e| {
+                    ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}"))
+                })?;
+            }
+
+            let z_out = rs
+                .verify(&**pp, num_steps, &z0)
+                .map_err(|e| {
+                    ProvingError::VerificationFailed(format!("IVC verify (state extract): {e}"))
+                })?;
+            let ivc_state = Self::extract_ivc_state(&z_out);
+
+            log::info!("[nova-v1] compressing {} steps with Spartan…", num_steps);
+            let pk = SNARK_PK.get().expect("SNARK PK not initialized");
+            let compressed = RollupCompressedSNARK::prove(&**pp, &**pk, &rs)
+                .map_err(|e| ProvingError::ProvingFailed(format!("CompressedSNARK::prove: {e}")))?;
+
+            let snark_bytes = bincode::serialize(&compressed)
+                .map_err(|e| ProvingError::SerializationError(format!("bincode serialize: {e}")))?;
+
+            let proof = NovaProof {
+                snark_proof: snark_bytes,
+                commitments_root: ivc_state.commitments_root,
+                nullifiers_root: ivc_state.nullifiers_root,
+                historic_root_root: ivc_state.historic_root_root,
+                transaction_count: ivc_state.transaction_count as usize,
+            };
+
+            log::info!(
+                "[nova-v1] prove_circuits_with_z0 complete: {} txs, proof size {} bytes",
+                num_steps,
+                proof.snark_proof.len()
+            );
+            Ok(proof)
+        }
     }
 
     impl RecursiveProvingEngine<NovaClientProof> for NovaRollupEngine {
@@ -410,30 +382,56 @@ mod nova_integration {
         where
             Self: Sized,
         {
+            use nova_snark::frontend::{num::AllocatedNum, test_cs::TestConstraintSystem, ConstraintSystem};
+            use nova_snark::traits::circuit::StepCircuit;
+
             let key_manager = crate::proving::nova_v1::keys::NovaKeyManager::with_default_dir();
 
-            // The circuit's arity is the canonical fingerprint for the
-            // persisted PublicParams / SNARK keys. A mismatch on load
-            // (e.g. a `nova_ivc_pk_v1.bin` generated against the old
-            // arity-4 step circuit) is detected by the key manager's
-            // envelope and the stale file is deleted and regenerated.
+            // The circuit's arity and constraint count together form the
+            // canonical fingerprint for the persisted PublicParams / SNARK
+            // keys. Arity catches state-vector changes; constraint count
+            // catches gadget changes that keep arity constant (e.g. adding
+            // the nullifier insertion witness). Both are checked by the
+            // key manager's envelope on load.
             let expected_arity =
                 crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
+
+            // Compute the dummy circuit's constraint count once. This is
+            // cheap (~1 ms) and guarantees that any shape change (even
+            // arity-preserving ones) invalidates stale cached keys.
+            let dummy_circuit = RollupCircuit::padding();
+            let z0 = Self::initial_z0();
+            let mut cs = TestConstraintSystem::<F1>::new();
+            let z_alloc: Vec<_> = z0
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{i}")), || *v)
+                })
+                .collect();
+            dummy_circuit
+                .synthesize(&mut cs, &z_alloc)
+                .expect("dummy circuit synthesize must succeed");
+            let expected_constraint_count = cs.num_constraints();
 
             // Initialize global parameters if not already loaded.
             // PublicParams are loaded from disk when available; otherwise
             // generated via the supplied closure and persisted.
             PUBLIC_PARAMS.get_or_init(|| {
                 let pp = key_manager
-                    .load_or_generate_ivc_pk(expected_arity, || {
-                        let dummy_circuit = RollupCircuit::padding();
-                        PublicParams::<E1, E2, RollupCircuit>::setup(
-                            &dummy_circuit,
-                            &*S1::ck_floor(),
-                            &*S2::ck_floor(),
-                        )
-                        .expect("PublicParams setup failed")
-                    })
+                    .load_or_generate_ivc_pk(
+                        expected_arity,
+                        expected_constraint_count,
+                        || {
+                            let dummy_circuit = RollupCircuit::padding();
+                            PublicParams::<E1, E2, RollupCircuit>::setup(
+                                &dummy_circuit,
+                                &*S1::ck_floor(),
+                                &*S2::ck_floor(),
+                            )
+                            .expect("PublicParams setup failed")
+                        },
+                    )
                     .expect("Failed to load or generate PublicParams");
                 Arc::new(pp)
             });
@@ -445,6 +443,7 @@ mod nova_integration {
                 let (pk, vk) = key_manager
                     .load_or_generate_snark_keys::<E1, E2, RollupCircuit, S1, S2>(
                         expected_arity,
+                        expected_constraint_count,
                         || {
                             RollupCompressedSNARK::setup(pp)
                                 .expect("Failed to setup CompressedSNARK")

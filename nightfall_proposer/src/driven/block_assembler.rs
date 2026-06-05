@@ -108,16 +108,23 @@ impl<P: Proof + Send + Sync> BlockAssemblyTrigger for SmartTrigger<P> {
                 );
                 break; // Exit loop early
             }
+            // Safety net: always honour the max_wait_secs timeout, even if the
+            // assembly status is currently paused. Without this, a paused status
+            // (e.g. set by the REST endpoint) combined with a sparse mempool would
+            // hold the trigger open indefinitely and never assemble a block.
+            if elapsed >= self.max_wait_secs {
+                warn!(
+                    "Max wait time elapsed ({}s >= {}s). Forcing block assembly.",
+                    elapsed, self.max_wait_secs
+                );
+                if !self.status.read().await.is_running() {
+                    self.status.write().await.resume();
+                }
+                break;
+            }
             if self.status.read().await.is_running() {
                 if self.should_assemble().await {
                     debug!("Trigger activated by mempool check.");
-                    break;
-                }
-                if elapsed >= self.max_wait_secs {
-                    debug!(
-                        "Max wait time elapsed ({}s). Triggering block assembly.",
-                        self.max_wait_secs
-                    );
                     break;
                 }
             } else {

@@ -1,0 +1,71 @@
+# Dev-infra ring for fast-iteration Nova + Nightfall work.
+#
+# This compose file wraps ONLY the slow-moving infrastructure containers
+# (MongoDB and anvil) and exposes them on the host's localhost. Application
+# code (proposer, client, tests) runs on the host with `cargo run`, so
+# source changes are picked up immediately without rebuilding a Docker
+# image. Select the [local] nightfall.toml profile via
+# `NF4_RUN_MODE=local`.
+#
+# Usage:
+#   docker compose -f docker-compose.dev-infra.yml up -d
+#   # ... iterate on host with `cargo xtask nova-fast` ...
+#   docker compose -f docker-compose.dev-infra.yml down [--volumes]
+#
+# Why this works:
+# - MongoDB image and foundry image are both small and pulled once;
+#   subsequent `up -d` runs are < 2 s.
+# - `nf_mongo_data` is a named volume: state survives `down` and is only
+#   wiped on `down --volumes`. This lets the e2e test in
+#   nightfall_proposer/src/driven/nova_prover_e2e_tests.rs drop the test
+#   database on demand without losing other dev data.
+# - anvil is run from the foundry Docker image so the host does not need
+#   `foundry` installed; the chain is reproducible across machines.
+# - No application code is built inside Docker; the host's `cargo run`
+#   output is reused.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: nf_mongo_dev
+    command: ["--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 0s
+    volumes:
+      - nf_mongo_data:/data/db
+    restart: unless-stopped
+
+  anvil:
+    # The foundry image ships `anvil`, `forge`, and `cast`. We use it for
+    # the dev chain so the host doesn't need any foundry tooling.
+    image: ghcr.io/foundry-rs/foundry:v1.3.1
+    container_name: nf_anvil_dev
+    command:
+      - anvil
+      - --block-time=1
+      - --gas-limit=500000000
+      - --base-fee=0
+      - --port=8545
+      - --host=0.0.0.0
+    ports:
+      - "8545:8545"
+    healthcheck:
+      # `cast` is in the same image; anvil itself does not ship a
+      # healthcheck endpoint, so probe via the JSON-RPC `eth_chainId`.
+      test:
+        - "CMD-SHELL"
+        - "cast chain-id --rpc-url http://localhost:8545 >/dev/null 2>&1"
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 0s
+
+volumes:
+  nf_mongo_data:
+    name: nf_mongo_data

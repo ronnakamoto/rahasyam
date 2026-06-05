@@ -343,6 +343,15 @@ pub trait IndexedLeaves<F: PrimeField> {
         new_next_value: F,
         tree_id: &str,
     ) -> Result<(), Self::Error>;
+    /// Return every indexed leaf stored for `tree_id`, in arbitrary
+    /// order. The default implementation queries the
+    /// `{tree_id}_indexed_leaves` MongoDB collection and is the only
+    /// API the Nova proposer needs to hydrate its in-memory Neptune
+    /// IMT from the JF nullifier tree.
+    async fn get_all_leaves(
+        &self,
+        tree_id: &str,
+    ) -> Result<Vec<IndexedLeaf<F>>, Self::Error>;
 }
 
 pub mod helper_functions {

@@ -2,3 +2,25 @@
 git-fetch-with-cli = true
 
 [env]
+
+# -----------------------------------------------------------------------------
+# Cargo aliases for the fast-iteration Nova + Nightfall workflow.
+#
+#   cargo nova-test        — pure-Rust unit tests for the Nova witness / IVC
+#                            (lib::proving::nova_v1::{proposer_repro,
+#                            ivc_integration}_tests, ~30 s, no infra).
+#   cargo nova-prover      — in-process end-to-end test of the proposer's
+#                            prepare_state_transition / recursive_prove /
+#                            prove_block pipeline
+#                            (nightfall_proposer::driven::nova_prover_e2e_tests,
+#                            needs the dev-infra Mongo on localhost:27017).
+#   cargo nova-build       — release build of proposer, client, test
+#                            binaries with `--features nova-v1`.
+#   cargo xtask            — run the dev-infra / nova-fast / nova-keygen
+#                            commands in nightfall_test/src/bin/xtask.rs.
+# -----------------------------------------------------------------------------
+[alias]
+nova-test   = "test -p lib --features nova-v1 --release --lib proving::nova_v1"
+nova-prover = "test -p nightfall_proposer --features nova-v1 --release --lib"
+nova-build  = "build -p nightfall_proposer -p nightfall_client -p nightfall_test --features nova-v1 --release"
+xtask       = "run -p nightfall_test --bin xtask --"

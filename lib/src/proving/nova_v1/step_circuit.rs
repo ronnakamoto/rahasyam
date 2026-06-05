@@ -71,9 +71,11 @@ pub mod nova_step_circuit {
     pub const DEFAULT_MERKLE_DEPTH: usize = 32;
 
     /// Bit bound used for nullifier value range checks. BN254 Fr is
-    /// 254-bit; we use 253 to leave one bit of headroom and avoid the
-    /// non-canonical-decomposition edge case at `p-1`.
-    pub const DEFAULT_RANGE_BITS: usize = 252;
+    /// 254-bit. We use the full 254 bits so that arbitrary Poseidon hash
+    /// outputs (which are uniformly distributed over the field) are
+    /// accepted. Using 252 would reject ~75% of random nullifiers and
+    /// cause `Relaxed R1CS is unsatisfiable` on transfer blocks.
+    pub const DEFAULT_RANGE_BITS: usize = 254;
 
     /// Witness data for a single IVC step (one rollup transaction).
     ///
@@ -484,12 +486,18 @@ pub mod nova_step_circuit {
                 &nullifier_enabled,
             )?;
             
-            // Constrain the insertion index to strictly match the nullifier count.
-            // This prevents overwriting existing IMT nodes.
+            // Constrain the insertion index to match the path. We use
+            // `new_leaf_index` (the actual IMT insertion index) rather
+            // than `old_nullifier_count` (the per-block running count),
+            // because the witness IMT is hydrated with prior-block
+            // nullifiers so its insertion indices are offset by
+            // `1 + prior_count`. Using `old_nullifier_count` here would
+            // mismatch the path as soon as the first prior-hydrated
+            // real nullifier is processed, making the R1CS unsatisfiable.
             enforce_path_index(
                 cs.namespace(|| "nullifier_path_index"),
                 &nullifier_insertion_alloc.new_leaf_path,
-                &old_nullifier_count,
+                &nullifier_insertion_alloc.new_leaf_index,
                 &nullifier_enabled,
             )?;
 

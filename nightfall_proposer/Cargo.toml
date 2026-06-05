@@ -55,6 +55,7 @@ bincode = "1.3.3"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }
+serial_test = "3.2.0"
 
 [features]
 nova-v1 = ["lib/nova-v1", "ff"]

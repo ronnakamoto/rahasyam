@@ -68,16 +68,20 @@ impl ProvingEngine<PlonkProof> for PlonkProvingEngine {
     ) -> Result<PlonkProof, Self::Error> {
         let mut rng = ark_std::rand::thread_rng();
         let mut circuit = PlonkCircuit::<Fr254>::build_circuit(public_inputs, private_inputs)?;
-        // add an extra check for circuit satisfiability. It's more compute but it gives better information in case of failure
+        // MEMORY OPTIMISATION: The previous implementation called
+        // `check_circuit_satisfiability` here as a dev-time debug aid.
+        // That call walks the entire witness table a second time before
+        // `recursive_prove` does the same work, roughly doubling peak
+        // heap usage during proof generation. On the most complex
+        // client circuit (swap, 4 spend + 4 new commitments) the
+        // extra pressure pushes the client OOM at 8 GiB.
+        //
+        // `recursive_prove` already returns an error if the circuit
+        // is unsatisfied, so the check is redundant for correctness.
+        // We skip it unconditionally here; the `error!` log inside
+        // the `recursive_prove` error mapping still surfaces the
+        // underlying cause when proving fails.
         circuit.finalize_for_recursive_arithmetization::<RescueCRHF<Fq254>>()?;
-        {
-            use jf_relation::Circuit;
-            let pi = circuit.public_input()?;
-            circuit.check_circuit_satisfiability(&pi).map_err(|e| {
-                error!("Circuit is not satisfied before recursive_prove: {e:?}");
-                e
-            })?;
-        }
         debug!("Retrieving proving and verifying keys");
         let pk: &'static Arc<ProvingKey<UnivariateKzgPCS<Bn254>>> = get_client_proving_key();
         // Our clients proofs must have blinding enabled.

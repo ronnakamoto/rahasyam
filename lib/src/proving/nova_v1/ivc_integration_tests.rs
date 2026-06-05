@@ -232,6 +232,163 @@ fn single_nonzero_step_satisfies_with_compute_initial_z0() {
     );
 }
 
+/// 4b. Diagnostic: which specific constraint is unsatisfiable for a
+/// single non-zero nullifier step? Used to bisect the IVC bug.
+#[test]
+fn single_nonzero_step_diagnose_unsat_constraint() {
+    let z0 = compute_initial_z0();
+    let commitments: Vec<F1> = vec![F1::from(1u64), F1::from(2u64), F1::ZERO, F1::ZERO];
+    let nullifiers: Vec<F1> = vec![F1::from(100u64), F1::ZERO, F1::ZERO, F1::ZERO];
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    assert_eq!(circuits.len(), 4);
+    let (satisfied, unsat) = run_step_in_tcs(&circuits[0], [z0[0], z0[1], z0[2], z0[3], z0[4]]);
+    eprintln!("single non-zero step satisfied: {satisfied}");
+    eprintln!("single non-zero step unsat constraint: {unsat:?}");
+    assert!(satisfied, "single non-zero step must satisfy, but constraint {:?} fails", unsat);
+}
+
+/// 4c. Diagnostic: simulate the IVC step-by-step. After step 0
+/// produces z_out, feed z_out into step 1 and check if step 1
+/// satisfies. This is the IVC's per-step semantics, but expressed
+/// outside the Nova RecursiveSNARK machinery.
+#[test]
+fn ivc_two_steps_simulated_outside_recursive_snark() {
+    let z0 = compute_initial_z0();
+    let commitments: Vec<F1> = vec![F1::from(1u64), F1::from(2u64), F1::ZERO, F1::ZERO];
+    let nullifiers: Vec<F1> = vec![F1::from(100u64), F1::ZERO, F1::ZERO, F1::ZERO];
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    assert_eq!(circuits.len(), 4);
+
+    // Step 0: synthesize and extract z_out.
+    use nova_snark::frontend::num::AllocatedNum;
+    use nova_snark::frontend::ConstraintSystem;
+    use nova_snark::traits::circuit::StepCircuit;
+    let mut cs0 = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+    let z0_alloc: Vec<_> = (0..5)
+        .map(|i| {
+            AllocatedNum::alloc_infallible(cs0.namespace(|| format!("z0_{i}")), || z0[i])
+        })
+        .collect();
+    let z1_alloc = circuits[0].synthesize(&mut cs0, &z0_alloc).unwrap();
+    assert!(cs0.is_satisfied(), "step 0 must satisfy");
+    let z1: Vec<F1> = z1_alloc.iter().map(|n| n.get_value().unwrap()).collect();
+    eprintln!("z1 = {:?}", z1);
+
+    // Step 1: synthesize with z1 as input.
+    let (s1_satisfied, s1_unsat) = run_step_in_tcs(&circuits[1], [z1[0], z1[1], z1[2], z1[3], z1[4]]);
+    eprintln!("step 1 satisfied: {s1_satisfied}");
+    eprintln!("step 1 unsat: {s1_unsat:?}");
+}
+
+/// 4d. Trace every step's z_in/z_out and constraint satisfaction. This
+/// shows where the chain breaks when the RecursiveSNARK says "UnSat".
+#[test]
+fn ivc_chain_4_steps_trace() {
+    use nova_snark::frontend::num::AllocatedNum;
+    use nova_snark::frontend::ConstraintSystem;
+    use nova_snark::traits::circuit::StepCircuit;
+    let z0 = compute_initial_z0();
+    let commitments: Vec<F1> = vec![F1::from(1u64), F1::from(2u64), F1::ZERO, F1::ZERO];
+    let nullifiers: Vec<F1> = vec![F1::from(100u64), F1::ZERO, F1::ZERO, F1::ZERO];
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    assert_eq!(circuits.len(), 4);
+
+    let mut z = z0.clone();
+    eprintln!("z[0] = {:?}", z);
+    for (i, circuit) in circuits.iter().enumerate() {
+        let mut cs = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+        let z_alloc: Vec<_> = (0..5)
+            .map(|j| {
+                AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j])
+            })
+            .collect();
+        let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
+        let ok = cs.is_satisfied();
+        let unsat = cs.which_is_unsatisfied().map(String::from);
+        let z_out: Vec<F1> = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
+        eprintln!("step {i}: satisfied={ok} unsat={unsat:?}");
+        eprintln!("  z_in  = {:?}", z);
+        eprintln!("  z_out = {:?}", z_out);
+        if !ok {
+            return;
+        }
+        z = z_out;
+    }
+}
+
+/// 4e. Trace 5 steps with all non-zero nullifiers — the exact shape that
+/// fails in `ivc_chain_with_5_nonzero_circuits_verifies`. If this passes
+/// in TestConstraintSystem, the bug is in Nova folding, not the witness.
+#[test]
+fn ivc_chain_5_nonzero_trace() {
+    use nova_snark::frontend::num::AllocatedNum;
+    use nova_snark::frontend::ConstraintSystem;
+    use nova_snark::traits::circuit::StepCircuit;
+    let z0 = compute_initial_z0();
+    let commitments: Vec<F1> = (1u64..=5).map(F1::from).collect();
+    let nullifiers: Vec<F1> = (100u64..=104).map(F1::from).collect();
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    assert_eq!(circuits.len(), 5);
+
+    let mut z = z0.clone();
+    eprintln!("z[0] = {:?}", z);
+    for (i, circuit) in circuits.iter().enumerate() {
+        let mut cs = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+        let z_alloc: Vec<_> = (0..5)
+            .map(|j| {
+                AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j])
+            })
+            .collect();
+        let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
+        let ok = cs.is_satisfied();
+        let unsat = cs.which_is_unsatisfied().map(String::from);
+        let z_out: Vec<F1> = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
+        eprintln!("step {i}: satisfied={ok} unsat={unsat:?} constraints={}", cs.num_constraints());
+        eprintln!("  z_in  = {:?}", z);
+        eprintln!("  z_out = {:?}", z_out);
+        if !ok {
+            panic!("step {i} unsatisfied: {unsat:?}");
+        }
+        z = z_out;
+    }
+}
+
+/// 4f. Check that the R1CS shape (number of constraints) is identical
+/// across padding and real circuits with non-zero nullifiers. Nova
+/// requires uniform shape.
+#[test]
+fn r1cs_shape_uniform_across_padding_and_real() {
+    use nova_snark::frontend::num::AllocatedNum;
+    use nova_snark::frontend::ConstraintSystem;
+    use nova_snark::traits::circuit::StepCircuit;
+    let z0 = compute_initial_z0();
+
+    // Padding circuit shape.
+    let mut cs_pad = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+    let z_alloc_pad: Vec<_> = (0..5)
+        .map(|i| AllocatedNum::alloc_infallible(cs_pad.namespace(|| format!("z_{i}")), || z0[i]))
+        .collect();
+    let pad = RollupCircuit::padding();
+    pad.synthesize(&mut cs_pad, &z_alloc_pad).unwrap();
+    let pad_constraints = cs_pad.num_constraints();
+    eprintln!("padding constraints: {pad_constraints}");
+
+    // Real circuit with non-zero nullifier.
+    let commitments: Vec<F1> = vec![F1::from(1u64)];
+    let nullifiers: Vec<F1> = vec![F1::from(100u64)];
+    let real_circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    let mut cs_real = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+    let z_alloc_real: Vec<_> = (0..5)
+        .map(|i| AllocatedNum::alloc_infallible(cs_real.namespace(|| format!("z_{i}")), || z0[i]))
+        .collect();
+    real_circuits[0].synthesize(&mut cs_real, &z_alloc_real).unwrap();
+    let real_constraints = cs_real.num_constraints();
+    eprintln!("real constraints: {real_constraints}");
+
+    assert_eq!(pad_constraints, real_constraints,
+        "R1CS shape must be uniform: padding={pad_constraints}, real={real_constraints}");
+}
+
 /// 5. Full IVC chain reproduction of the live proposer's flow.
 /// Builds 20 circuits (matching the 5-deposit × 4 commitments case in the
 /// live DIAG), feeds them through the same `prove_circuits` path the
@@ -285,6 +442,236 @@ fn ivc_chain_with_5_nonzero_circuits_verifies() {
         assert_eq!(proof.transaction_count, 5);
         assert!(!proof.snark_proof.is_empty());
     });
+}
+
+/// 6b. Full IVC chain with a MIX of zero and non-zero nullifiers.
+/// This reproduces the live proposer's transfer block shape
+/// (many padding deposits + a few real transfers).
+#[test]
+fn ivc_chain_mixed_zero_and_nonzero_circuits_verifies() {
+    let _ = std::panic::catch_unwind(|| {
+        let engine = NovaRollupEngine::setup().expect("engine setup");
+
+        let z0_init = compute_initial_z0();
+        // Simulate a transfer block: 244 zero-nullifier padding steps
+        // followed by 12 non-zero nullifier steps.
+        let mut commitments = vec![F1::ZERO; 244];
+        let mut nullifiers = vec![F1::ZERO; 244];
+        for i in 0..12 {
+            commitments.push(F1::from((i + 1) as u64));
+            nullifiers.push(F1::from((100 + i) as u64));
+        }
+        let circuits = build_real_circuits(32, &commitments, &nullifiers, z0_init[2]);
+        assert_eq!(circuits.len(), 256);
+
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("prove_circuits must succeed for mixed zero/non-zero circuits");
+
+        assert_eq!(proof.transaction_count, 256);
+        assert!(!proof.snark_proof.is_empty());
+    });
+}
+
+/// 6c. Full IVC chain matching the EXACT live transfer block shape:
+/// 244 deposit steps (non-zero commitments, zero nullifiers) followed
+/// by 12 transfer steps (non-zero commitments, non-zero nullifiers).
+#[test]
+fn ivc_chain_deposits_then_transfers_verifies() {
+    let _ = std::panic::catch_unwind(|| {
+        let engine = NovaRollupEngine::setup().expect("engine setup");
+
+        let z0_init = compute_initial_z0();
+        // 244 deposit steps: non-zero commitments, zero nullifiers.
+        let mut commitments: Vec<F1> = (1u64..=244).map(F1::from).collect();
+        let mut nullifiers = vec![F1::ZERO; 244];
+        // 12 transfer steps: non-zero commitments, non-zero nullifiers.
+        for i in 0..12 {
+            commitments.push(F1::from((1000 + i) as u64));
+            nullifiers.push(F1::from((100 + i) as u64));
+        }
+        let circuits = build_real_circuits(32, &commitments, &nullifiers, z0_init[2]);
+        assert_eq!(circuits.len(), 256);
+
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("prove_circuits must succeed for deposits-then-transfers");
+
+        assert_eq!(proof.transaction_count, 256);
+        assert!(!proof.snark_proof.is_empty());
+    });
+}
+
+/// 6d. Smaller repro of the exact live transfer block shape
+/// (24 deposit steps + 4 transfer steps = 28 total).
+#[test]
+fn ivc_chain_small_deposits_then_transfers_verifies() {
+    let _ = std::panic::catch_unwind(|| {
+        let engine = NovaRollupEngine::setup().expect("engine setup");
+
+        let z0_init = compute_initial_z0();
+        let mut commitments: Vec<F1> = (1u64..=24).map(F1::from).collect();
+        let mut nullifiers = vec![F1::ZERO; 24];
+        for i in 0..4 {
+            commitments.push(F1::from((1000 + i) as u64));
+            nullifiers.push(F1::from((100 + i) as u64));
+        }
+        let circuits = build_real_circuits(32, &commitments, &nullifiers, z0_init[2]);
+        assert_eq!(circuits.len(), 28);
+
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("prove_circuits must succeed for small deposits-then-transfers");
+
+        assert_eq!(proof.transaction_count, 28);
+        assert!(!proof.snark_proof.is_empty());
+    });
+}
+
+/// 6e. Repro with zero nullifier steps AFTER non-zero nullifier steps.
+/// Each transfer has 2 non-zero nullifiers + 2 zero padding nullifiers.
+#[test]
+fn ivc_chain_zero_after_nonzero_nullifiers_verifies() {
+    let _ = std::panic::catch_unwind(|| {
+        let engine = NovaRollupEngine::setup().expect("engine setup");
+
+        let z0_init = compute_initial_z0();
+        let mut commitments: Vec<F1> = (1u64..=24).map(F1::from).collect();
+        let mut nullifiers = vec![F1::ZERO; 24];
+        // Transfer 1: 2 non-zero + 2 zero
+        commitments.push(F1::from(1001u64));
+        commitments.push(F1::from(1002u64));
+        commitments.push(F1::from(1003u64));
+        commitments.push(F1::from(1004u64));
+        nullifiers.push(F1::from(101u64));
+        nullifiers.push(F1::from(102u64));
+        nullifiers.push(F1::ZERO);
+        nullifiers.push(F1::ZERO);
+        // Transfer 2: 2 non-zero + 2 zero
+        commitments.push(F1::from(2001u64));
+        commitments.push(F1::from(2002u64));
+        commitments.push(F1::from(2003u64));
+        commitments.push(F1::from(2004u64));
+        nullifiers.push(F1::from(201u64));
+        nullifiers.push(F1::from(202u64));
+        nullifiers.push(F1::ZERO);
+        nullifiers.push(F1::ZERO);
+
+        let circuits = build_real_circuits(32, &commitments, &nullifiers, z0_init[2]);
+        assert_eq!(circuits.len(), 32);
+
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("prove_circuits must succeed for zero-after-nonzero nullifiers");
+
+        assert_eq!(proof.transaction_count, 32);
+        assert!(!proof.snark_proof.is_empty());
+    });
+}
+
+/// 6f. Same shape as 6e but uses `build_rollup_circuits` (the exact
+/// code path the live proposer uses) instead of `build_real_circuits`.
+#[test]
+fn ivc_chain_rollup_builder_zero_after_nonzero_verifies() {
+    let _ = std::panic::catch_unwind(|| {
+        let engine = NovaRollupEngine::setup().expect("engine setup");
+
+        let z0_init = compute_initial_z0();
+        let mut commitments: Vec<F1> = (1u64..=24).map(F1::from).collect();
+        let mut nullifiers = vec![F1::ZERO; 24];
+        // Transfer 1: 2 non-zero + 2 zero
+        commitments.push(F1::from(1001u64));
+        commitments.push(F1::from(1002u64));
+        commitments.push(F1::from(1003u64));
+        commitments.push(F1::from(1004u64));
+        nullifiers.push(F1::from(101u64));
+        nullifiers.push(F1::from(102u64));
+        nullifiers.push(F1::ZERO);
+        nullifiers.push(F1::ZERO);
+        // Transfer 2: 2 non-zero + 2 zero
+        commitments.push(F1::from(2001u64));
+        commitments.push(F1::from(2002u64));
+        commitments.push(F1::from(2003u64));
+        commitments.push(F1::from(2004u64));
+        nullifiers.push(F1::from(201u64));
+        nullifiers.push(F1::from(202u64));
+        nullifiers.push(F1::ZERO);
+        nullifiers.push(F1::ZERO);
+
+        use super::witness::{build_rollup_circuits, RollupWitnessInputs};
+        let inputs = RollupWitnessInputs::with_prior_nullifiers(
+            &commitments,
+            &nullifiers,
+            z0_init[2],
+            vec![], // no prior nullifiers, matching the live transfer block
+        );
+        let witness = build_rollup_circuits(&inputs);
+        let circuits = witness.circuits;
+        assert_eq!(circuits.len(), 32);
+
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("prove_circuits must succeed for rollup-builder zero-after-nonzero");
+
+        assert_eq!(proof.transaction_count, 32);
+        assert!(!proof.snark_proof.is_empty());
+    });
+}
+
+/// 6g. Use pseudo-random field elements (not small integers) for
+/// commitments and nullifiers to rule out a value-dependent bug.
+#[test]
+fn ivc_chain_random_values_zero_after_nonzero_verifies() {
+    let engine = NovaRollupEngine::setup().expect("engine setup");
+
+    let z0_init = compute_initial_z0();
+    let mut rng = rand::thread_rng();
+
+    // 24 deposit steps with random non-zero commitments and zero nullifiers
+    let mut commitments: Vec<F1> = (0..24)
+        .map(|_| F1::random(&mut rng))
+        .collect();
+    let mut nullifiers = vec![F1::ZERO; 24];
+
+    // Transfer 1: 2 random non-zero + 2 zero
+    for _ in 0..2 {
+        let val = F1::random(&mut rng);
+        commitments.push(val);
+        nullifiers.push(val);
+    }
+    commitments.push(F1::ZERO);
+    commitments.push(F1::ZERO);
+    nullifiers.push(F1::ZERO);
+    nullifiers.push(F1::ZERO);
+
+    // Transfer 2: 2 random non-zero + 2 zero
+    for _ in 0..2 {
+        let val = F1::random(&mut rng);
+        commitments.push(val);
+        nullifiers.push(val);
+    }
+    commitments.push(F1::ZERO);
+    commitments.push(F1::ZERO);
+    nullifiers.push(F1::ZERO);
+    nullifiers.push(F1::ZERO);
+
+    use super::witness::{build_rollup_circuits, RollupWitnessInputs};
+    let inputs = RollupWitnessInputs::with_prior_nullifiers(
+        &commitments,
+        &nullifiers,
+        z0_init[2],
+        vec![],
+    );
+    let witness = build_rollup_circuits(&inputs);
+    let circuits = witness.circuits;
+    assert_eq!(circuits.len(), 32);
+
+    let proof = engine
+        .prove_circuits(circuits)
+        .expect("prove_circuits must succeed for random values");
+
+    assert_eq!(proof.transaction_count, 32);
+    assert!(!proof.snark_proof.is_empty());
 }
 
 /// 7. Cross-language wire compatibility test.
@@ -440,4 +827,143 @@ fn nonzero_nullifier_witness_recomputes_to_z0_imt_root() {
     imt.insert_nullifier(F1::from(42u64))
         .expect("insert must succeed");
     assert_ne!(imt.root(), z0[1], "IMT root must change after non-zero nullifier insertion");
+}
+
+/// 10. Reproduce the post-reorg transfer block failure.
+/// The first transfer block succeeds with an empty prior-nullifier set;
+/// the second transfer block hydrates the IMT with nullifiers from the
+/// first block. If the hydration or non-inclusion witness is wrong, the
+/// IVC `verify` will return `UnSat`.
+#[test]
+fn ivc_chain_second_block_with_prior_nullifiers_trace() {
+    use nova_snark::frontend::num::AllocatedNum;
+    use nova_snark::frontend::ConstraintSystem;
+    use nova_snark::traits::circuit::StepCircuit;
+
+    let z0_init = compute_initial_z0();
+    let mut rng = rand::thread_rng();
+
+    let mut block1_commitments: Vec<F1> = (0..24).map(|_| F1::random(&mut rng)).collect();
+    let mut block1_nullifiers = vec![F1::ZERO; 24];
+    let block1_real_nullifiers = [F1::random(&mut rng), F1::random(&mut rng)];
+    block1_commitments.push(F1::random(&mut rng));
+    block1_commitments.push(F1::random(&mut rng));
+    block1_commitments.push(F1::ZERO);
+    block1_commitments.push(F1::ZERO);
+    block1_nullifiers.push(block1_real_nullifiers[0]);
+    block1_nullifiers.push(block1_real_nullifiers[1]);
+    block1_nullifiers.push(F1::ZERO);
+    block1_nullifiers.push(F1::ZERO);
+
+    use super::witness::{build_rollup_circuits, RollupWitnessInputs};
+    let block1_inputs = RollupWitnessInputs::with_prior_nullifiers(
+        &block1_commitments,
+        &block1_nullifiers,
+        z0_init[2],
+        vec![],
+    );
+    let block1_witness = build_rollup_circuits(&block1_inputs);
+
+    let mut block2_commitments: Vec<F1> = (0..24).map(|_| F1::random(&mut rng)).collect();
+    let mut block2_nullifiers = vec![F1::ZERO; 24];
+    let block2_real_nullifiers = [F1::random(&mut rng), F1::random(&mut rng)];
+    block2_commitments.push(F1::random(&mut rng));
+    block2_commitments.push(F1::random(&mut rng));
+    block2_commitments.push(F1::ZERO);
+    block2_commitments.push(F1::ZERO);
+    block2_nullifiers.push(block2_real_nullifiers[0]);
+    block2_nullifiers.push(block2_real_nullifiers[1]);
+    block2_nullifiers.push(F1::ZERO);
+    block2_nullifiers.push(F1::ZERO);
+
+    let block2_inputs = RollupWitnessInputs::with_prior_nullifiers(
+        &block2_commitments,
+        &block2_nullifiers,
+        z0_init[2],
+        block1_real_nullifiers.to_vec(),
+    );
+    let block2_witness = build_rollup_circuits(&block2_inputs);
+    let circuits = block2_witness.circuits;
+
+    // Block 2 must start from the hydrated IMT root, not the empty root.
+    let mut z: [F1; 5] = z0_init.clone().try_into().unwrap();
+    z[1] = block2_witness.pre_nullifiers_root;
+    for (i, circuit) in circuits.iter().enumerate() {
+        eprintln!("block2 step {i}: is_padding={}", circuit.is_padding);
+        let mut cs = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
+        let z_alloc: Vec<_> = (0..5)
+            .map(|j| AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j]))
+            .collect();
+        let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
+        let ok = cs.is_satisfied();
+        let unsat = cs.which_is_unsatisfied().map(String::from);
+        let z_out_vec: Vec<F1> = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
+        eprintln!("block2 step {i}: satisfied={ok} unsat={unsat:?} constraints={}", cs.num_constraints());
+        eprintln!("  z_in  = {:?}", z);
+        eprintln!("  z_out = {:?}", z_out_vec);
+        if !ok {
+            panic!("block2 step {i} unsatisfied: {unsat:?}");
+        }
+        z = z_out_vec.try_into().unwrap();
+    }
+}
+
+#[test]
+fn ivc_chain_second_block_with_prior_nullifiers_verifies() {
+    let engine = NovaRollupEngine::setup().expect("engine setup");
+    let z0_init = compute_initial_z0();
+    let mut rng = rand::thread_rng();
+
+    // Block 1: 24 deposit steps + 4 transfer steps (2 non-zero nullifiers).
+    let mut block1_commitments: Vec<F1> = (0..24).map(|_| F1::random(&mut rng)).collect();
+    let mut block1_nullifiers = vec![F1::ZERO; 24];
+    let block1_real_nullifiers = [F1::random(&mut rng), F1::random(&mut rng)];
+    block1_commitments.push(F1::random(&mut rng));
+    block1_commitments.push(F1::random(&mut rng));
+    block1_commitments.push(F1::ZERO);
+    block1_commitments.push(F1::ZERO);
+    block1_nullifiers.push(block1_real_nullifiers[0]);
+    block1_nullifiers.push(block1_real_nullifiers[1]);
+    block1_nullifiers.push(F1::ZERO);
+    block1_nullifiers.push(F1::ZERO);
+
+    use super::witness::{build_rollup_circuits, RollupWitnessInputs};
+    let block1_inputs = RollupWitnessInputs::with_prior_nullifiers(
+        &block1_commitments,
+        &block1_nullifiers,
+        z0_init[2],
+        vec![],
+    );
+    let block1_witness = build_rollup_circuits(&block1_inputs);
+    let block1_proof = engine
+        .prove_circuits(block1_witness.circuits)
+        .expect("block 1 must prove");
+    assert_eq!(block1_proof.transaction_count, 28);
+
+    // Block 2: hydrate with the real nullifiers from block 1.
+    let mut block2_commitments: Vec<F1> = (0..24).map(|_| F1::random(&mut rng)).collect();
+    let mut block2_nullifiers = vec![F1::ZERO; 24];
+    let block2_real_nullifiers = [F1::random(&mut rng), F1::random(&mut rng)];
+    block2_commitments.push(F1::random(&mut rng));
+    block2_commitments.push(F1::random(&mut rng));
+    block2_commitments.push(F1::ZERO);
+    block2_commitments.push(F1::ZERO);
+    block2_nullifiers.push(block2_real_nullifiers[0]);
+    block2_nullifiers.push(block2_real_nullifiers[1]);
+    block2_nullifiers.push(F1::ZERO);
+    block2_nullifiers.push(F1::ZERO);
+
+    let block2_inputs = RollupWitnessInputs::with_prior_nullifiers(
+        &block2_commitments,
+        &block2_nullifiers,
+        z0_init[2],
+        block1_real_nullifiers.to_vec(),
+    );
+    let block2_witness = build_rollup_circuits(&block2_inputs);
+    let mut z0: [F1; 5] = z0_init.clone().try_into().unwrap();
+    z0[1] = block2_witness.pre_nullifiers_root;
+    let block2_proof = engine
+        .prove_circuits_with_z0(block2_witness.circuits, z0)
+        .expect("block 2 with prior nullifiers must prove");
+    assert_eq!(block2_proof.transaction_count, 28);
 }
