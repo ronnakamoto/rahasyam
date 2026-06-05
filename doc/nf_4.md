@@ -149,16 +149,24 @@ cargo test
 The Docker app should be running before you run `cargo test`, as some of unit test uses test_container.
 This will take a few minutes and should complete with no test failures. If the unit tests pass then the integration tests can be run. The integrations tests run up NF_4 as a set of dockerised applications together with two test containers (`nightfall_test` and `nightfall_sync_test`) that call the nightfall http APIs and inspect the results:
 
+**Note:** The provided Dockerfiles for the `client` and `proposer` containers are configured to compile and run with the Nova proving system by default (using the `--features nova-v1` flag). Any `docker compose` commands will automatically build and use the Nova proving system.
+
 First, generate some proving keys for the rollup prover (this only needs to be done once because they are saved locally and will be copied into the containers, and served from the configuration server)
 
 ```sh
 cargo run --release --bin key_generation
 ```
 
+If you are using the Nova proving system, you must generate the Nova keys instead by appending the `--features nova-v1` flag. To generate real keys and disable the default mock prover, prepend the `NF4_MOCK_PROVER=false` environment variable:
+
+```sh
+NF4_MOCK_PROVER=false cargo run --release --features nova-v1 --bin key_generation
+```
+
 ```sh
 docker compose --profile sync_test build
 docker compose --profile sync_test down -v
-docker compose --profile sync_test up
+NF4_MOCK_PROVER=false docker compose --profile sync_test up
 ```
 
 The build will take about 30 mins the first time around. Subsequent builds will be faster but are only required if you make a change to the code or the configuration files. In subsequent runs, the `docker compose --profile sync_test build` command can be omitted if there are no changes to the code or configuration files.
@@ -276,6 +284,12 @@ Note that the Anvil container will still be run up (we will probably change that
 cargo run --release --bin key_generation
 ```
 
+For the Nova proving system (which requires disabling the mock prover to generate real keys), use:
+
+```sh
+NF4_MOCK_PROVER=false cargo run --release --features nova-v1 --bin key_generation
+```
+
 If not, you will get a 'quotient' error.
 
 ### Subsequent use of deployed contracts
@@ -283,7 +297,7 @@ If not, you will get a 'quotient' error.
 Ensure that `deploy_contracts` is `false`, using either of the two methods above, or nightfall will deploy and use a new set of contracts. It is advisable also to set the contract addresses in `nightfall.toml` (and rebuild). You can get the addresses from the `blockchain_assets/logs/deployer.s.sol/run-latest.json` file if you have deployed the contracts but, if you have deployed the contracts previously, their addresses will be read directly from this file if they are not set in `nightfall.toml`. Then running:
 
 ```sh
-docker compose --profile development --env-file local.env up
+NF4_MOCK_PROVER=false docker compose --profile development --env-file local.env up
 ```
 
 will re-sync the containers to the existing smart contracts and run the integration tests, but will not deploy new contracts.
@@ -334,11 +348,17 @@ Do not forget that the `proposer` will need to run on a large server (144 cores,
 cargo run --release --bin key_generation
 ```
 
+Or for the Nova proving system (which requires disabling the mock prover):
+
+```sh
+NF4_MOCK_PROVER=false cargo run --release --features nova-v1 --bin key_generation
+```
+
 Check that you are generating `REAL` rollup keys (the log output will tell you) and not mock ones. Then run the `proposer`
 
 ```sh
 docker compose --profile indie-proposer build
-docker compose --profile indie-proposer --env-file local.env up
+NF4_MOCK_PROVER=false docker compose --profile indie-proposer --env-file local.env up
 ```
 
 The `client`s are deployed in a similar manner, however, it doesn't use the rollup proving key so you may want to set `mock_prover=true`. This will prevent it from computing a full rollup key, which will take a long time and probably fail on a laptop or small server. The client proving keys, which the `client`s use, are the same in either case.

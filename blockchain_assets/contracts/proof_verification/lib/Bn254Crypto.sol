@@ -33,9 +33,47 @@ library Bn254Crypto {
         uint256[] memory scalars
     ) internal view returns (Types.G1Point memory r) {
         require(scalars.length == bases.length, "MSM error: length mismatch");
-        r = scalarMul(bases[0], scalars[0]);
-        for (uint256 i = 1; i < scalars.length; i++) {
-            r = add(r, scalarMul(bases[i], scalars[i]));
+        uint256 len = bases.length;
+        if (len == 0) return Types.G1Point(0, 0);
+
+        bytes memory msmInput = new bytes(len * 96);
+        for (uint256 i = 0; i < len; i++) {
+            Types.G1Point memory base = bases[i];
+            uint256 scalar = scalars[i];
+            assembly {
+                let offset := add(add(msmInput, 32), mul(i, 96))
+                mstore(offset, mload(base)) // base.x
+                mstore(add(offset, 32), mload(add(base, 32))) // base.y
+                mstore(add(offset, 64), scalar)
+            }
+        }
+
+        bool success;
+        // Assume MSM precompile is at address 0x0B. Change this if the network uses a different address.
+        address msmPrecompile = address(0x0B); 
+        assembly {
+            success := staticcall(
+                gas(),
+                msmPrecompile,
+                add(msmInput, 32),
+                mul(len, 96),
+                r,
+                64
+            )
+            switch success
+            case 0 {
+                // fallback to naive implementation if precompile reverts (e.g. not supported)
+            }
+        }
+        
+        if (!success) {
+            // Fallback naive implementation
+            r = scalarMul(bases[0], scalars[0]);
+            for (uint256 i = 1; i < len; i++) {
+                r = add(r, scalarMul(bases[i], scalars[i]));
+            }
+        } else {
+            require(success, "MSM precompile failed");
         }
     }
 

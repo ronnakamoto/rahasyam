@@ -49,10 +49,17 @@ where
         let client = Client::with_uri_str(uri)
             .await
             .expect("Could not create database connection");
-        // it's not enough just to connect to a database, we need to initialise some trees in it
-        <Client as CommitmentTree<Fr254>>::new_commitment_tree(&client, 29, 3)
-            .await
-            .expect("Could not create commitment tree");
+        // Tree dimensions must match the active proving system on the proposer.
+        let is_nova = get_settings().nightfall_proposer.proving_system.active
+            == configuration::settings::ProvingSystemIdConfig::NovaV1;
+        let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
+        <Client as CommitmentTree<Fr254>>::new_commitment_tree(
+            &client,
+            tree_height,
+            sub_tree_height,
+        )
+        .await
+        .expect("Could not create commitment tree");
         Ok(())
     }
 }

@@ -72,11 +72,25 @@ where
         let metadata_collection = self
             .database(<Self as MutableTree<F>>::MUT_DB_NAME)
             .collection::<TreeMetadata<F>>(&metadata_collection_name);
-        metadata_collection
-            .insert_one(metadata)
-            .await
-            .map_err(MerkleTreeError::DatabaseError)?;
-        Ok(())
+        // Make idempotent: a previous test or operator may have left
+        // the metadata document with `_id: 0` in place. Mongo's
+        // `insert_one` raises E11000 on duplicate `_id`; we treat
+        // that as a successful no-op so the init block can be safely
+        // re-run (e.g. by tests that share a `OnceCell` client).
+        match metadata_collection.insert_one(metadata).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(
+                    we,
+                )) = e.kind.as_ref()
+                {
+                    if we.code == 11000 {
+                        return Ok(());
+                    }
+                }
+                Err(MerkleTreeError::DatabaseError(e))
+            }
+        }
     }
 
     async fn get_root(&self, tree_id: &str) -> Result<F, Self::Error> {
@@ -815,14 +829,20 @@ where
         if commitments.len() % sub_tree_leaf_capacity != 0 {
             return Err(Self::Error::IncorrectBatchSize);
         }
+        let total_chunks = commitments.len() / sub_tree_leaf_capacity;
+        log::info!("[batch_insert_with_circuit_info] tree={}, sub_tree_leaf_capacity={}, total_leaves={}, chunks={}",
+            tree_id, sub_tree_leaf_capacity, commitments.len(), total_chunks);
         // call insert circuit for each sub_tree
         let mut circuit_infos = vec![];
-        for chunk in commitments.chunks(sub_tree_leaf_capacity) {
+        for (idx, chunk) in commitments.chunks(sub_tree_leaf_capacity).enumerate() {
+            let step_start = std::time::Instant::now();
             let circuit_info = self
                 .insert_for_circuit(chunk, tree_id)
                 .await
                 .expect("Could not insert for circuit");
             circuit_infos.push(circuit_info);
+            log::info!("[batch_insert_with_circuit_info] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
         }
         Ok(circuit_infos)
     }

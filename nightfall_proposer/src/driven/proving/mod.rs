@@ -1,6 +1,9 @@
 use configuration::settings::{Settings, ProvingSystemIdConfig};
 use lib::proving::{ProofSystemId, ProofSystemRegistry, ProvingError, plonk_v1::PlonkV1System};
 
+#[cfg(feature = "nova-v1")]
+use lib::proving::nova_v1::NovaV1System;
+
 pub fn build_registry_from_config(settings: &Settings) -> Result<ProofSystemRegistry, ProvingError> {
     let mut registry = ProofSystemRegistry::new();
     let ps_config = &settings.nightfall_proposer.proving_system;
@@ -16,7 +19,15 @@ pub fn build_registry_from_config(settings: &Settings) -> Result<ProofSystemRegi
                 registry.register::<PlonkV1System>()?;
             }
             ProvingSystemIdConfig::NovaV1 => {
-                log::warn!("NovaV1 is configured but not yet available; skipping registration");
+                #[cfg(feature = "nova-v1")]
+                {
+                    registry.register::<NovaV1System>()?;
+                    log::info!("Registered NovaV1 proving system");
+                }
+                #[cfg(not(feature = "nova-v1"))]
+                {
+                    log::warn!("NovaV1 is configured but nova-v1 feature is not enabled; skipping registration");
+                }
             }
         }
     }

@@ -1,5 +1,5 @@
 use configuration::{logging::init_logging, settings::Settings};
-use log::{info, warn};
+use log::{error, info, warn};
 use nightfall_deployer::deployment::deploy_contracts;
 
 #[tokio::main]
@@ -31,7 +31,10 @@ https://github.com/EYBlockchain/nightfall_4_CE
     };
     if settings.contracts.deploy_contracts {
         info!("Deploying contracts");
-        deploy_contracts(&settings).await.unwrap();
+        if let Err(e) = deploy_contracts(&settings).await {
+            error!("Deployer failed: {e}");
+            std::process::exit(1);
+        }
     } else {
         warn!("Skipping contract deployment");
     }

@@ -24,7 +24,7 @@ use lib::{
     log_fetcher::get_logs_paginated,
     shared_entities::{OnChainTransaction, SynchronisationPhase, SynchronisationStatus},
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use nightfall_bindings::artifacts::Nightfall;
 use std::{panic, time::Duration};
 use tokio::time::sleep;
@@ -153,6 +153,16 @@ pub async fn listen_for_events<N: NightfallContract>(
                                 restart::<N>().await;
                                 return Err(EventHandlerError::StreamTerminated);
                             }
+                            // Block hash mismatch indicates a reorg; the tree is
+                            // out of sync with the chain, so we must re-sync
+                            // (reset trees and replay events from start_block).
+                            EventHandlerError::BlockHashError(expected, found) => {
+                                warn!(
+                                    "Block hash mismatch: expected {expected:?}, found {found:?}. Reorg detected; restarting event listener"
+                                );
+                                restart::<N>().await;
+                                return Err(EventHandlerError::StreamTerminated);
+                            }
                             _ => panic!("Error processing event: {e:?}"),
                         }
                     }
@@ -187,7 +197,26 @@ pub async fn listen_for_events<N: NightfallContract>(
                         restart::<N>().await;
                         return Err(EventHandlerError::StreamTerminated);
                     }
-                    _ => panic!("Error processing event: {e:?}"),
+                    // Previously the catch-all was `panic!("Error
+                    // processing event: {e:?}")`, which (combined
+                    // with the `EventHandlerError::InvalidCalldata`
+                    // rewrite in `handle_event`) hid every real
+                    // failure as an opaque `InvalidCalldata` panic.
+                    // Now we log the full error and restart the
+                    // listener so the client can resync instead of
+                    // dying and stranding the test.
+                    EventHandlerError::Other(msg) => {
+                        error!(
+                            "Event processing failed (will restart listener to resync): {msg}"
+                        );
+                        restart::<N>().await;
+                        return Err(EventHandlerError::StreamTerminated);
+                    }
+                    _ => {
+                        error!("Error processing event: {e:?}");
+                        restart::<N>().await;
+                        return Err(EventHandlerError::StreamTerminated);
+                    }
                 }
             }
         }

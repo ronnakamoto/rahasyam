@@ -733,6 +733,7 @@ pub async fn wait_on_chain(
     let client = reqwest::Client::new();
     let mut count = 0;
     let mut onchain_set = HashSet::<Fr254>::new();
+    let mut last_warn: Option<std::time::Instant> = None;
     while count < commitment_hashes.len() {
         for hash in commitment_hashes.iter() {
             let url = Url::parse(recipient_url)
@@ -748,10 +749,30 @@ pub async fn wait_on_chain(
                 .map_err(|e| TestError::new(e.to_string()))?;
             match res.error_for_status() {
                 Ok(res) => {
-                    let commit = res
+                    let commit = match res
                         .json::<CommitmentEntry>()
                         .await
-                        .map_err(|e| TestError::new(e.to_string()))?;
+                        .map_err(|e| TestError::new(e.to_string()))
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            // Throttled to once every 30s so a stuck test still
+                            // emits a visible signal in the logs without spamming
+                            // them.
+                            let should_warn = last_warn
+                                .map(|t| t.elapsed() >= std::time::Duration::from_secs(30))
+                                .unwrap_or(true);
+                            if should_warn {
+                                warn!(
+                                    "Failed to deserialize CommitmentEntry for {}: {}",
+                                    hash.to_hex_string(),
+                                    e
+                                );
+                                last_warn = Some(std::time::Instant::now());
+                            }
+                            continue;
+                        }
+                    };
                     // we only care about commitments that are unspent
                     if commit.status != CommitmentStatus::Unspent {
                         continue;
@@ -766,7 +787,15 @@ pub async fn wait_on_chain(
                     }
                 }
                 Err(err) => {
-                    debug!("Waiting for commitments: {}", err.without_url());
+                    // Throttled to once every 30s so a stuck test still emits a
+                    // visible signal in the logs without spamming them.
+                    let should_warn = last_warn
+                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(30))
+                        .unwrap_or(true);
+                    if should_warn {
+                        warn!("Waiting for commitments: {}", err.without_url());
+                        last_warn = Some(std::time::Instant::now());
+                    }
                 }
             }
         }

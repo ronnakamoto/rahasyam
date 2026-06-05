@@ -1,4 +1,5 @@
 use crate::{
+    driven::nightfall_event::get_expected_layer2_blocknumber,
     initialisation::{get_blockchain_client_connection, get_db_connection},
     ports::{
         contracts::NightfallContract,
@@ -9,6 +10,7 @@ use crate::{
     services::selected_transactions::reconcile_obviously_orphaned_selected_transactions,
 };
 use alloy::{
+    primitives::{I256, U256},
     rpc::types::Filter,
     sol_types::{SolEvent, SolEventInterface},
 };
@@ -240,6 +242,21 @@ where
     if sync_state {
         panic!("Restarting event listener while synchronised. This should not happen");
     }
+
+    // Reset the block tracking state so historical events are fully replayed
+    // and the trees are re-hydrated from scratch. Without this, the Nova
+    // proposer's view of the chain (and therefore its IVC witnesses) lags
+    // the re-hydrated tree state, causing "Relaxed R1CS is unsatisfiable".
+    {
+        let mut expected = get_expected_layer2_blocknumber().await.write().await;
+        *expected = I256::try_from(U256::from(start_block as u64)).unwrap();
+        log::info!("Reset expected_layer2_blocknumber to {start_block} for full event replay");
+    }
+    {
+        let mut sync = get_synchronisation_status().await.write().await;
+        *sync = SynchronisationStatus::new(Desynchronized);
+    }
+
     // clean the database and reset the trees
     // this is a bit of a hack, but we need to reset the trees to get them back in sync
     // with the blockchain. We should probably do this in a more elegant way, but this works for now
@@ -269,10 +286,9 @@ where
     }
 
     let settings = get_settings();
-    let max_attempts = settings
-        .nightfall_proposer
-        .max_event_listener_attempts
-        .unwrap_or(10);
+    let max_attempts = crate::effective_event_listener_attempts(
+        settings.nightfall_proposer.max_event_listener_attempts,
+    );
 
     start_event_listener::<P, E, N>(start_block, max_attempts).await;
 }

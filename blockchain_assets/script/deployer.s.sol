@@ -12,6 +12,7 @@ import "../contracts/X509/Sha.sol";
 // Verifier stack
 import "../contracts/proof_verification/MockVerifier.sol";
 import "../contracts/proof_verification/plonk_v1/RollupProofVerifier.sol";
+import "../contracts/proof_verification/nova_v1/NovaRollupVerifier.sol";
 import "../contracts/proof_verification/ProofSystemRouter.sol";
 import "../contracts/proof_verification/IRollupVerifier.sol";
 import "../contracts/proof_verification/IVKProvider.sol";
@@ -173,31 +174,83 @@ contract Deployer is Script {
         // verifier
         // Check environment variable first, then fall back to TOML
         bool mockProver;
-        try vm.envString("NF4_MOCK_PROVER") returns (string memory envValue) {
+        string memory envValue = vm.envOr("NF4_MOCK_PROVER", string(""));
+        if (bytes(envValue).length > 0) {
             mockProver = keccak256(abi.encodePacked(envValue)) == keccak256(abi.encodePacked("true"));
             console.log("Using NF4_MOCK_PROVER from environment:", envValue);
-        } catch {
+        } else {
             mockProver = toml.readBool(string.concat(runMode, ".mock_prover"));
             console.log("Using mock_prover from TOML:", mockProver);
         }
-        
-        IRollupVerifier plonkVerifier;
-        if (mockProver) {
-            plonkVerifier = new MockVerifier();
-        } else {
-            address verifierProxy = Upgrades.deployUUPSProxy(
-                "plonk_v1/RollupProofVerifier.sol:RollupProofVerifier",
-                abi.encodeCall(
-                    RollupProofVerifier.initialize,
-                    (vkProxy, owners.verifierOwner)
-                )
-            );
-            plonkVerifier = IRollupVerifier(verifierProxy);
+
+        // Read active and enabled proving systems
+        string memory activePs = toml.readString(
+            string.concat(runMode, ".nightfall_proposer.proving_system.active")
+        );
+        string[] memory enabledPs = toml.readStringArray(
+            string.concat(runMode, ".nightfall_proposer.proving_system.enabled")
+        );
+
+        // If enabled array is empty, default to active system only
+        if (enabledPs.length == 0) {
+            enabledPs = new string[](1);
+            enabledPs[0] = activePs;
         }
-        
-        router.register(1, plonkVerifier);
+
+        for (uint256 i = 0; i < enabledPs.length; i++) {
+            if (keccak256(abi.encodePacked(enabledPs[i])) == keccak256(abi.encodePacked("plonk-v1"))) {
+                IRollupVerifier plonkVerifier;
+                if (mockProver) {
+                    plonkVerifier = new MockVerifier();
+                } else {
+                    address verifierProxy = Upgrades.deployUUPSProxy(
+                        "plonk_v1/RollupProofVerifier.sol:RollupProofVerifier",
+                        abi.encodeCall(
+                            RollupProofVerifier.initialize,
+                            (vkProxy, owners.verifierOwner)
+                        )
+                    );
+                    plonkVerifier = IRollupVerifier(verifierProxy);
+                }
+                router.register(1, plonkVerifier);
+                console.log("Registered PlonkV1 verifier at:", address(plonkVerifier));
+            } else if (keccak256(abi.encodePacked(enabledPs[i])) == keccak256(abi.encodePacked("nova-v1"))) {
+                IRollupVerifier novaVerifier = _deployNovaVerifier(toml, mockProver);
+                router.register(2, novaVerifier);
+                console.log("Registered NovaV1 verifier at:", address(novaVerifier));
+            }
+        }
 
         vm.stopBroadcast();
+    }
+
+    function _deployNovaVerifier(
+        string memory toml,
+        bool mockProver
+    ) internal returns (IRollupVerifier) {
+        if (mockProver) {
+            return new MockVerifier();
+        }
+
+        uint256 g2x0 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_x_x0")));
+        uint256 g2x1 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_x_x1")));
+        uint256 g2x2 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_x_y0")));
+        uint256 g2x3 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_x_y1")));
+
+        uint256 g2o0 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_one_x0")));
+        uint256 g2o1 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_one_x1")));
+        uint256 g2o2 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_one_y0")));
+        uint256 g2o3 = vm.parseUint(toml.readString(string.concat(runMode, ".nova_verifier.g2_one_y1")));
+
+        uint256 scheme = toml.readUint(string.concat(runMode, ".nova_verifier.commitment_scheme"));
+
+        NovaRollupVerifier novaImpl = new NovaRollupVerifier();
+        novaImpl.initialize(
+            Types.G2Point(g2x0, g2x1, g2x2, g2x3),
+            Types.G2Point(g2o0, g2o1, g2o2, g2o3),
+            scheme
+        );
+        return IRollupVerifier(address(novaImpl));
     }
 
     function _deployX509(

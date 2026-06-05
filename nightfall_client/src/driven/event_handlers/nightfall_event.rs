@@ -70,8 +70,14 @@ where
                 process_nightfall_calldata::<N>(tx_hash, filter)
                     .await
                     .map_err(|e| {
-                        debug!("{e}");
-                        EventHandlerError::InvalidCalldata
+                        // Preserve the real error variant so the event
+                        // listener can log it and decide whether to
+                        // restart (`MissingBlocks`) or escalate. The
+                        // pre-existing `InvalidCalldata` rewrite
+                        // hid everything as a `panic!` and made the
+                        // 2nd-block regression undiagnosable.
+                        error!("BlockProposed processing failed: {e}");
+                        EventHandlerError::Other(format!("BlockProposed: {e}"))
                     })?;
             }
             Nightfall::NightfallEvents::DepositEscrowed(filter) => {
@@ -79,8 +85,8 @@ where
                 process_deposit_escrowed_event(tx_hash, filter)
                     .await
                     .map_err(|e| {
-                        debug!("{e}");
-                        EventHandlerError::InvalidCalldata
+                        error!("DepositEscrowed processing failed: {e}");
+                        EventHandlerError::Other(format!("DepositEscrowed: {e}"))
                     })?;
             }
             Nightfall::NightfallEvents::Initialized(_filter) => {

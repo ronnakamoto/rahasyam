@@ -133,6 +133,10 @@ mod tests {
         fn from_compressed(_compressed: Bytes) -> Result<Self, SerializationError> {
             Ok(Self { a: vec![1] })
         }
+
+        fn system_id() -> lib::proving::ProofSystemId {
+            lib::proving::ProofSystemId::PlonkV1
+        }
     }
 
     impl ProvingEngine<MockProof> for MockProvingEngine {

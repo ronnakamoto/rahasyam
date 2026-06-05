@@ -27,6 +27,24 @@ pub trait Proof:
     fn from_compressed(compressed: Bytes) -> Result<Self, SerializationError>
     where
         Self: Sized + Debug;
+
+    /// The proof-system ID for this proof type. Used by the proposer's
+    /// [`crate::proving::ProofSystemRegistry`] and to populate
+    /// `Block::proof_system_id` on the way to the on-chain verifier.
+    ///
+    /// Implementations must return the same `ProofSystemId` that the
+    /// on-chain `ProofSystemRouter` will route the proof to, given the
+    /// leading byte emitted by [`Self::to_wire_bytes`] (or the equivalent
+    /// `tagged_rollup_proof` layout in the proposer).
+    fn system_id() -> crate::proving::ProofSystemId;
+
+    /// Serialize the proof to the on-wire format the smart contract
+    /// expects. By default this is the same as `compress_proof` (raw
+    /// bincode / compressed bytes), but some proof types may prefix the
+    /// proof-system ID byte.
+    fn to_wire_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        Ok(self.compress_proof()?.to_vec())
+    }
 }
 pub trait ProvingEngine<P>
 where

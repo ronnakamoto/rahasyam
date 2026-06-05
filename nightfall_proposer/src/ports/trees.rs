@@ -55,12 +55,19 @@ where
             .await
             .expect("Could not create database connection");
         // it's not enough just to connect to a database, we need to initialise some trees in it
-        <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(&client, 29, 3)
-            .await
-            .map_err(|e| {
-                log::error!("Could not create commitment tree metadata: {e:?}");
-                e
-            })?;
+        let is_nova = get_settings().nightfall_proposer.proving_system.active
+            == configuration::settings::ProvingSystemIdConfig::NovaV1;
+        let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
+        <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(
+            &client,
+            tree_height,
+            sub_tree_height,
+        )
+        .await
+        .map_err(|e| {
+            log::error!("Could not create commitment tree metadata: {e:?}");
+            e
+        })?;
         Ok(())
     }
 }
@@ -146,12 +153,20 @@ where
             .expect("Could not create database connection");
         // it's not enough just to connect to a database, we need to initialise some trees in it
 
-        <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(&client, 29, 3)
-            .await
-            .map_err(|e| {
-                log::error!("Could not create NullifierTree metadata: {e:?}");
-                <Self as MutableTree<F>>::Error::from(e)
-            })?;
+        let is_nova = get_settings().nightfall_proposer.proving_system.active
+            == configuration::settings::ProvingSystemIdConfig::NovaV1;
+        let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
+
+        <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(
+            &client,
+            tree_height,
+            sub_tree_height,
+        )
+        .await
+        .map_err(|e| {
+            log::error!("Could not create NullifierTree metadata: {e:?}");
+            <Self as MutableTree<F>>::Error::from(e)
+        })?;
         Ok(())
     }
 }

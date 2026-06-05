@@ -52,7 +52,7 @@ fn forge_command(command: &[&str]) {
                 panic!(
                 "Command 'forge {:?}' executed with failing error code: {:?}\nStandard Output: {}\nStandard Error: {}",
                 command,
-                o.status.signal(),
+                o.status,
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr)
             );

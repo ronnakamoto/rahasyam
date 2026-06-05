@@ -89,6 +89,14 @@ impl ProvingSystemIdConfig {
             ProvingSystemIdConfig::NovaV1 => "nova-v1",
         }
     }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "plonk-v1" | "plonkv1" | "PlonkV1" => Some(ProvingSystemIdConfig::PlonkV1),
+            "nova-v1" | "novav1" | "NovaV1" => Some(ProvingSystemIdConfig::NovaV1),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]
@@ -114,6 +122,34 @@ pub struct ProposerConfig {
     pub block_size: u64,
     #[serde(default)]
     pub proving_system: ProvingSystemConfig,
+    /// When `true`, Nova (IVC) blocks are allowed to contain fewer than
+    /// `block_size` transactions without padding the deposit list with dummy
+    /// proofs. Defaults to `false` because the on-chain `propose_block` path
+    /// (see `blockchain_assets/contracts/Nightfall.sol`) still requires the
+    /// submitted block to have exactly 64 or 256 transactions; enabling this
+    /// flag only makes sense once that contract guard has been relaxed.
+    /// The Plonk path ignores this flag and always pads.
+    #[serde(default)]
+    pub nova_dynamic_block_size: bool,
+    /// Upper bound on the number of IVC steps (transactions) the Nova
+    /// rollup engine will fold in a single block. **This value MUST be
+    /// kept in sync with the on-chain `MAX_STEPS` constant in
+    /// `blockchain_assets/contracts/proof_verification/nova_v1/NovaRollupVerifier.sol`**.
+    /// Off-chain we reject any block whose transaction count exceeds
+    /// this; on-chain the same value is enforced by the contract. If
+    /// the two values drift, off-chain will accept blocks the chain
+    /// rejects (or vice versa).
+    ///
+    /// Default matches the on-chain constant as of the current
+    /// deployment (`10000`). The `DEFAULT_MAX_STEPS` constant in
+    /// `lib::proving::nova_v1::rollup_engine` defaults to the same
+    /// value.
+    #[serde(default = "default_nova_max_steps")]
+    pub nova_max_steps: usize,
+}
+
+fn default_nova_max_steps() -> usize {
+    10_000
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]
@@ -147,6 +183,20 @@ pub struct ContractAddresses {
     pub round_robin: String,
     pub x509: String,
     pub verifier: String,
+}
+
+#[derive(Debug, Deserialize, Default, Serialize)]
+#[allow(unused)]
+pub struct NovaVerifierConfig {
+    pub g2_x_x0: String,
+    pub g2_x_x1: String,
+    pub g2_x_y0: String,
+    pub g2_x_y1: String,
+    pub g2_one_x0: String,
+    pub g2_one_x1: String,
+    pub g2_one_y0: String,
+    pub g2_one_y1: String,
+    pub commitment_scheme: u64,
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]
@@ -197,6 +247,7 @@ pub struct Settings {
     pub nightfall_test: TestConfig,
     pub genesis_block: usize,
     pub certificates: CertificateConfig,
+    pub nova_verifier: NovaVerifierConfig,
     pub configuration_url: String,
     pub run_mode: String,
     /// Optional upper bound
@@ -231,6 +282,14 @@ impl Settings {
                 .or_else(|_| env::var("AZURE_KEY_NAME"))
                 .unwrap_or_default();
         }
+
+        // Override proving system via environment variable
+        if let Ok(ps_override) = env::var("NIGHTFALL_PROVING_SYSTEM") {
+            if let Some(ps_config) = ProvingSystemIdConfig::from_str(&ps_override) {
+                settings.nightfall_proposer.proving_system.active = ps_config;
+            }
+        }
+
         Ok(settings)
     }
 }
@@ -352,5 +411,83 @@ mod tests {
             Some(val) => env::set_var("NF4_RUN_MODE", val),
             None => env::remove_var("NF4_RUN_MODE"),
         }
+    }
+
+    #[test]
+    #[serial]
+    fn test_proving_system_env_override() {
+        let tmp_run_mode = env::var("NF4_RUN_MODE").ok();
+        let tmp_proving_system = env::var("NIGHTFALL_PROVING_SYSTEM").ok();
+
+        // Set environment variables
+        env::set_var("NIGHTFALL_PROVING_SYSTEM", "nova-v1");
+        env::set_var("NF4_RUN_MODE", "development");
+
+        // Load settings *after* setting environment variables
+        let s = Settings::new().unwrap();
+
+        // Assert that the proving system is overridden to NovaV1
+        assert_eq!(
+            s.nightfall_proposer.proving_system.active,
+            ProvingSystemIdConfig::NovaV1,
+            "The proving system should be overridden to NovaV1 by environment variable."
+        );
+
+        // Clean up environment variables
+        match tmp_proving_system {
+            Some(val) => env::set_var("NIGHTFALL_PROVING_SYSTEM", val),
+            None => env::remove_var("NIGHTFALL_PROVING_SYSTEM"),
+        }
+        match tmp_run_mode {
+            Some(val) => env::set_var("NF4_RUN_MODE", val),
+            None => env::remove_var("NF4_RUN_MODE"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_proving_system_env_override_plonk() {
+        let tmp_run_mode = env::var("NF4_RUN_MODE").ok();
+        let tmp_proving_system = env::var("NIGHTFALL_PROVING_SYSTEM").ok();
+
+        // Set environment variables
+        env::set_var("NIGHTFALL_PROVING_SYSTEM", "plonk-v1");
+        env::set_var("NF4_RUN_MODE", "development");
+
+        // Load settings *after* setting environment variables
+        let s = Settings::new().unwrap();
+
+        // Assert that the proving system is overridden to PlonkV1
+        assert_eq!(
+            s.nightfall_proposer.proving_system.active,
+            ProvingSystemIdConfig::PlonkV1,
+            "The proving system should be overridden to PlonkV1 by environment variable."
+        );
+
+        // Clean up environment variables
+        match tmp_proving_system {
+            Some(val) => env::set_var("NIGHTFALL_PROVING_SYSTEM", val),
+            None => env::remove_var("NIGHTFALL_PROVING_SYSTEM"),
+        }
+        match tmp_run_mode {
+            Some(val) => env::set_var("NF4_RUN_MODE", val),
+            None => env::remove_var("NF4_RUN_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_proving_system_id_config_from_str() {
+        assert_eq!(
+            ProvingSystemIdConfig::from_str("plonk-v1"),
+            Some(ProvingSystemIdConfig::PlonkV1)
+        );
+        assert_eq!(
+            ProvingSystemIdConfig::from_str("nova-v1"),
+            Some(ProvingSystemIdConfig::NovaV1)
+        );
+        assert_eq!(
+            ProvingSystemIdConfig::from_str("unknown"),
+            None
+        );
     }
 }

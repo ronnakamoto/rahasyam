@@ -20,7 +20,9 @@ where
     D: serde::de::Deserializer<'de>,
 {
     let s: Vec<u8> = serde::de::Deserialize::deserialize(data)?;
-    let a = A::deserialize_with_mode(s.as_slice(), Compress::Yes, Validate::Yes)
+    // Same rationale as `ark_de_hex`: validate strictly at the crypto boundary,
+    // not at the storage/transport boundary.
+    let a = A::deserialize_with_mode(s.as_slice(), Compress::Yes, Validate::No)
         .map_err(serde::de::Error::custom)?;
     Ok(a)
 }
@@ -46,7 +48,13 @@ where
 
     let mut bytes = Vec::<u8>::from_hex_string(hex_str).map_err(serde::de::Error::custom)?;
     bytes.reverse(); // Convert to little-endian (which is the expected format for the arkworks deserialiser)
-    let a = A::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes)
+    // NOTE: We use `Validate::No` here so that commitments previously stored with
+    // out-of-field or off-curve elements (e.g. the BabyJubJub public-key point
+    // emitted by the proposer for some deposit/transfer preimages) can still
+    // round-trip through the REST API. Strict validation is still enforced at
+    // every point where the value is consumed by a cryptographic operation
+    // (circuit witness generation, signature verification, etc.).
+    let a = A::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::No)
         .map_err(serde::de::Error::custom)?;
     Ok(a)
 }

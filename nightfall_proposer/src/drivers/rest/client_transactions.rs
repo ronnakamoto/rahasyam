@@ -216,6 +216,10 @@ mod tests {
                 c: vec![3],
             })
         }
+
+        fn system_id() -> lib::proving::ProofSystemId {
+            lib::proving::ProofSystemId::PlonkV1
+        }
     }
 
     impl ProvingEngine<MockProof> for MockProvingEngine {

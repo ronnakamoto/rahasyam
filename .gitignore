@@ -20,3 +20,6 @@ configuration/toml
 remappings.txt
 local.env
 temp/
+
+# Nova-SNARK on-disk key cache (regenerated on demand by NovaKeyManager)
+**/nova_keys/

@@ -235,6 +235,11 @@ pub enum EventHandlerError {
     HashError,
     BlockNotFound(u64),
     BlockHashError(Fr254, Fr254),
+    /// Generic wrap for an underlying error whose real variant was
+    /// previously squashed to `InvalidCalldata`. Carries the original
+    /// `Debug` representation so the event listener can log it
+    /// before deciding whether to restart or panic.
+    Other(String),
 }
 
 impl Display for EventHandlerError {
@@ -255,6 +260,7 @@ impl Display for EventHandlerError {
                 f,
                 "Block hash error, expected block hash: {a}, got block hash: {b}"
             ),
+            EventHandlerError::Other(s) => write!(f, "{s}"),
         }
     }
 }

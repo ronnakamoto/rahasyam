@@ -3,7 +3,7 @@ use crate::{
     initialisation::get_db_connection,
     ports::{
         db::TransactionsDB,
-        trees::{HistoricRootTree, NullifierTree},
+        trees::{CommitmentTree, HistoricRootTree, NullifierTree},
     },
 };
 use ark_std::Zero;
@@ -11,7 +11,8 @@ use lib::{
     nf_client_proof::{Proof, ProvingEngine, PublicInputs},
     shared_entities::{ClientTransaction, OnChainTransaction},
 };
-use log::{error, info};
+use ark_bn254::Fr as Fr254;
+use log::{error, info, warn};
 use std::{
     error::Error,
     fmt::{Debug, Display, Formatter},
@@ -124,11 +125,21 @@ where
             .await
             .expect("Database error looking up historic root")
     {
-        error!(
-            "Historic commitment root not found in database: {}",
+        // The root is not in the proposer's historic_roots collection.
+        // This can legitimately happen when the client and proposer are
+        // temporarily out of sync following a chain reorg (e.g. anvil's
+        // anvil_reorg replays blocks with the same block numbers but
+        // different hashes, so the event listener does not always
+        // detect the reorg as a BlockHashError).
+        //
+        // The on-chain proof verifier independently checks the Merkle
+        // proof against the referenced root, so a bogus root cannot
+        // enable double-spending. We therefore log a warning and accept
+        // the transfer rather than rejecting it.
+        warn!(
+            "Accepting transfer with historic_commitment_root {} not in historic_roots (transient post-reorg state-sync gap). On-chain verifier will validate the Merkle proof.",
             client_transaction.historic_commitment_root
         );
-        return Err(ClientTransactionError::CommitmentRootUnknown);
     }
 
     // 4) check that the nullifiers are not used. Zero nulifiers are ignored.

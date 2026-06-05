@@ -55,6 +55,10 @@ impl Proof for MockProof {
         let c = bytes[(2 + a_len as usize + b_len as usize)..].to_vec();
         Ok(MockProof { a, b, c })
     }
+
+    fn system_id() -> crate::proving::ProofSystemId {
+        crate::proving::ProofSystemId::PlonkV1
+    }
 }
 
 impl ProvingEngine<MockProof> for MockProvingEngine {

@@ -1,3 +1,5 @@
+#[cfg(feature = "nova-v1")]
+pub mod nova_v1;
 pub mod plonk_v1;
 pub mod registry;
 

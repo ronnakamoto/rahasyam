@@ -38,14 +38,14 @@ pub struct IndexedLeaf<F: PrimeField> {
         serialize_with = "serialize_fr_padded",
         deserialize_with = "deserialize_fr_padded"
     )]
-    pub(crate) value: F,
-    pub(crate) _id: u64,
-    pub(crate) next_index: u64,
+    pub value: F,
+    pub _id: u64,
+    pub next_index: u64,
     #[serde(
         serialize_with = "serialize_fr_padded",
         deserialize_with = "deserialize_fr_padded"
     )]
-    pub(crate) next_value: F,
+    pub next_value: F,
 }
 
 impl<F: PrimeField> From<IndexedLeaf<F>> for LeafDBEntry<F> {
@@ -343,14 +343,23 @@ pub trait IndexedLeaves<F: PrimeField> {
         new_next_value: F,
         tree_id: &str,
     ) -> Result<(), Self::Error>;
+    /// Return every indexed leaf stored for `tree_id`, in arbitrary
+    /// order. The default implementation queries the
+    /// `{tree_id}_indexed_leaves` MongoDB collection and is the only
+    /// API the Nova proposer needs to hydrate its in-memory Neptune
+    /// IMT from the JF nullifier tree.
+    async fn get_all_leaves(
+        &self,
+        tree_id: &str,
+    ) -> Result<Vec<IndexedLeaf<F>>, Self::Error>;
 }
 
-pub(crate) mod helper_functions {
+pub mod helper_functions {
     use ark_ff::PrimeField;
     use jf_primitives::trees::{Directions, TreeHasher};
 
     /// Compute 2^exp as u64
-    pub(crate) fn pow2_u64(exp: u32) -> Option<u64> {
+    pub fn pow2_u64(exp: u32) -> Option<u64> {
         if exp >= u64::BITS {
             None
         } else {
@@ -359,7 +368,7 @@ pub(crate) mod helper_functions {
     }
 
     /// Compute 2^exp as usize
-    pub(crate) fn pow2_usize(exp: u32) -> Option<usize> {
+    pub fn pow2_usize(exp: u32) -> Option<usize> {
         if exp as u64 >= usize::BITS as u64 {
             None
         } else {
@@ -377,7 +386,7 @@ pub(crate) mod helper_functions {
     ///   /     \         /     \           /     \               /     \
     /// 7       8        9      10         11     12             13     14
     /// This tree has a height of 3 (4 rows).
-    pub(crate) fn make_complete_tree<N>(
+    pub fn make_complete_tree<N>(
         height: u32,
         hasher: &impl TreeHasher<N>,
         leaves: &[N],
@@ -413,7 +422,7 @@ pub(crate) mod helper_functions {
     }
 
     /// converts a leaf index into a path up the Merkle tree from the leaf
-    pub(crate) fn index_to_directions(index: usize, height: u32) -> Vec<Directions> {
+    pub fn index_to_directions(index: usize, height: u32) -> Vec<Directions> {
         let mut path = Vec::<Directions>::new();
         for i in 0..height {
             let dir = index >> i & 1;
@@ -428,7 +437,7 @@ pub(crate) mod helper_functions {
 
     /// Works out which index of the frontier vector should be updated after adding a given leaf
     /// see https://github.com/EYBlockchain/timber
-    pub(crate) fn get_frontier_index(leaf_index: usize) -> usize {
+    pub fn get_frontier_index(leaf_index: usize) -> usize {
         let mut index = 0;
         if leaf_index % 2 == 1 {
             let mut exp1: usize = 1;

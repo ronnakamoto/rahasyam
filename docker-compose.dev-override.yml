@@ -1,0 +1,17 @@
+# Override for development profile to use mongo:7 (which works on this host)
+# instead of mongo:8.0 (which crashes during startup).
+#
+# Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev-override.yml --profile development up -d
+#
+# This file only overrides what fails; everything else is inherited from
+# docker-compose.yml. The anvil container is reused from the dev-infra ring
+# started via `docker-compose.dev-infra.yml`.
+
+services:
+  db_client:
+    image: mongo:7
+  db_client2:
+    image: mongo:7
+  db_proposer:
+    image: mongo:7

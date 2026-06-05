@@ -307,6 +307,8 @@ pub struct Addresses {
     pub x509: Address,
     #[serde(with = "address_serde_allow_zero")]
     pub verifier: Address,
+    #[serde(with = "address_serde_allow_zero")]
+    pub nova_verifier: Address,
 }
 
 impl Addresses {
@@ -345,8 +347,10 @@ impl Addresses {
         if self.x509 == Address::ZERO {
             return Err(AddressesError::ZeroAddress("x509".into()));
         }
-        if !mock_prover && self.verifier == Address::ZERO {
-            return Err(AddressesError::ZeroAddress("verifier".into()));
+        if !mock_prover && self.verifier == Address::ZERO && self.nova_verifier == Address::ZERO {
+            return Err(AddressesError::ZeroAddress(
+                "verifier (plonk or nova)".into()
+            ));
         }
         Ok(())
     }
@@ -522,6 +526,7 @@ mod tests {
             round_robin: validate_address(valid_address).unwrap(),
             x509: validate_address(valid_address).unwrap(),
             verifier: validate_address(valid_address).unwrap(),
+            nova_verifier: validate_address(valid_address).unwrap(),
         };
 
         addresses.ensure_nonzero(settings.mock_prover).unwrap();

@@ -96,6 +96,10 @@ mod tests {
                 data: compressed.to_vec(),
             })
         }
+
+        fn system_id() -> crate::proving::ProofSystemId {
+            crate::proving::ProofSystemId::PlonkV1
+        }
     }
 
     #[derive(Debug)]

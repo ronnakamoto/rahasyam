@@ -479,12 +479,20 @@ where
             .map_err(MerkleTreeError::DatabaseError)?
             .ok_or(MerkleTreeError::ItemNotFound)?;
 
+        let sub_tree_capacity = 1usize << metadata.sub_tree_height;
+        let total_chunks = (nullifiers.len() + sub_tree_capacity - 1) / sub_tree_capacity;
+        log::info!("[batch_insert_nullifiers] tree={}, sub_tree_height={}, sub_tree_capacity={}, total_nullifiers={}, chunks={}",
+            tree_id, metadata.sub_tree_height, sub_tree_capacity, nullifiers.len(), total_chunks);
+
         let mut circuit_infos = vec![];
-        for leaf_chunk in nullifiers.chunks(1 << metadata.sub_tree_height) {
+        for (idx, leaf_chunk) in nullifiers.chunks(sub_tree_capacity).enumerate() {
+            let step_start = std::time::Instant::now();
             let circuit_info = self
                 .insert_nullifiers_for_circuit(leaf_chunk, tree_id)
                 .await?;
             circuit_infos.push(circuit_info);
+            log::info!("[batch_insert_nullifiers] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
         }
         Ok(circuit_infos)
     }
@@ -500,12 +508,26 @@ impl<F: PrimeField + PoseidonParams> IndexedLeaves<F> for mongodb::Client {
         let collection_name = format!("{}_{}", tree_id, "indexed_leaves");
         let db = self.database(<Self as IndexedLeaves<F>>::DB);
         let collection = db.collection::<IndexedLeaf<F>>(&collection_name);
-        // Add a zero leaf as the first leaf
-        collection
-            .insert_one(IndexedLeaf::<F>::default())
-            .await
-            .map_err(MerkleTreeError::DatabaseError)?;
-        Ok(())
+        // Add a zero leaf as the first leaf. Make idempotent: a
+        // previous test or operator may have left the default
+        // indexed leaf (with `_id: 0`) in place. Mongo's
+        // `insert_one` raises E11000 on duplicate `_id`; we treat
+        // that as a successful no-op so the init block can be safely
+        // re-run (e.g. by tests that share a `OnceCell` client).
+        match collection.insert_one(IndexedLeaf::<F>::default()).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(
+                    we,
+                )) = e.kind.as_ref()
+                {
+                    if we.code == 11000 {
+                        return Ok(());
+                    }
+                }
+                Err(MerkleTreeError::DatabaseError(e))
+            }
+        }
     }
 
     async fn store_leaf(
@@ -515,9 +537,12 @@ impl<F: PrimeField + PoseidonParams> IndexedLeaves<F> for mongodb::Client {
         tree_id: &str,
     ) -> Result<Option<()>, Self::Error> {
         // If the new leaf is already in the db then we shouldn't store it.
+        // We return Ok(None) instead of an error so that batch operations
+        // (e.g. post-reorg re-hydration) can skip duplicates gracefully
+        // rather than aborting the whole batch with LeafExists.
         if self.get_leaf(Some(leaf), None, tree_id).await?.is_some() {
-            debug!("Leaf already exists {}", leaf.to_string_rep());
-            return Err(MerkleTreeError::LeafExists);
+            debug!("Leaf already exists {}, skipping", leaf.to_string_rep());
+            return Ok(None);
         }
         let collection_name = format!("{}_{}", tree_id, "indexed_leaves");
         let db = self.database(<Self as IndexedLeaves<F>>::DB);
@@ -677,6 +702,24 @@ impl<F: PrimeField + PoseidonParams> IndexedLeaves<F> for mongodb::Client {
             ));
         }
         Ok(())
+    }
+
+    async fn get_all_leaves(
+        &self,
+        tree_id: &str,
+    ) -> Result<Vec<IndexedLeaf<F>>, Self::Error> {
+        let collection_name = format!("{}_{}", tree_id, "indexed_leaves");
+        let db = self.database(<Self as IndexedLeaves<F>>::DB);
+        let collection = db.collection::<IndexedLeaf<F>>(&collection_name);
+        let mut cursor = collection
+            .find(doc! {})
+            .await
+            .map_err(MerkleTreeError::DatabaseError)?;
+        let mut out = Vec::new();
+        while let Some(leaf) = cursor.try_next().await.map_err(MerkleTreeError::DatabaseError)? {
+            out.push(leaf);
+        }
+        Ok(out)
     }
 }
 

@@ -2,7 +2,7 @@ use crate::vk_contract::write_vk_to_nightfall_toml;
 use alloy::{hex, primitives::Address};
 use configuration::{
     addresses::{Addresses, Sources},
-    settings::Settings,
+    settings::{ProvingSystemIdConfig, Settings},
 };
 use jf_plonk::recursion::RecursiveProver;
 
@@ -16,6 +16,82 @@ use std::{
     os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
 };
+
+fn merge_key_counts(block_size: u64) -> anyhow::Result<(usize, usize)> {
+    match block_size {
+        64 => Ok((1, 2)),
+        256 => Ok((2, 3)),
+        _ => anyhow::bail!(
+            "Unsupported block_size={block_size} for real-prover key validation (supported: 64, 256)"
+        ),
+    }
+}
+
+fn ensure_plonk_real_prover_keys_exist(settings: &Settings) -> anyhow::Result<()> {
+    let keys_dir = std::env::current_dir()?.join("configuration").join("bin/keys");
+    let (bn254_merge_count, grumpkin_merge_count) =
+        merge_key_counts(settings.nightfall_proposer.block_size)?;
+
+    let mut required_files = vec![
+        "proving_key".to_string(),
+        "base_bn254_pk".to_string(),
+        "base_grumpkin_pk".to_string(),
+        "decider_pk".to_string(),
+        "decider_vk".to_string(),
+    ];
+
+    for i in 0..bn254_merge_count {
+        required_files.push(format!("merge_bn254_pk_{i}"));
+    }
+    for i in 0..grumpkin_merge_count {
+        required_files.push(format!("merge_grumpkin_pk_{i}"));
+    }
+
+    let missing_files: Vec<String> = required_files
+        .into_iter()
+        .filter(|name| !keys_dir.join(name).is_file())
+        .collect();
+
+    if !missing_files.is_empty() {
+        anyhow::bail!(
+            "Missing real-prover key files in {}: {}. Generate them first with: NF4_MOCK_PROVER=false cargo run --release --bin key_generation",
+            keys_dir.display(),
+            missing_files.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn ensure_nova_keys_directory() -> anyhow::Result<PathBuf> {
+    let nova_keys_dir = std::env::current_dir()?
+        .join("configuration")
+        .join("bin/nova_keys");
+    std::fs::create_dir_all(&nova_keys_dir)?;
+    Ok(nova_keys_dir)
+}
+
+fn prepare_verifier_material(settings: &Settings) -> anyhow::Result<()> {
+    if settings.mock_prover || !settings.contracts.deploy_contracts {
+        return Ok(());
+    }
+
+    match settings.nightfall_proposer.proving_system.active {
+        ProvingSystemIdConfig::PlonkV1 => {
+            ensure_plonk_real_prover_keys_exist(settings)?;
+            let vk = RollupProver::get_decider_vk();
+            let _ = write_vk_to_nightfall_toml(&vk);
+        }
+        ProvingSystemIdConfig::NovaV1 => {
+            let nova_keys_dir = ensure_nova_keys_directory()?;
+            info!(
+                "Active proving system is NovaV1; skipping PLONK decider_vk wiring. Nova key cache path: {}",
+                nova_keys_dir.display()
+            );
+        }
+    }
+
+    Ok(())
+}
 
 fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, Address>> {
     let v: Value = serde_json::from_reader(File::open(path)?)?;
@@ -54,6 +130,20 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                     map.insert("x509", addr);
                 } else if prev.contains("RollupProofVerifier") {
                     map.insert("verifier", addr);
+                } else if prev.contains("NovaRollupVerifier") {
+                    map.insert("nova_verifier", addr);
+                }
+            }
+        }
+
+        // Capture direct (non-proxy) deployments as well
+        if ttype == "CREATE" && cname != "ERC1967Proxy" && !cname.is_empty() {
+            if let Some(addr_s) = caddr_s {
+                let addr: Address = addr_s.parse()?;
+                if cname.contains("ProofSystemRouter") && !map.contains_key("verifier") {
+                    map.insert("verifier", addr);
+                } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier") {
+                    map.insert("nova_verifier", addr);
                 }
             }
         }
@@ -82,10 +172,7 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
         std::fs::remove_dir_all(&cache_path).ok();
     }
 
-    if !settings.mock_prover && settings.contracts.deploy_contracts {
-        let vk = RollupProver::get_decider_vk();
-        let _ = write_vk_to_nightfall_toml(&vk);
-    }
+    prepare_verifier_material(settings)?;
 
     // Force a clean rebuild to generate proper build-info files for OpenZeppelin validation
     info!("Building contracts with forge");
@@ -116,6 +203,7 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
         round_robin: Address::ZERO,
         x509: Address::ZERO,
         verifier: Address::ZERO,
+        nova_verifier: Address::ZERO,
     };
     // -------- replace with *proxy* addresses from broadcast --------
     match proxies_from_broadcast(&path_out) {
@@ -132,6 +220,9 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
             if let Some(a) = proxy_map.get("verifier") {
                 addresses.verifier = *a;
             }
+            if let Some(a) = proxy_map.get("nova_verifier") {
+                addresses.nova_verifier = *a;
+            }
             if settings.mock_prover {
                 if addresses.nightfall == Address::ZERO
                     || addresses.round_robin == Address::ZERO
@@ -145,17 +236,19 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
                     addresses.nightfall, addresses.round_robin, addresses.x509
                 );
             } else {
+                let has_plonk = addresses.verifier != Address::ZERO;
+                let has_nova = addresses.nova_verifier != Address::ZERO;
                 if addresses.nightfall == Address::ZERO
                     || addresses.round_robin == Address::ZERO
                     || addresses.x509 == Address::ZERO
-                    || addresses.verifier == Address::ZERO
+                    || (!has_plonk && !has_nova)
                 {
                     error!("Missing proxy addresses after extraction");
                     return Err("Failed to extract all proxy addresses from deployment".into());
                 }
                 info!(
-                    "Extracted proxy addresses: nightfall={:?}, round_robin={:?}, x509={:?}, verifier={:?}",
-                    addresses.nightfall, addresses.round_robin, addresses.x509, addresses.verifier
+                    "Extracted proxy addresses: nightfall={:?}, round_robin={:?}, x509={:?}, verifier={:?}, nova_verifier={:?}",
+                    addresses.nightfall, addresses.round_robin, addresses.x509, addresses.verifier, addresses.nova_verifier
                 );
             }
         }
@@ -239,7 +332,7 @@ pub fn forge_command(command: &[&str]) {
                 panic!(
                 "Command 'forge {:?}' executed with failing error code: {:?}\nStandard Output: {}\nStandard Error: {}",
                 command,
-                o.status.signal(),
+                o.status,
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr)
             );

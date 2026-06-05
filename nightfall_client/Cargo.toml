@@ -58,6 +58,13 @@ testcontainers = { version = "0.24.0", features = ["blocking"] }
 lib = { path = "../lib" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ark-crypto-primitives = { version = "0.4", features = ["sponge"] }
+# jemalloc gives significantly better memory behaviour (lower RSS, less
+# fragmentation) for workloads that do a lot of large, short-lived
+# allocations like the Plonk recursive prover. The client swap path was
+# OOMing at 8 GiB on the default glibc allocator; switching to jemalloc
+# measurably cuts peak working-set for the witness + quotient polys
+# during `FFTPlonk::recursive_prove`.
+jemallocator = "0.5"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }
@@ -76,6 +83,7 @@ harness = false
 default = ["parallel"]
 std = ["ark-std/std", "ark-serialize/std", "ark-ff/std", "ark-ec/std"]
 test_apis = [] # exposing apis for testing purpose
+nova-v1 = ["lib/nova-v1"]
 parallel = [
     "ark-ff/parallel",
     "ark-ec/parallel",

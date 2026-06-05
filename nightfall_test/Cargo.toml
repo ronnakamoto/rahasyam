@@ -8,6 +8,10 @@ edition = "2021"
 name = "menu"
 path = "bin/menu.rs"
 
+[[bin]]
+name = "xtask"
+path = "src/bin/xtask.rs"
+
 [dependencies]
 tracing = "0.1.41"
 dotenv = "0.15.0"
@@ -51,4 +55,5 @@ console-menu = "0.3.1"
 bip32 = { version = "0.4.0", features = ["bip39"] }
 inquire = "0.7.5"
 toml = "0.8.22"
+anyhow = "1.0"
 

@@ -28,6 +28,8 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client:
         condition: service_healthy
@@ -41,6 +43,21 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - RUST_LOG=${RUST_LOG:-info}
       - NF4_NETWORK__LOG_CHUNK_SIZE=${NF4_NETWORK__LOG_CHUNK_SIZE:-}
       - NF4_SIGNING_KEY=${CLIENT_SIGNING_KEY}
@@ -51,6 +68,10 @@ services:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
 
   indie-client:
     container_name: nf4_indie_client
@@ -72,6 +93,9 @@ services:
       start_period: 0s
     networks:
       - nightfall_network
+    volumes:
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client:
         condition: service_healthy
@@ -84,6 +108,10 @@ services:
       - NF4_ETHEREUM_CLIENT_URL
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}
       - NF4_NIGHTFALL_PROPOSER__URL=${NF4_NIGHTFALL_PROPOSER__URL:-localhost:3001}
+    deploy:
+      resources:
+        limits:
+          memory: 12G
 
   client2:
     container_name: nf4_client2
@@ -114,6 +142,8 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       db_client2:
         condition: service_healthy
@@ -127,6 +157,21 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - NF4_SIGNING_KEY=${CLIENT2_SIGNING_KEY}      
       - NF4_NIGHTFALL_CLIENT__DB_URL=mongodb://nf4_db_client2:27017      
       - NF4_NIGHTFALL_CLIENT__LOG_LEVEL=info # Mostly the client2 logs are a repeat of client1 logs, so we can reduce the log level to error
@@ -148,7 +193,7 @@ services:
     build:
       dockerfile: nightfall_proposer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: Rosetta emulation makes Nova key deserialization 10+ min. Build native on Apple Silicon.
     ports:
       - "3001:3000"
     healthcheck:
@@ -165,6 +210,7 @@ services:
         target: /app/configuration/toml
         read_only: true
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer:
         condition: service_healthy
@@ -177,18 +223,38 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - RUST_LOG=${RUST_LOG:-info}
       - NF4_NETWORK__LOG_CHUNK_SIZE=${NF4_NETWORK__LOG_CHUNK_SIZE:-}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
-      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
-      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=30
-      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.10
+      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}  # NovaV1 does not support MockProver
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=60
+      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.05
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_INITIAL_INTERVAL_SECS=5
       - AZURE_VAULT_URL=${AZURE_VAULT_URL}
       - PROPOSER_SIGNING_KEY_NAME=${PROPOSER_SIGNING_KEY_NAME}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+    deploy:
+      resources:
+        limits:
+          memory: 12G
 
   indie-proposer:
     container_name: nf4_indie_proposer
@@ -210,6 +276,9 @@ services:
       start_period: 0s
     networks:
       - nightfall_network
+    volumes:
+      - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer:
         condition: service_healthy
@@ -220,6 +289,7 @@ services:
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_ETHEREUM_CLIENT_URL
       - NF4_CONTRACTS__DEPLOY_CONTRACTS=${NF4_CONTRACTS__DEPLOY_CONTRACTS:-false}
 
@@ -232,7 +302,7 @@ services:
     build:
       dockerfile: nightfall_proposer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: Rosetta emulation makes Nova key deserialization 10+ min. Build native on Apple Silicon.
     ports:
       - "3003:3000"
     healthcheck:
@@ -249,6 +319,7 @@ services:
         target: /app/configuration/toml
         read_only: true
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys
     depends_on:
       db_proposer2:
         condition: service_healthy
@@ -259,11 +330,27 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - NF4_SIGNING_KEY=${PROPOSER_2_SIGNING_KEY}
       - NF4_PROPOSER_CONFIG=nightfall_proposer2
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
-      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=30
-      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.10
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=60
+      - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.05
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_INITIAL_INTERVAL_SECS=5
       - AZURE_VAULT_URL=${AZURE_VAULT_URL}
       - PROPOSER_SIGNING_KEY_NAME=${PROPOSER_2_SIGNING_KEY_NAME}
@@ -272,6 +359,10 @@ services:
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - NF4_NIGHTFALL_PROPOSER__URL=http://proposer2:3000
       - NF4_NIGHTFALL_PROPOSER__DB_URL=mongodb://nf4_db_proposer2:27017
+    deploy:
+      resources:
+        limits:
+          memory: 12G
 
   db_client:
     container_name: nf4_db_client
@@ -398,6 +489,7 @@ services:
         target: /app/configuration/toml
         read_only: false
       - ./configuration/bin/keys:/app/configuration/bin/keys:ro
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       anvil:
         condition: service_healthy
@@ -439,6 +531,7 @@ services:
         source: toml_data
         target: /app/configuration/toml
         read_only: false
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     stdin_open: true # keep stdin open, so we can print things in docker compose up
     tty: true # required for logs to print in colour
     environment:
@@ -481,6 +574,21 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - NGINX_ENTRYPOINT_QUIET_LOGS=1
 
   anvil:
@@ -509,6 +617,10 @@ services:
       - "8545:8545" 
     environment:
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   test:
     container_name: nf4_test
@@ -537,6 +649,21 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
       - NF4_CONTRACTS__DEPLOY_CONTRACTS=${NF4_CONTRACTS__DEPLOY_CONTRACTS:-true}
       - CLIENT_ADDRESS=${CLIENT_ADDRESS}
@@ -579,6 +706,21 @@ services:
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
+      # permutation polynomials each hold their own working buffer; with
+      # 8+ logical CPUs (default in the container) peak RSS during the
+      # Plonk recursive prover was exceeding the 8 GiB client cgroup and
+      # getting OOM-killed during swap proof generation. With 2 workers
+      # transfers fit comfortably (peak ~5 GiB) but the 4-spend + 4-new
+      # swap circuit still OOMs at 8 GiB. We force a single worker here
+      # to drop the per-thread parallel-FFT buffer duplication; peak RSS
+      # drops by ~30-50% on jf-plonk's `split_quotient_polynomial` and
+      # `compute_g_poly_and_comm`, which is enough to bring the swap
+      # proof under the limit. Single-threaded Plonk proving of a swap
+      # takes ~5-6 minutes on this host, which is acceptable for the
+      # development profile (the proposer can prove the same circuit
+      # in parallel on a separate node in production).
+      - RAYON_NUM_THREADS=1
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
     depends_on:
       proposer:

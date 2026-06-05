@@ -219,7 +219,10 @@ contract Nightfall is
             )
         }
 
-        // block_transactions_length can only be 64 or 256
+        // block_transactions_length can only be 64 or 256 (each block produces
+        // 4 commitments per transaction, so block_transactions_length * 4 must be
+        // a multiple of the client/proposer commitment-tree sub-tree capacity of 8,
+        // which holds for 64 and 256).
         require(
             block_transactions_length == 64 ||
                 block_transactions_length == 256,
@@ -711,65 +714,62 @@ contract Nightfall is
         Block calldata blk,
         uint256 public_hash
     ) public view returns (bool, uint256) {
-        // The first byte of rollup_proof is the proof system ID
-        // The next 32 bytes (1 to 33) are the sum of fees
-        bytes32 feeSum = bytes32(blk.rollup_proof[1:33]);
-        uint256 feeSumAsNumber = uint256(feeSum);
-        bytes32[] memory publicInputs = new bytes32[](24); // we need to pass in 24 public inputs
-        publicInputs[0] = feeSum;
-        publicInputs[1] = bytes32(public_hash);
-        publicInputs[2] = bytes32(commitmentRoot);
-        publicInputs[3] = bytes32(blk.commitments_root);
-        publicInputs[4] = bytes32(nullifierRoot);
-        publicInputs[5] = bytes32(blk.nullifier_root);
-        publicInputs[6] = bytes32(historicRootsRoot);
-        publicInputs[7] = bytes32(blk.commitments_root_root);
-        // These are accumulators' comm and proof
-        uint256[8] memory acc_low;
-        uint256[8] memory acc_high;
-        (acc_low[0], acc_high[0]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[33:65]))
-        );
-        (acc_low[1], acc_high[1]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[65:97]))
-        );
-        (acc_low[2], acc_high[2]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[97:129]))
-        );
-        (acc_low[3], acc_high[3]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[129:161]))
-        );
-        (acc_low[4], acc_high[4]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[161:193]))
-        );
-        (acc_low[5], acc_high[5]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[193:225]))
-        );
-        (acc_low[6], acc_high[6]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[225:257]))
-        );
-        (acc_low[7], acc_high[7]) = splitToLowHigh(
-            uint256(bytes32(blk.rollup_proof[257:289]))
-        );
+        uint8 id = uint8(blk.rollup_proof[0]);
+        uint256 feeSumAsNumber;
+        uint256[] memory pi;
 
-        // Assign to publicInputs
-        for (uint i = 0; i < 8; i++) {
-            publicInputs[8 + i * 2] = bytes32(acc_low[i]);
-            publicInputs[9 + i * 2] = bytes32(acc_high[i]);
+        if (id == 1) { // PlonkV1
+            bytes32 feeSum = bytes32(blk.rollup_proof[1:33]);
+            feeSumAsNumber = uint256(feeSum);
+            bytes32[] memory publicInputs = new bytes32[](24);
+            publicInputs[0] = feeSum;
+            publicInputs[1] = bytes32(public_hash);
+            publicInputs[2] = bytes32(commitmentRoot);
+            publicInputs[3] = bytes32(blk.commitments_root);
+            publicInputs[4] = bytes32(nullifierRoot);
+            publicInputs[5] = bytes32(blk.nullifier_root);
+            publicInputs[6] = bytes32(historicRootsRoot);
+            publicInputs[7] = bytes32(blk.commitments_root_root);
+            
+            uint256[8] memory acc_low;
+            uint256[8] memory acc_high;
+            (acc_low[0], acc_high[0]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[33:65])));
+            (acc_low[1], acc_high[1]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[65:97])));
+            (acc_low[2], acc_high[2]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[97:129])));
+            (acc_low[3], acc_high[3]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[129:161])));
+            (acc_low[4], acc_high[4]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[161:193])));
+            (acc_low[5], acc_high[5]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[193:225])));
+            (acc_low[6], acc_high[6]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[225:257])));
+            (acc_low[7], acc_high[7]) = splitToLowHigh(uint256(bytes32(blk.rollup_proof[257:289])));
+
+            for (uint i = 0; i < 8; i++) {
+                publicInputs[8 + i * 2] = bytes32(acc_low[i]);
+                publicInputs[9 + i * 2] = bytes32(acc_high[i]);
+            }
+
+            uint256 publicInputsBytes_computed = uint256(
+                sha256_and_shift(abi.encodePacked(publicInputs))
+            ) % 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+            pi = new uint256[](2);
+            pi[0] = publicInputsBytes_computed;
+            pi[1] = blk.transactions.length;
+        } else if (id == 2) { // NovaV1
+            // Nova proof doesn't embed feeSum in the proof prefix like Plonk does.
+            // Compute the fee sum directly from the transactions.
+            feeSumAsNumber = 0;
+            for (uint i = 0; i < blk.transactions.length; i++) {
+                feeSumAsNumber += blk.transactions[i].fee;
+            }
+
+            pi = new uint256[](4);
+            pi[0] = blk.commitments_root;
+            pi[1] = blk.nullifier_root;
+            pi[2] = blk.commitments_root_root;
+            pi[3] = blk.transactions.length;
+        } else {
+            revert("Unknown proof system ID");
         }
-
-        uint256 publicInputsBytes_computed = uint256(
-            sha256_and_shift(abi.encodePacked(publicInputs))
-        );
-        publicInputsBytes_computed =
-            publicInputsBytes_computed %
-            21888242871839275222246405745257275088548364400416034343698204186575808495617;
-
-        uint256 n = blk.transactions.length;
-        
-        uint256[] memory pi = new uint256[](2);
-        pi[0] = publicInputsBytes_computed;
-        pi[1] = n;
 
         bool is_proof_valid = router.verify(
             blk.rollup_proof,
