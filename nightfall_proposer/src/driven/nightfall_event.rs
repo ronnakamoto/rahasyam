@@ -306,10 +306,41 @@ where
     let historic_root: Fr254 = FrBn254::try_from(blk.commitments_root)
         .map_err(|_| EventHandlerError::IOError("Could not convert to Fr254".to_string()))?
         .into();
-    if our_address != sender_address
-        || !sync_status.is_synchronised()
-        || commitment_root_before_append.0.is_zero()
+    // Decide whether to (re)build the trees from this event.
+    //
+    // A block we proved ourselves already had its leaves inserted into the
+    // authoritative JF trees at prove time (see the `prepare_state_transition`
+    // implementations), and `speculative_state` holds a snapshot of the
+    // pre-insert state for it. Three cases:
+    //
+    //   1. Our own block, landed as-is: `confirm_front` matches the front
+    //      outstanding speculative block and drops its snapshot (it is now
+    //      confirmed). We must NOT append — the leaves are already present;
+    //      re-appending would double-insert and corrupt the tree.
+    //   2. Someone else's block, or a resync, while we still hold speculative
+    //      state: our local trees are ahead of (and diverge from) the confirmed
+    //      block, so we first roll all speculation back to the confirmed tip,
+    //      then append this block's leaves from the event.
+    //   3. No speculative state (non-proposer sync, bootstrap, or post-reset
+    //      replay): append directly.
+    let our_block_confirmed = our_address == sender_address
+        && crate::driven::speculative_state::confirm_front(db, historic_root).await;
+    if !our_block_confirmed
+        && (our_address != sender_address
+            || !sync_status.is_synchronised()
+            || commitment_root_before_append.0.is_zero())
     {
+        // Serialise these live-tree mutations against a concurrent rollback on
+        // the finality task (the assembly task is already excluded via the
+        // sync_status write lock held by this handler).
+        let _tree_guard = crate::driven::speculative_state::tree_mutation_lock().await;
+        // If we are about to rebuild from the event but still hold speculative
+        // tree state, that state belongs to a block of ours that did not land
+        // as-is; revert it to the confirmed tip before appending so we don't
+        // stack this block's leaves on top of our stale speculation.
+        if crate::driven::speculative_state::has_outstanding().await {
+            crate::driven::speculative_state::rollback_all(db).await;
+        }
         let commitments = &blk
             .transactions
             .iter()

@@ -266,6 +266,11 @@ where
         let _ = <MongoClient as CommitmentTree<Fr254>>::reset_tree(db).await;
         let _ = <MongoClient as HistoricRootTree<Fr254>>::reset_tree(db).await;
         let _ = <MongoClient as NullifierTree<Fr254>>::reset_tree(db).await;
+        // The trees have been wiped, so any record of blocks we previously
+        // pre-inserted at prove time (and their snapshots) is now stale: after
+        // this reset we rebuild every block — including our own — from the
+        // confirmed events.
+        crate::driven::speculative_state::discard_all(db).await;
         // clean up the mempool, otherwise proposer gets duplicated transactions everytime it syncs
 
         let removed_deposits = TransactionsDB::<P>::remove_all_mempool_deposits(db).await;

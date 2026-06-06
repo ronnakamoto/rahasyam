@@ -13,4 +13,6 @@ pub mod nightfall_contract;
 pub mod nightfall_event;
 pub mod proving;
 pub mod rollup_prover;
+pub mod speculative_state;
+pub mod tree_snapshot;
 pub mod unified_deposit_prover;

@@ -251,7 +251,31 @@ where
         if let Err(e) = N::propose_block(block).await {
             error!("Failed to propose block: {e}");
             let db = get_db_connection().await;
+            // This block was speculatively applied to the authoritative JF trees
+            // at prove time but did not land on-chain. Roll the trees back to the
+            // confirmed tip and discard all speculation; the remaining queued
+            // blocks were built on top of this failed block's state and are now
+            // invalid, so drop them and return their selected transactions to the
+            // mempool for reproving against the (rolled-back) confirmed state. The
+            // tree-mutation lock serialises the rollback against a concurrent
+            // speculative prepare on the assembly task.
+            {
+                let _tree_guard = crate::driven::speculative_state::tree_mutation_lock().await;
+                crate::driven::speculative_state::rollback_all(db).await;
+            }
             let _ = restore_selected_transactions_for_failed_block::<P>(db, &failed_block).await;
+            let abandoned: Vec<Block> = blocks.drain(..).collect();
+            for abandoned_block in &abandoned {
+                let _ =
+                    restore_selected_transactions_for_failed_block::<P>(db, abandoned_block).await;
+            }
+            if !abandoned.is_empty() {
+                warn!(
+                    "Dropped {} queued block(s) built on the failed block's speculative state",
+                    abandoned.len()
+                );
+            }
+            return;
         }
     }
 }

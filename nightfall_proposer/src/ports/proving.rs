@@ -42,8 +42,28 @@ pub trait RecursiveProvingEngine<P: Proof> {
         info!("[prove_block] Starting prepare_state_transition ({} deposits, {} client txs)...",
             deposit_transactions.len(), client_transactions.len());
         let prep_start = Instant::now();
-        let (info, [commitments_root, nullifiers_root, commitments_root_root]) =
-            Self::prepare_state_transition(deposit_transactions, client_transactions).await?;
+        // Snapshot the authoritative JF trees before `prepare_state_transition`
+        // mutates them speculatively, so the block can be rolled back if it
+        // fails to land on-chain. On a prepare failure we restore immediately so
+        // partial inserts never leak into the trees; on success the snapshot is
+        // retained (keyed to this block) for the finality/event paths. The
+        // tree-mutation lock serialises this against a concurrent rollback on
+        // the finality task.
+        let db = crate::initialisation::get_db_connection().await;
+        let (info, [commitments_root, nullifiers_root, commitments_root_root]) = {
+            let _tree_guard = crate::driven::speculative_state::tree_mutation_lock().await;
+            crate::driven::speculative_state::begin(db).await;
+            match Self::prepare_state_transition(deposit_transactions, client_transactions).await {
+                Ok(v) => {
+                    crate::driven::speculative_state::confirm_prepare(v.1[0]).await;
+                    v
+                }
+                Err(e) => {
+                    crate::driven::speculative_state::abort_prepare(db).await;
+                    return Err(e);
+                }
+            }
+        };
         info!("[prove_block] prepare_state_transition completed in {:.2}s", prep_start.elapsed().as_secs_f64());
 
         info!("[prove_block] Starting recursive_prove (offloaded to blocking thread pool)...");
