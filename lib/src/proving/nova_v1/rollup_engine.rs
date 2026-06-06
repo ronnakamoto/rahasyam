@@ -52,7 +52,7 @@ mod nova_integration {
         provider::{Bn256EngineKZG, GrumpkinEngine},
         traits::{snark::RelaxedR1CSSNARKTrait, Engine},
     };
-    use ff::{Field, PrimeField};
+    use ff::PrimeField;
 
     // ------------------------------------------------------------------
     // Type aliases following the minroot example pattern.
@@ -79,6 +79,20 @@ mod nova_integration {
 
     /// Compressed SNARK type for rollup blocks.
     pub type RollupCompressedSNARK = CompressedSNARK<E1, E2, RollupCircuit, S1, S2>;
+
+    /// Serialize an `F1` (Nova primary scalar) to 32 little-endian bytes,
+    /// matching the encoding used when the prover stamps the IVC output
+    /// roots into [`NovaProof`] (see [`NovaRollupEngine::extract_ivc_state`]).
+    /// Kept module-private so the verify-side binding and the prove-side
+    /// extraction stay in lockstep.
+    fn f1_to_bytes(f: F1) -> Vec<u8> {
+        let mut bytes = vec![0u8; 32];
+        let repr = f.to_repr();
+        let ref_bytes = repr.as_ref();
+        let len = ref_bytes.len().min(32);
+        bytes[..len].copy_from_slice(&ref_bytes[..len]);
+        bytes
+    }
 
     /// Nova Rollup Engine
     ///
@@ -477,20 +491,73 @@ mod nova_integration {
             self.prove_circuits(circuits)
         }
 
-        /// Verify a Nova block proof.
+        /// Verify a Nova block proof against the **default empty-tree
+        /// initial state** (`z0 = initial_z0()`).
         ///
-        /// Deserializes the `CompressedSNARK` and calls `verify`.
+        /// This is sound for blocks proved from the empty initial state
+        /// (the first block, or unit tests). Blocks proved with a
+        /// hydrated initial state (a non-empty `z0[1]`, produced by
+        /// [`Self::prove_circuits_with_z0`]) MUST be verified with
+        /// [`Self::verify_with_z0`] so the verifier replays the correct
+        /// `z0`; verifying such a proof here will correctly **reject**
+        /// it (the folding hash binds `z0`).
+        ///
+        /// Unlike the previous implementation, this binds the verified
+        /// IVC output state `zn` to the proof's advertised roots. A
+        /// verified SNARK proves a statement about *some* output state;
+        /// without binding `zn` to `proof.commitments_root` /
+        /// `nullifiers_root` / `historic_root_root` / `transaction_count`
+        /// a caller could pair a valid proof with arbitrary advertised
+        /// roots.
         fn verify(&self, proof: &Self::ProofOutput) -> Result<bool, Self::Error> {
             // Empty proof for empty block is valid by convention.
             if proof.snark_proof.is_empty() && proof.transaction_count == 0 {
                 return Ok(true);
             }
+            let z0 = Self::initial_z0();
+            let z0: [F1; 5] = z0
+                .try_into()
+                .map_err(|_| ProvingError::VerificationFailed("initial_z0 arity != 5".into()))?;
+            self.verify_with_z0(proof, z0)
+        }
+    }
 
+    impl NovaRollupEngine {
+        /// Verify a Nova block proof against an explicit initial state
+        /// `z0`.
+        ///
+        /// This is the general, sound verification entry point. It:
+        ///
+        /// 1. Runs the real Spartan `CompressedSNARK::verify`, which
+        ///    cryptographically attests that folding `num_steps` IVC
+        ///    steps from `z0` yields the SNARK's committed output state
+        ///    `zn`.
+        /// 2. **Binds** `zn` to the proof's advertised roots so the
+        ///    succinct proof cannot be re-used with different public
+        ///    outputs.
+        ///
+        /// The off-chain attestor (see `NovaRollupVerifier.sol`) calls
+        /// this with the same `z0` the proposer proved against (the
+        /// empty-tree `z0` for the first block, or the hydrated
+        /// `pre_nullifiers_root` for subsequent blocks) and signs only
+        /// when it returns `Ok(true)`.
+        pub fn verify_with_z0(
+            &self,
+            proof: &NovaProof,
+            z0: [F1; 5],
+        ) -> Result<bool, ProvingError> {
+            // Empty proof for empty block is valid by convention.
+            if proof.snark_proof.is_empty() && proof.transaction_count == 0 {
+                return Ok(true);
+            }
             if proof.snark_proof.is_empty() {
                 return Err(ProvingError::VerificationFailed(
                     "Empty snark_proof for non-empty block".into(),
                 ));
             }
+
+            // Ensure the verifying key has been loaded.
+            let _ = Self::setup()?;
 
             // Deserialize the compressed SNARK.
             let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
@@ -498,19 +565,85 @@ mod nova_integration {
                     ProvingError::VerificationFailed(format!("CompressedSNARK deserialization: {e}"))
                 })?;
 
-            // Reconstruct public params and VK for verification.
-            // NOTE: In production this would load VK from disk (NovaKeyManager).
             let vk = SNARK_VK.get().ok_or_else(|| {
                 ProvingError::VerificationFailed("SNARK VK not initialized".into())
             })?;
 
-            let z0 = Self::initial_z0();
             let num_steps = proof.transaction_count;
 
-            compressed
-                .verify(&vk, num_steps, &z0)
-                .map(|_| true)
-                .map_err(|e| ProvingError::VerificationFailed(format!("CompressedSNARK::verify: {e}")))
+            // NOTE on `num_steps`: this uses the proof's `transaction_count`,
+            // which equals the number of folded IVC steps **only when the
+            // block contains no padding circuits**. The proposer's
+            // `build_rollup_circuits` may emit padding steps (for dummy
+            // transactions) that are folded but do not increment
+            // `transaction_count`. For such blocks the caller must use
+            // [`Self::verify_with_steps`] with the true folded step count.
+            // (Unifying the step-count representation in `NovaProof` is a
+            // tracked follow-up.)
+            self.verify_inner(compressed, vk, num_steps, &z0, proof)
+        }
+
+        /// Like [`Self::verify_with_z0`] but with an explicit folded
+        /// step count, for blocks whose folded step count differs from
+        /// `transaction_count` (i.e. blocks that include padding
+        /// circuits). The attestor obtains `num_steps` from the number
+        /// of circuits it folded.
+        pub fn verify_with_steps(
+            &self,
+            proof: &NovaProof,
+            z0: [F1; 5],
+            num_steps: usize,
+        ) -> Result<bool, ProvingError> {
+            if proof.snark_proof.is_empty() && proof.transaction_count == 0 {
+                return Ok(true);
+            }
+            if proof.snark_proof.is_empty() {
+                return Err(ProvingError::VerificationFailed(
+                    "Empty snark_proof for non-empty block".into(),
+                ));
+            }
+            let _ = Self::setup()?;
+            let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
+                .map_err(|e| {
+                    ProvingError::VerificationFailed(format!("CompressedSNARK deserialization: {e}"))
+                })?;
+            let vk = SNARK_VK.get().ok_or_else(|| {
+                ProvingError::VerificationFailed("SNARK VK not initialized".into())
+            })?;
+            self.verify_inner(compressed, vk, num_steps, &z0, proof)
+        }
+
+        /// Shared verification core: run the Spartan `CompressedSNARK`
+        /// verification and bind the proven output state `zn` to the
+        /// proof's advertised roots / count.
+        fn verify_inner(
+            &self,
+            compressed: RollupCompressedSNARK,
+            vk: &nova_snark::nova::VerifierKey<E1, E2, RollupCircuit, S1, S2>,
+            num_steps: usize,
+            z0: &[F1],
+            proof: &NovaProof,
+        ) -> Result<bool, ProvingError> {
+            // (1) Cryptographic verification: returns the proven output
+            //     state `zn` (the primary engine's z vector).
+            let zn = compressed
+                .verify(vk, num_steps, z0)
+                .map_err(|e| {
+                    ProvingError::VerificationFailed(format!("CompressedSNARK::verify: {e}"))
+                })?;
+
+            // (2) Bind the proven output state to the advertised roots.
+            //     `zn` is `[commitments_root, nullifiers_root,
+            //     historic_root, tx_count, nullifier_count]`.
+            if zn.len() < 4 {
+                return Ok(false);
+            }
+            let roots_match = f1_to_bytes(zn[0]) == proof.commitments_root
+                && f1_to_bytes(zn[1]) == proof.nullifiers_root
+                && f1_to_bytes(zn[2]) == proof.historic_root_root;
+            let count_matches = zn[3] == F1::from(proof.transaction_count as u64);
+
+            Ok(roots_match && count_matches)
         }
     }
 
