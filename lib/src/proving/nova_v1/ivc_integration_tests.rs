@@ -1018,3 +1018,80 @@ fn verify_binds_output_state_to_advertised_roots() {
     tampered_count.transaction_count += 1;
     assert!(rejected(&tampered_count), "tampered transaction_count must be rejected");
 }
+
+/// End-to-end guard for the attestor's `verify_attestation` entry point,
+/// exercising it exactly as the proposer's local single-signer path does:
+/// prove a block, then re-run the sound `CompressedSNARK::verify` using the
+/// proof's (Neptune) roots, the hydrated `pre_nullifiers_root` (here the
+/// empty-tree `z0[1]`) and the **true folded step count** (`circuits.len()`).
+///
+/// This is the regression test for the `nf4_test` development path: with
+/// padding on, `num_steps` (`circuits.len()`) is what the verifier must
+/// replay, so `verify_attestation` MUST accept a genuine proof when given
+/// it — and reject a wrong step count or wrong initial state.
+#[test]
+fn verify_attestation_accepts_genuine_proof_and_rejects_wrong_params() {
+    let engine = NovaRollupEngine::setup().expect("engine setup");
+    let z0 = compute_initial_z0();
+
+    // A small block: 4 deposit steps (zero nullifiers) + 1 transfer step.
+    let commitments: Vec<F1> = (1u64..=5).map(F1::from).collect();
+    let mut nullifiers = vec![F1::ZERO; 4];
+    nullifiers.push(F1::from(77u64));
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    let num_steps = circuits.len();
+
+    let proof = engine
+        .prove_circuits(circuits)
+        .expect("prove_circuits must succeed");
+    assert!(!proof.snark_proof.is_empty());
+
+    // `prove_circuits` proves from the empty initial state, so the hydrated
+    // `pre_nullifiers_root` the attestor would receive is `z0[1]`.
+    let pre_nullifiers_root = z0[1];
+
+    // (a) Genuine proof with the correct step count verifies.
+    let ok = engine
+        .verify_attestation(
+            &proof.snark_proof,
+            &proof.commitments_root,
+            &proof.nullifiers_root,
+            &proof.historic_root_root,
+            proof.transaction_count,
+            num_steps,
+            pre_nullifiers_root,
+        )
+        .expect("verify_attestation must not error on a genuine proof");
+    assert!(ok, "attestor must accept a genuine proof with the correct step count");
+
+    // (b) Wrong folded step count must NOT be accepted (the folding hash
+    //     binds the step count).
+    let wrong_steps = engine.verify_attestation(
+        &proof.snark_proof,
+        &proof.commitments_root,
+        &proof.nullifiers_root,
+        &proof.historic_root_root,
+        proof.transaction_count,
+        num_steps + 1,
+        pre_nullifiers_root,
+    );
+    assert!(
+        !matches!(wrong_steps, Ok(true)),
+        "a wrong num_steps must be rejected, got {wrong_steps:?}"
+    );
+
+    // (c) Wrong initial state (`z0[1]`) must NOT be accepted.
+    let wrong_z0 = engine.verify_attestation(
+        &proof.snark_proof,
+        &proof.commitments_root,
+        &proof.nullifiers_root,
+        &proof.historic_root_root,
+        proof.transaction_count,
+        num_steps,
+        F1::from(0xDEADu64),
+    );
+    assert!(
+        !matches!(wrong_z0, Ok(true)),
+        "a wrong pre_nullifiers_root must be rejected, got {wrong_z0:?}"
+    );
+}

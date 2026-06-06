@@ -209,6 +209,12 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      # The attestor now runs the sound `CompressedSNARK::verify` before
+      # signing, so it needs the same pre-generated Nova public params +
+      # Spartan verifying key the proposer uses. Mounted read-only: the
+      # keys are pre-generated on the host and must match the proposer's
+      # byte-for-byte (a mismatched VK would make verification fail).
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       anvil:
         condition: service_healthy
@@ -220,12 +226,20 @@ services:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - RUST_LOG=${RUST_LOG:-info}
+      # Point the Nova key loader at the mounted, pre-generated key cache
+      # (same value the proposer uses) so the attestor loads — rather than
+      # regenerates — the public params + Spartan VK for verification.
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       # The attestation service signs with nova_verifier.attestor_key
       # (from nightfall.toml). It holds NO transaction-sending key.
     deploy:
       resources:
         limits:
-          memory: 2G
+          # Must hold the deserialized Nova public params + Spartan VK
+          # (~100 MB on disk, larger in memory) plus the verify working
+          # set. Higher than the previous 2 GB, which only covered the
+          # Stage-1 structural-only signer. Tune down if headroom allows.
+          memory: 8G
 
   proposer:
     container_name: nf4_proposer

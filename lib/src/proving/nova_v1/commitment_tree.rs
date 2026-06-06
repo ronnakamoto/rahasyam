@@ -36,16 +36,15 @@ use super::hash::{poseidon_constants, poseidon_hash2_native, poseidon_hash3_nati
 use super::merkle::{imt_leaf_hash_native, MerklePathHop};
 use super::rollup_engine::F1;
 use serde::de::Error as _;
-use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+use serde::{Deserializer, Serializer};
 
-/// Serialize an F1 (Nova scalar) field element as a 0x-prefixed 64-char hex
-/// string in big-endian order. We use the `ff::PrimeField::to_repr` API
+/// Encode an F1 (Nova scalar) field element as a `0x`-prefixed 64-char
+/// big-endian hex string. We use the `ff::PrimeField::to_repr` API
 /// because F1 is not an `arkworks` type and so does not implement
-/// `CanonicalSerialize`.
-pub fn serialize_f1<S>(v: &F1, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
+/// `CanonicalSerialize`. This is the canonical wire encoding shared by
+/// the proposer (which forwards `z0[1]` to the attestor) and the
+/// attestor (which parses it back via [`f1_from_hex`]).
+pub fn f1_to_hex(v: &F1) -> String {
     let repr = v.to_repr();
     let bytes = repr.as_ref();
     let mut padded = [0u8; 32];
@@ -57,7 +56,51 @@ where
         use std::fmt::Write;
         write!(&mut hex_str, "{byte:02x}").expect("writing to String never fails");
     }
-    s.serialize_str(&format!("0x{hex_str}"))
+    format!("0x{hex_str}")
+}
+
+/// Parse an F1 (Nova scalar) field element from a `0x`-prefixed or
+/// unprefixed big-endian hex string. Inverse of [`f1_to_hex`]. Shorter
+/// strings are left-padded with zeros, so any value `f1_to_hex` can emit
+/// round-trips.
+pub fn f1_from_hex(hex_str: &str) -> Result<F1, String> {
+    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    if stripped.len() > 64 {
+        return Err(format!("F1 hex string too long: {} chars", stripped.len()));
+    }
+    // Left-pad to a full 64-char (32-byte) big-endian representation.
+    let padded_hex = format!("{stripped:0>64}");
+    let mut be = [0u8; 32];
+    for (i, chunk) in padded_hex.as_bytes().chunks(2).enumerate() {
+        let byte = u8::from_str_radix(
+            std::str::from_utf8(chunk).map_err(|e| e.to_string())?,
+            16,
+        )
+        .map_err(|e| e.to_string())?;
+        be[i] = byte;
+    }
+    // `from_repr` expects little-endian bytes.
+    let mut le = [0u8; 32];
+    for (i, b) in be.iter().rev().enumerate() {
+        le[i] = *b;
+    }
+    let mut repr = <F1 as ff::PrimeField>::Repr::default();
+    repr.as_mut().copy_from_slice(&le);
+    let opt = F1::from_repr(repr);
+    if opt.is_some().into() {
+        Ok(opt.unwrap())
+    } else {
+        Err("F1::from_repr returned None".to_string())
+    }
+}
+
+/// Serialize an F1 (Nova scalar) field element as a 0x-prefixed 64-char hex
+/// string in big-endian order.
+pub fn serialize_f1<S>(v: &F1, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(&f1_to_hex(v))
 }
 
 /// Deserialize an F1 (Nova scalar) field element from a 0x-prefixed or
@@ -66,37 +109,8 @@ pub fn deserialize_f1<'de, D>(d: D) -> Result<F1, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let hex_str: &str = Deserialize::deserialize(d)?;
-    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    if stripped.len() > 64 {
-        return Err(D::Error::custom(format!(
-            "F1 hex string too long: {} chars",
-            stripped.len()
-        )));
-    }
-    let mut padded = [0u8; 32];
-    let start = 64 - stripped.len();
-    for (i, chunk) in stripped.as_bytes().chunks(2).enumerate() {
-        if chunk.len() != 2 {
-            return Err(D::Error::custom("F1 hex string has odd length"));
-        }
-        let byte = u8::from_str_radix(
-            std::str::from_utf8(chunk).map_err(D::Error::custom)?,
-            16,
-        )
-        .map_err(D::Error::custom)?;
-        // We populated the hex string big-endian; convert to little-endian
-        // for the F1 to_repr format.
-        padded[start + (stripped.len() / 2) - 1 - i] = byte;
-    }
-    let mut repr = <F1 as ff::PrimeField>::Repr::default();
-    repr.as_mut().copy_from_slice(&padded);
-    let opt = F1::from_repr(repr);
-    if opt.is_some().into() {
-        Ok(opt.unwrap())
-    } else {
-        Err(D::Error::custom("F1::from_repr returned None"))
-    }
+    let hex_str = <&str>::deserialize(d)?;
+    f1_from_hex(hex_str).map_err(D::Error::custom)
 }
 
 /// One hop in a binary Merkle inclusion path. The Nova circuit consumes
@@ -814,6 +828,27 @@ mod tests {
     use super::*;
     use crate::proving::nova_v1::hash::poseidon_constants;
     use crate::proving::nova_v1::merkle::compute_merkle_root_native;
+
+    #[test]
+    fn f1_hex_round_trips() {
+        use ff::Field;
+        // Zero, one, a hydrated-root-like value, and the empty-tree z0[1].
+        let z0 = compute_initial_z0();
+        let cases = [F1::ZERO, F1::ONE, z0[1], z0[2], F1::from(123456789u64)];
+        for v in cases {
+            let hex = f1_to_hex(&v);
+            assert!(hex.starts_with("0x") && hex.len() == 66, "bad hex: {hex}");
+            let back = f1_from_hex(&hex).expect("f1_from_hex must parse f1_to_hex output");
+            assert_eq!(v, back, "round-trip mismatch for {hex}");
+            // Unprefixed and left-pad-tolerant parsing must agree.
+            let back2 = f1_from_hex(hex.trim_start_matches("0x")).unwrap();
+            assert_eq!(v, back2);
+        }
+        // Short hex is left-padded, not rejected.
+        assert_eq!(f1_from_hex("0x01").unwrap(), F1::ONE);
+        // Over-long hex is rejected.
+        assert!(f1_from_hex(&"f".repeat(65)).is_err());
+    }
 
     // -- Commitment tree -----------------------------------------------------
 

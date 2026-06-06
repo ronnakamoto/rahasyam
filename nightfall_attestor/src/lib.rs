@@ -15,23 +15,35 @@
 //! a malicious proposer cannot trick the attestor into signing a proof
 //! bound to a different chain or verifier.
 //!
-//! ## Stage-1 verification scope
+//! ## Verification scope
 //!
-//! The service currently enforces the **structural binding** the
-//! on-chain verifier also checks (roots == public inputs, `snark_proof`
-//! length, `transaction_count <= MAX_STEPS`) before signing. Running the
-//! full *sound* `CompressedSNARK::verify` requires the original
-//! (pre-root-rewrite, Neptune-root) proof plus the IVC initial state
-//! `z0`; forwarding those from the proposer is the immediate follow-up
-//! (tracked alongside migrating the verifier to consume Neptune roots).
+//! The service runs the **full, sound** Spartan `CompressedSNARK::verify`
+//! before signing. Because the proposer rewrites the on-wire roots to
+//! their JF values (for the contract's structural check) while the inner
+//! SNARK still attests to the **Neptune** roots from the hydrated IVC
+//! initial state, the proposer forwards the original Neptune roots and the
+//! hydrated `pre_nullifiers_root` (`z0[1]`) alongside the proof. The
+//! service reconstructs that pre-root-rewrite statement and verifies it
+//! via [`NovaRollupEngine::verify_attestation`]; it signs **only** when
+//! verification succeeds (fail-closed). It additionally enforces the
+//! structural binding the on-chain verifier checks (roots == public
+//! inputs, `snark_proof` length, `transaction_count <= MAX_STEPS`).
+//!
+//! Running the cryptographic verify requires the Nova public parameters
+//! and Spartan verifying key to be available to the service (the same
+//! keys the proposer uses); a misconfiguration surfaces as a rejected
+//! attestation, never as a signature over an unverified proof.
 
 use alloy::primitives::Address;
 use lib::proving::nova_v1::attestation::{
     check_structural_binding, preimage_from_proof, recover_attestor, sign_attestation, SIG_BYTES,
 };
+use lib::proving::nova_v1::commitment_tree::f1_from_hex;
 use lib::proving::nova_v1::proof::NovaProof;
+use lib::proving::nova_v1::rollup_engine::NovaRollupEngine;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::panic::AssertUnwindSafe;
 use warp::{Filter, Rejection, Reply};
 
 /// JSON request body for `POST /attest`.
@@ -44,6 +56,21 @@ pub struct AttestRequest {
     /// Hex (optionally `0x`-prefixed) 32-byte big-endian words for the
     /// four public inputs.
     pub public_inputs: [String; 4],
+    /// Hex (optionally `0x`-prefixed) Neptune commitments root
+    /// (little-endian) the inner SNARK actually proved (pre root-rewrite).
+    pub neptune_commitments_root: String,
+    /// Hex (optionally `0x`-prefixed) Neptune nullifiers root
+    /// (little-endian).
+    pub neptune_nullifiers_root: String,
+    /// Hex (optionally `0x`-prefixed) Neptune historic-root root
+    /// (little-endian).
+    pub neptune_historic_root_root: String,
+    /// Hex (optionally `0x`-prefixed) hydrated IVC initial nullifiers root
+    /// (`z0[1]`), in `f1_to_hex` (big-endian) encoding.
+    pub pre_nullifiers_root: String,
+    /// True folded IVC step count (`circuits.len()`); with padding this is
+    /// `block_size`, not the proof's `transaction_count`.
+    pub num_steps: u64,
 }
 
 /// JSON response body for `POST /attest`.
@@ -105,6 +132,78 @@ fn decode_word(label: &str, s: &str) -> Result<[u8; 32], AttestationServiceError
     let mut word = [0u8; 32];
     word[32 - bytes.len()..].copy_from_slice(&bytes);
     Ok(word)
+}
+
+/// Decode an exactly-32-byte little-endian root (the Neptune roots are
+/// stored little-endian by the prover, so no padding/reordering is
+/// applied here).
+fn decode_root(label: &str, s: &str) -> Result<[u8; 32], AttestationServiceError> {
+    let bytes = decode_hex(label, s)?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+        AttestationServiceError::BadRequest(format!(
+            "{label} must be exactly 32 bytes (got {})",
+            bytes.len()
+        ))
+    })
+}
+
+/// Re-run the **sound** Spartan `CompressedSNARK::verify` for the proof in
+/// `request`, using the forwarded pre-root-rewrite Neptune roots and
+/// hydrated `pre_nullifiers_root`. Returns `Ok(())` only when the proof
+/// cryptographically verifies; any other outcome is an error so the
+/// service stays **fail-closed** and never signs an unverified proof.
+///
+/// Panics from key setup (e.g. missing/corrupt public parameters or
+/// verifying key) are caught and converted into an error, so a
+/// misconfigured service rejects attestations rather than crashing — and,
+/// crucially, never produces a signature.
+pub fn verify_forwarded_proof(request: &AttestRequest) -> Result<(), AttestationServiceError> {
+    let blob = decode_hex("proof", &request.proof)?;
+    let proof: NovaProof = bincode::deserialize(&blob).map_err(|e| {
+        AttestationServiceError::BadRequest(format!("proof is not a valid NovaProof: {e}"))
+    })?;
+
+    let neptune_commitments_root =
+        decode_root("neptune_commitments_root", &request.neptune_commitments_root)?;
+    let neptune_nullifiers_root =
+        decode_root("neptune_nullifiers_root", &request.neptune_nullifiers_root)?;
+    let neptune_historic_root_root = decode_root(
+        "neptune_historic_root_root",
+        &request.neptune_historic_root_root,
+    )?;
+    let pre_nullifiers_root = f1_from_hex(request.pre_nullifiers_root.trim()).map_err(|e| {
+        AttestationServiceError::BadRequest(format!("pre_nullifiers_root: {e}"))
+    })?;
+
+    let engine = NovaRollupEngine::new();
+    let verified = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        engine.verify_attestation(
+            &proof.snark_proof,
+            &neptune_commitments_root,
+            &neptune_nullifiers_root,
+            &neptune_historic_root_root,
+            proof.transaction_count,
+            request.num_steps as usize,
+            pre_nullifiers_root,
+        )
+    }))
+    .map_err(|_| {
+        AttestationServiceError::Attestation(
+            "CompressedSNARK verification panicked (public params / verifying key \
+             misconfigured?)"
+                .into(),
+        )
+    })?
+    .map_err(|e| {
+        AttestationServiceError::Attestation(format!("CompressedSNARK verification error: {e}"))
+    })?;
+
+    if !verified {
+        return Err(AttestationServiceError::Attestation(
+            "CompressedSNARK::verify did not accept the proof".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Core attestation logic, independent of HTTP and of global config so it
@@ -180,6 +279,23 @@ fn handle_attest(ctx: AttestorContext, request: AttestRequest) -> warp::reply::R
         .attestor_key
         .clone();
 
+    // Fail-closed: re-run the sound `CompressedSNARK::verify` BEFORE
+    // signing. The service never vouches for a proof it has not
+    // cryptographically verified.
+    if let Err(e) = verify_forwarded_proof(&request) {
+        let status = match e {
+            AttestationServiceError::NoKey => StatusCode::SERVICE_UNAVAILABLE,
+            AttestationServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AttestationServiceError::Attestation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        };
+        log::warn!("[attestor] rejecting attestation (verification): {e}");
+        return warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({ "error": e.to_string() })),
+            status,
+        )
+        .into_response();
+    }
+
     match build_attestation(ctx.chain_id, ctx.verifier, &attestor_key, &request) {
         Ok(att) => {
             let body = AttestResponse {
@@ -231,6 +347,14 @@ mod tests {
                 format!("0x{}", hex::encode(&proof.historic_root_root)),
                 format!("0x{}", hex::encode(block_len.to_be_bytes())),
             ],
+            // Synthetic Neptune roots + zero z0[1]; only the cryptographic
+            // verify path consumes these, and the synthetic `snark_proof`
+            // is rejected before they matter.
+            neptune_commitments_root: format!("0x{}", hex::encode([0x11u8; 32])),
+            neptune_nullifiers_root: format!("0x{}", hex::encode([0x22u8; 32])),
+            neptune_historic_root_root: format!("0x{}", hex::encode([0x33u8; 32])),
+            pre_nullifiers_root: format!("0x{}", hex::encode([0u8; 32])),
+            num_steps: proof.transaction_count as u64,
         }
     }
 
@@ -285,12 +409,29 @@ mod tests {
         assert!(matches!(res, Err(AttestationServiceError::NoKey)));
     }
 
+    #[test]
+    fn verify_forwarded_proof_rejects_unverifiable_proof() {
+        // A synthetic `snark_proof` is far too small to be a real
+        // CompressedSNARK; the fail-fast guard rejects it before any keyed
+        // setup, so the service refuses to sign (fail-closed).
+        let proof = synth_proof(96, 20);
+        let req = request_for(&proof, 64);
+        let res = verify_forwarded_proof(&req);
+        assert!(
+            matches!(res, Err(AttestationServiceError::Attestation(_))),
+            "expected fail-closed rejection, got {res:?}"
+        );
+    }
+
     #[tokio::test]
-    async fn attest_route_returns_signature() {
+    async fn attest_route_is_fail_closed_for_unverifiable_proof() {
         let ctx = AttestorContext {
             chain_id: 31337,
             verifier: Address::from([0xCDu8; 20]),
         };
+        // Synthetic proof cannot pass `CompressedSNARK::verify`, so the
+        // route must NOT return a signature (200). It rejects at the
+        // verification stage (422) regardless of whether a key is set.
         let proof = synth_proof(96, 20);
         let req = request_for(&proof, 64);
         let resp = warp::test::request()
@@ -299,38 +440,11 @@ mod tests {
             .json(&req)
             .reply(&routes(ctx))
             .await;
-        // 200 (signed) or 503 (no key in this env) are both valid; 400
-        // would indicate a request-parsing regression.
-        assert!(
-            resp.status() == warp::http::StatusCode::OK
-                || resp.status() == warp::http::StatusCode::SERVICE_UNAVAILABLE,
-            "unexpected status: {}",
+        assert_eq!(
+            resp.status(),
+            warp::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "service must be fail-closed for an unverifiable proof; got {}",
             resp.status()
         );
-
-        // When a key is configured, the returned signature must recover
-        // to the same address the handler reports, over the exact
-        // preimage the on-chain verifier rebuilds.
-        if resp.status() == warp::http::StatusCode::OK {
-            let body: AttestResponse = serde_json::from_slice(resp.body()).unwrap();
-            let sig_bytes = hex::decode(body.signature.trim_start_matches("0x")).unwrap();
-            let sig: [u8; SIG_BYTES] = sig_bytes.as_slice().try_into().unwrap();
-
-            let mut block_len_word = [0u8; 32];
-            block_len_word[24..].copy_from_slice(&64u64.to_be_bytes());
-            let pi = [[0x11u8; 32], [0x22u8; 32], [0x33u8; 32], block_len_word];
-            let preimage = attestation_preimage(
-                ctx.chain_id,
-                ctx.verifier,
-                &proof.snark_proof,
-                &[0x11u8; 32],
-                &[0x22u8; 32],
-                &[0x33u8; 32],
-                20,
-                &pi,
-            );
-            let recovered = recover_attestor(&preimage, &sig).unwrap();
-            assert_eq!(recovered.to_checksum(None), body.attestor);
-        }
     }
 }

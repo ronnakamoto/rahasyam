@@ -140,10 +140,14 @@ attestor_key = "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b
 log_level = "info"
 
 [development.nightfall_attestor]
-# Standalone Nova attestation service. Leave `url` empty to keep the
-# proposer signing locally with nova_verifier.attestor_key (default dev
-# path used by nf4_test). Set e.g. "http://attestor:3001" to delegate
-# attestation to a separately-keyed service.
+# Standalone Nova attestation service. This `url` default is empty, which
+# would make the proposer sign locally with nova_verifier.attestor_key.
+# NOTE: the docker-compose `development` profile OVERRIDES this via
+# `NF4_NIGHTFALL_ATTESTOR__URL` (default `http://attestor:3001`), so the
+# containerised nf4_test run delegates attestation to the standalone
+# `attestor` service (which mounts the Nova keys and runs the sound
+# CompressedSNARK::verify before signing). Leave empty only for non-docker
+# runs where the proposer should sign locally.
 url = ""
 log_level = "info"
 bind = "0.0.0.0:3001"

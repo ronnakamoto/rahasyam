@@ -180,6 +180,15 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
 
         info!("[nova prove_block] Starting recursive_prove (offloaded to blocking thread pool)...");
         let prove_start = Instant::now();
+        // Capture the hydrated IVC initial nullifiers root (`z0[1]`) and the
+        // true folded step count before `info` is moved into the blocking
+        // prover. The attestor needs both to reconstruct `z0` and replay the
+        // folding hash for the sound `CompressedSNARK::verify`. `num_steps`
+        // is `circuits.len()` (== block_size when padding circuits are
+        // folded), which differs from the proof's real `transaction_count`.
+        // `F1` is `Copy`, so this is cheap.
+        let pre_nullifiers_root = info.pre_nullifiers_root;
+        let num_folded_steps = info.circuits.len();
         let fq_vec = tokio::task::spawn_blocking(move || Self::recursive_prove(info))
             .await
             .map_err(|_e| Self::Error::from(ConversionError::ParseFailed))??;
@@ -333,6 +342,13 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             &nova_proof,
             &rollup_proof,
             &public_inputs,
+            &crate::driven::attestor_client::ForwardedVerification {
+                neptune_commitments_root: neptune_commitments_root.clone(),
+                neptune_nullifiers_root: neptune_nullifiers_root.clone(),
+                neptune_historic_root_root: neptune_historic_root_root.clone(),
+                pre_nullifiers_root,
+                num_steps: num_folded_steps,
+            },
         )
         .await?
         {

@@ -21,9 +21,31 @@
 
 use crate::driven::rollup_prover::RollupProofError;
 use lib::proving::nova_v1::attestation::{preimage_from_proof, sign_attestation, SIG_BYTES};
+use lib::proving::nova_v1::commitment_tree::f1_to_hex;
 use lib::proving::nova_v1::proof::NovaProof;
+use lib::proving::nova_v1::rollup_engine::{NovaRollupEngine, F1};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
+
+/// The pre-root-rewrite data the attestor needs to re-run the sound
+/// `CompressedSNARK::verify`. The on-chain `NovaProof` carries JF roots,
+/// but the inner SNARK proves the **Neptune** roots from the hydrated IVC
+/// initial state, so the attestor must be handed those original values.
+pub struct ForwardedVerification {
+    /// Neptune commitments root (little-endian, as the SNARK proved it).
+    pub neptune_commitments_root: Vec<u8>,
+    /// Neptune nullifiers root (little-endian).
+    pub neptune_nullifiers_root: Vec<u8>,
+    /// Neptune historic-root root (little-endian).
+    pub neptune_historic_root_root: Vec<u8>,
+    /// Hydrated IVC initial nullifiers root (`z0[1]`).
+    pub pre_nullifiers_root: F1,
+    /// True folded IVC step count (`circuits.len()`). With padding (the
+    /// default, non-dynamic block size) this is `block_size`, NOT the
+    /// real `transaction_count`; the attestor needs it to replay the
+    /// folding hash, so verification of padded blocks succeeds.
+    pub num_steps: usize,
+}
 
 /// Outcome of an attestation request.
 pub enum AttestationOutcome {
@@ -43,6 +65,18 @@ struct AttestRequest {
     /// inputs `[commitments_root, nullifiers_root, historic_root_root,
     /// block_len]`.
     public_inputs: [String; 4],
+    /// Hex (0x-prefixed) Neptune commitments root (little-endian) the
+    /// inner SNARK actually proved.
+    neptune_commitments_root: String,
+    /// Hex (0x-prefixed) Neptune nullifiers root (little-endian).
+    neptune_nullifiers_root: String,
+    /// Hex (0x-prefixed) Neptune historic-root root (little-endian).
+    neptune_historic_root_root: String,
+    /// Hex (0x-prefixed) hydrated IVC initial nullifiers root (`z0[1]`),
+    /// in `f1_to_hex` (big-endian) encoding.
+    pre_nullifiers_root: String,
+    /// True folded IVC step count (`circuits.len()`).
+    num_steps: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,17 +103,20 @@ fn parse_signature(hex_sig: &str) -> Result<[u8; SIG_BYTES], RollupProofError> {
 }
 
 /// Obtain an attestation for `proof` (whose on-chain bincode is `blob`)
-/// bound to `public_inputs`.
+/// bound to `public_inputs`. `verification` carries the pre-root-rewrite
+/// data the attestor uses to re-run the sound `CompressedSNARK::verify`
+/// before vouching for the proof.
 pub async fn obtain_attestation(
     proof: &NovaProof,
     blob: &[u8],
     public_inputs: &[[u8; 32]; 4],
+    verification: &ForwardedVerification,
 ) -> Result<AttestationOutcome, RollupProofError> {
     let settings = configuration::settings::get_settings();
     let url = settings.nightfall_attestor.url.trim();
 
     if !url.is_empty() {
-        return obtain_remote(url, blob, public_inputs).await;
+        return obtain_remote(url, blob, public_inputs, verification).await;
     }
 
     let attestor_key = settings.nova_verifier.attestor_key.trim();
@@ -93,6 +130,26 @@ pub async fn obtain_attestation(
         return Ok(AttestationOutcome::Unsigned);
     }
 
+    // Local single-signer path: still fail-closed. Re-run the sound
+    // `CompressedSNARK::verify` before signing so the local signer never
+    // vouches for a proof it has not cryptographically verified.
+    let verified = NovaRollupEngine::new()
+        .verify_attestation(
+            &proof.snark_proof,
+            &verification.neptune_commitments_root,
+            &verification.neptune_nullifiers_root,
+            &verification.neptune_historic_root_root,
+            proof.transaction_count,
+            verification.num_steps,
+            verification.pre_nullifiers_root,
+        )
+        .map_err(|e| err("verifying proof before local signing", e))?;
+    if !verified {
+        return Err(RollupProofError::ParameterError(
+            "local attestation refused: CompressedSNARK::verify did not accept the proof".into(),
+        ));
+    }
+
     let addresses = configuration::addresses::get_addresses();
     let preimage = preimage_from_proof(
         addresses.chain_id,
@@ -103,7 +160,10 @@ pub async fn obtain_attestation(
     .map_err(|e| err("building attestation preimage", e))?;
     let signature = sign_attestation(attestor_key, &preimage)
         .map_err(|e| err("signing attestation locally", e))?;
-    info!("[attestor_client] Signed proof locally with nova_verifier.attestor_key");
+    info!(
+        "[attestor_client] Verified CompressedSNARK and signed proof locally \
+         with nova_verifier.attestor_key"
+    );
     Ok(AttestationOutcome::Signed(signature))
 }
 
@@ -111,6 +171,7 @@ async fn obtain_remote(
     url: &str,
     blob: &[u8],
     public_inputs: &[[u8; 32]; 4],
+    verification: &ForwardedVerification,
 ) -> Result<AttestationOutcome, RollupProofError> {
     let endpoint = format!("{}/attest", url.trim_end_matches('/'));
     let request = AttestRequest {
@@ -121,6 +182,20 @@ async fn obtain_remote(
             format!("0x{}", hex::encode(public_inputs[2])),
             format!("0x{}", hex::encode(public_inputs[3])),
         ],
+        neptune_commitments_root: format!(
+            "0x{}",
+            hex::encode(&verification.neptune_commitments_root)
+        ),
+        neptune_nullifiers_root: format!(
+            "0x{}",
+            hex::encode(&verification.neptune_nullifiers_root)
+        ),
+        neptune_historic_root_root: format!(
+            "0x{}",
+            hex::encode(&verification.neptune_historic_root_root)
+        ),
+        pre_nullifiers_root: f1_to_hex(&verification.pre_nullifiers_root),
+        num_steps: verification.num_steps as u64,
     };
 
     let client = reqwest::Client::new();

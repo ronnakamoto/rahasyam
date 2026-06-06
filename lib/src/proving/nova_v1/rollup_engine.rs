@@ -41,6 +41,7 @@
 mod nova_integration {
     use std::sync::{Arc, OnceLock};
     use crate::proving::nova_v1::proof::{NovaProof, NovaClientProof};
+    use crate::proving::nova_v1::commitment_tree::compute_initial_z0;
     use crate::proving::nova_v1::step_circuit::nova_step_circuit::{
         RollupIvcState, RollupStepCircuit,
     };
@@ -611,6 +612,82 @@ mod nova_integration {
                 ProvingError::VerificationFailed("SNARK VK not initialized".into())
             })?;
             self.verify_inner(compressed, vk, num_steps, &z0, proof)
+        }
+
+        /// Re-run the **sound** Spartan `CompressedSNARK::verify` for a
+        /// block proof whose on-wire roots were rewritten to JF values by
+        /// the proposer.
+        ///
+        /// The proposer stamps the on-chain `NovaProof` with JF roots for
+        /// the contract's structural check, but the inner SNARK actually
+        /// attests to the **Neptune** roots and to the hydrated IVC
+        /// initial state. To run the real verification the attestor must
+        /// reconstruct that original (pre-root-rewrite) statement, so the
+        /// proposer forwards the Neptune roots and the hydrated
+        /// `pre_nullifiers_root` (which is `z0[1]`; the rest of `z0` is the
+        /// deterministic empty-tree state from [`compute_initial_z0`]).
+        ///
+        /// This is the check that turns the on-chain attestation gate from
+        /// "trust the signer's word" into "the signer cryptographically
+        /// verified the proof": the attestor MUST call this and sign only
+        /// when it returns `Ok(true)`.
+        ///
+        /// `num_steps` is the **true folded IVC step count** (the number of
+        /// circuits the proposer folded, i.e. `circuits.len()`). This is
+        /// NOT generally equal to `transaction_count`: when the proposer
+        /// folds padding circuits (the default, non-dynamic block size),
+        /// `num_steps == block_size` while `transaction_count` counts only
+        /// the real transactions. Passing the wrong `num_steps` makes the
+        /// folding hash mismatch and verification (correctly) fail, so the
+        /// caller must forward the real step count.
+        ///
+        /// Returns `Ok(true)` iff the compressed SNARK verifies **and** its
+        /// proven output state matches the forwarded Neptune roots / count.
+        /// Returns `Ok(false)` (fail-closed, never panics on small input)
+        /// for blobs too small to be a real compressed SNARK.
+        pub fn verify_attestation(
+            &self,
+            snark_proof: &[u8],
+            neptune_commitments_root: &[u8],
+            neptune_nullifiers_root: &[u8],
+            neptune_historic_root_root: &[u8],
+            transaction_count: usize,
+            num_steps: usize,
+            pre_nullifiers_root: F1,
+        ) -> Result<bool, ProvingError> {
+            // Empty block is valid by convention (matches `verify_with_steps`).
+            if snark_proof.is_empty() && transaction_count == 0 {
+                return Ok(true);
+            }
+
+            // Cheap fail-fast: a real Spartan `CompressedSNARK` is far
+            // larger than this. Rejecting tiny blobs up front avoids
+            // handing a garbage length-prefix to bincode (which could
+            // over-allocate) before the expensive keyed setup runs. The
+            // cryptographic check below remains the real gate.
+            const MIN_COMPRESSED_SNARK_BYTES: usize = 512;
+            if snark_proof.len() < MIN_COMPRESSED_SNARK_BYTES {
+                return Ok(false);
+            }
+
+            let mut z0: [F1; 5] = compute_initial_z0().try_into().map_err(|_| {
+                ProvingError::VerificationFailed("initial z0 arity != 5".into())
+            })?;
+            z0[1] = pre_nullifiers_root;
+
+            // Reconstruct the pre-rewrite proof: identical `snark_proof`
+            // bytes (the rewrite preserves them) but carrying the Neptune
+            // roots the SNARK actually proved, so `verify_inner`'s binding
+            // of `zn` to these roots is meaningful.
+            let neptune_proof = NovaProof {
+                snark_proof: snark_proof.to_vec(),
+                commitments_root: neptune_commitments_root.to_vec(),
+                nullifiers_root: neptune_nullifiers_root.to_vec(),
+                historic_root_root: neptune_historic_root_root.to_vec(),
+                transaction_count,
+            };
+
+            self.verify_with_steps(&neptune_proof, z0, num_steps)
         }
 
         /// Shared verification core: run the Spartan `CompressedSNARK`
