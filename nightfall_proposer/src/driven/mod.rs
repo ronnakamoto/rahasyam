@@ -1,4 +1,6 @@
 pub mod block_assembler;
+#[cfg(feature = "nova-v1")]
+pub mod attestor_client;
 pub mod db;
 pub mod in_memory_db;
 pub mod mock_prover;

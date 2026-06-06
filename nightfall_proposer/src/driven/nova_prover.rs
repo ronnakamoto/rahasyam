@@ -220,6 +220,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         let rollup_proof = bincode::serialize(&nova_proof).map_err(|e| {
             RollupProofError::ParameterError(format!("Nova proof serialize: {e}"))
         })?;
+        let mut rollup_proof = rollup_proof;
         info!("[nova prove_block] Proof re-serialised with JF roots ({} bytes)",
             rollup_proof.len());
 
@@ -274,6 +275,59 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                     pad_count,
                     transaction_count
                 );
+            }
+        }
+
+        // Obtain the attestor signature so the on-chain
+        // `NovaRollupVerifier` fail-closed gate accepts this proof. The
+        // signature binds the inner SNARK proof, the three JF roots, the
+        // IVC `transaction_count`, and the on-chain public inputs
+        // (including the padded block length, set above). It is appended
+        // *after* the bincode `NovaProof` blob; the router strips only
+        // the leading proving-system-id byte, leaving `blob || signature`
+        // for the verifier.
+        //
+        // Signing is delegated to `attestor_client`, which either calls
+        // a standalone attestation service (when configured) or signs
+        // locally with `nova_verifier.attestor_key`. See
+        // `NovaRollupVerifier.verifyProof` for the verification side.
+        //
+        // publicInputs[3] is the on-chain block length (the padded
+        // `Block.transactions` array length), NOT the IVC step count.
+        let mut block_len_word = [0u8; 32];
+        block_len_word[24..].copy_from_slice(&(transactions.len() as u64).to_be_bytes());
+        let to_word = |bytes: &[u8]| -> Result<[u8; 32], Self::Error> {
+            <[u8; 32]>::try_from(bytes).map_err(|_| {
+                RollupProofError::ParameterError(format!(
+                    "Nova root is not 32 bytes (got {})",
+                    bytes.len()
+                ))
+            })
+        };
+        let public_inputs = [
+            to_word(&nova_proof.commitments_root)?,
+            to_word(&nova_proof.nullifiers_root)?,
+            to_word(&nova_proof.historic_root_root)?,
+            block_len_word,
+        ];
+        match crate::driven::attestor_client::obtain_attestation(
+            &nova_proof,
+            &rollup_proof,
+            &public_inputs,
+        )
+        .await?
+        {
+            crate::driven::attestor_client::AttestationOutcome::Signed(signature) => {
+                rollup_proof.extend_from_slice(&signature);
+                info!(
+                    "[nova prove_block] Appended attestor signature ({} sig bytes, \
+                     proof now {} bytes)",
+                    signature.len(),
+                    rollup_proof.len()
+                );
+            }
+            crate::driven::attestor_client::AttestationOutcome::Unsigned => {
+                info!("[nova prove_block] Emitting unsigned Nova proof (no attestor configured)");
             }
         }
 

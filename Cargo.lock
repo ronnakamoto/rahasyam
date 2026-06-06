@@ -5823,6 +5823,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightfall_attestor"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "bincode 1.3.3",
+ "configuration",
+ "hex",
+ "lib",
+ "log",
+ "serde",
+ "serde_json",
+ "serial_test 3.3.1",
+ "tokio",
+ "warp",
+]
+
+[[package]]
 name = "nightfall_bindings"
 version = "0.1.0"
 dependencies = [
@@ -5969,6 +5986,7 @@ dependencies = [
  "nightfall_bindings",
  "num-bigint 0.4.6",
  "rayon",
+ "reqwest 0.11.27",
  "serde",
  "serde_bytes",
  "serde_json",

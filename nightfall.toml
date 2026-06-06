@@ -130,9 +130,23 @@ g2_one_x1 = "0x0"
 g2_one_y0 = "0x2"
 g2_one_y1 = "0x0"
 commitment_scheme = 1
+# Dev/test attestor key (Anvil account #8). The proposer signs Nova
+# rollup proofs with this key; the deployer derives the address and
+# calls NovaRollupVerifier.setAttestor so the fail-closed on-chain gate
+# accepts them. Address: 0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f
+attestor_key = "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97"
 
 [development.nightfall_test]
 log_level = "info"
+
+[development.nightfall_attestor]
+# Standalone Nova attestation service. Leave `url` empty to keep the
+# proposer signing locally with nova_verifier.attestor_key (default dev
+# path used by nf4_test). Set e.g. "http://attestor:3001" to delegate
+# attestation to a separately-keyed service.
+url = ""
+log_level = "info"
+bind = "0.0.0.0:3001"
 
 [development.contracts]
 assets = "./blockchain_assets/artifacts"
@@ -372,6 +386,9 @@ g2_one_x1 = "0x0"
 g2_one_y0 = "0x2"
 g2_one_y1 = "0x0"
 commitment_scheme = 1
+# Dev/test attestor key (Anvil account #8); see [development.nova_verifier].
+# Address: 0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f
+attestor_key = "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97"
 
 [local.verifier]
 # Copied verbatim from [development.verifier] so the deployed local
@@ -440,6 +457,11 @@ proposer_grace_blocks = 1
 
 [local.nightfall_test]
 log_level = "info"
+
+[local.nightfall_attestor]
+url = ""
+log_level = "info"
+bind = "0.0.0.0:3001"
 
 [local.contracts]
 assets = "./blockchain_assets/artifacts"

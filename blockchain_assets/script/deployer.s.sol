@@ -250,7 +250,36 @@ contract Deployer is Script {
             Types.G2Point(g2o0, g2o1, g2o2, g2o3),
             scheme
         );
+
+        // Configure the trusted attestor so the fail-closed on-chain gate
+        // accepts proposer-signed Nova proofs. Extracted into its own
+        // frame to bound this function's stack usage.
+        _configureNovaAttestor(novaImpl, toml);
+
         return IRollupVerifier(address(novaImpl));
+    }
+
+    /// @notice Derive the Nova attestor address from the configured
+    /// `nova_verifier.attestor_key` and register it via {setAttestor}.
+    /// The proposer signs each `rollup_proof` with this key (see
+    /// `nightfall_proposer::driven::nova_prover`). If no key is
+    /// configured the verifier stays fail-closed (all Nova proofs
+    /// rejected).
+    function _configureNovaAttestor(
+        NovaRollupVerifier novaImpl,
+        string memory toml
+    ) internal {
+        string memory key = string.concat(runMode, ".nova_verifier.attestor_key");
+        if (!vm.keyExistsToml(toml, key)) {
+            return;
+        }
+        string memory attestorKeyStr = toml.readString(key);
+        if (bytes(attestorKeyStr).length == 0) {
+            return;
+        }
+        address attestorAddr = vm.addr(vm.parseUint(attestorKeyStr));
+        novaImpl.setAttestor(attestorAddr);
+        console.log("Configured Nova attestor at:", attestorAddr);
     }
 
     function _deployX509(

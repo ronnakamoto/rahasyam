@@ -5,6 +5,7 @@ members = [
     "configuration",
     "nightfall_test",
     "nightfall_proposer", 
+    "nightfall_attestor",
     "nightfall_sync_test",
     "lib",
     "nightfall_bindings",

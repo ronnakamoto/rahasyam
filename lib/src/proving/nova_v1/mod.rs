@@ -18,6 +18,7 @@
 //! - [Nova Paper (CRYPTO 2022)](https://eprint.iacr.org/2021/370)
 
 pub mod client_engine;
+pub mod attestation;
 #[cfg(feature = "nova-v1")]
 pub mod commitment_tree;
 #[cfg(feature = "nova-v1")]
