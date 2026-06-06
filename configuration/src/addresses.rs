@@ -309,6 +309,10 @@ pub struct Addresses {
     pub verifier: Address,
     #[serde(with = "address_serde_allow_zero")]
     pub nova_verifier: Address,
+    /// On-chain `NovaCommitteeVerifier` (BLS committee gate, router id 3).
+    /// Defaults to zero when the committee verifier is not deployed.
+    #[serde(default, with = "address_serde_allow_zero")]
+    pub committee_verifier: Address,
 }
 
 impl Addresses {
@@ -527,6 +531,7 @@ mod tests {
             x509: validate_address(valid_address).unwrap(),
             verifier: validate_address(valid_address).unwrap(),
             nova_verifier: validate_address(valid_address).unwrap(),
+            committee_verifier: validate_address(valid_address).unwrap(),
         };
 
         addresses.ensure_nonzero(settings.mock_prover).unwrap();

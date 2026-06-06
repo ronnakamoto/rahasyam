@@ -81,6 +81,15 @@ pub struct AttestResponse {
     /// The recovered attestor address (`0x`-prefixed), for the caller to
     /// sanity-check against the configured on-chain attestor.
     pub attestor: String,
+    /// Hex (`0x`-prefixed) 256-byte EIP-2537 BLS signature share over the
+    /// committee preimage, present only when this node is a committee member
+    /// (`nova_verifier.bls_secret_key` + `committee_verifier` configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bls_share: Option<String>,
+    /// Hex (`0x`-prefixed) 128-byte EIP-2537 BLS public key matching the share,
+    /// for the proposer to map the share to its on-chain bitmap index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bls_pubkey: Option<String>,
 }
 
 /// Errors raised while servicing an attestation request.
@@ -255,6 +264,58 @@ pub struct AttestorContext {
     pub verifier: Address,
 }
 
+/// A computed BLS signature share plus the signer's public key.
+pub struct BlsShare {
+    /// EIP-2537-encoded G2 signature share (256 bytes).
+    pub share: [u8; lib::proving::nova_v1::bls::SIG_BYTES],
+    /// EIP-2537-encoded G1 public key (128 bytes).
+    pub pubkey: [u8; lib::proving::nova_v1::bls::PUBKEY_BYTES],
+}
+
+/// Compute this node's BLS signature share over the **committee** preimage,
+/// domain-separated by `committee_verifier` (NOT the ECDSA verifier). Returns
+/// `Ok(None)` when the node is not a committee member (`bls_secret_key` empty).
+/// The signed message is `keccak256(attestation_preimage(..))`, identical to
+/// what `NovaCommitteeVerifier.verifyDigest` recomputes on-chain.
+pub fn build_bls_share(
+    chain_id: u64,
+    committee_verifier: Address,
+    bls_secret_key: &str,
+    request: &AttestRequest,
+) -> Result<Option<BlsShare>, AttestationServiceError> {
+    use lib::proving::nova_v1::bls::SecretKey;
+
+    if bls_secret_key.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let blob = decode_hex("proof", &request.proof)?;
+    let proof: NovaProof = bincode::deserialize(&blob).map_err(|e| {
+        AttestationServiceError::BadRequest(format!("proof is not a valid NovaProof: {e}"))
+    })?;
+    let public_inputs = [
+        decode_word("public_inputs[0]", &request.public_inputs[0])?,
+        decode_word("public_inputs[1]", &request.public_inputs[1])?,
+        decode_word("public_inputs[2]", &request.public_inputs[2])?,
+        decode_word("public_inputs[3]", &request.public_inputs[3])?,
+    ];
+
+    check_structural_binding(&proof, &public_inputs)
+        .map_err(|e| AttestationServiceError::Attestation(e.to_string()))?;
+
+    let preimage = preimage_from_proof(chain_id, committee_verifier, &proof, &public_inputs)
+        .map_err(|e| AttestationServiceError::Attestation(e.to_string()))?;
+    let digest = alloy::primitives::keccak256(&preimage);
+
+    let sk = SecretKey::from_hex(bls_secret_key)
+        .map_err(|e| AttestationServiceError::Attestation(format!("bls_secret_key: {e}")))?;
+
+    Ok(Some(BlsShare {
+        share: sk.sign(digest.as_slice()),
+        pubkey: sk.public_key(),
+    }))
+}
+
 /// Build the warp filter graph: `GET /v1/health` and `POST /attest`.
 pub fn routes(
     ctx: AttestorContext,
@@ -269,6 +330,49 @@ fn attest_route(
         .and(warp::post())
         .and(warp::body::json())
         .map(move |request: AttestRequest| handle_attest(ctx, request))
+}
+
+/// Read the committee verifier address + BLS key from config and compute this
+/// node's share, returning `(share_hex, pubkey_hex)`. Returns `None` (logging a
+/// warning) on any misconfiguration so the additive BLS share never breaks the
+/// ECDSA response or the node.
+fn build_committee_share_for_handler(
+    chain_id: u64,
+    nova_cfg: &configuration::settings::NovaVerifierConfig,
+    request: &AttestRequest,
+) -> Option<(String, String)> {
+    if nova_cfg.bls_secret_key.trim().is_empty() {
+        return None;
+    }
+    // Prefer the committee verifier address captured at deploy time; fall back
+    // to an explicit `nova_verifier.committee_verifier` config override.
+    let committee_verifier: Address = {
+        let deployed = configuration::addresses::get_addresses().committee_verifier;
+        if deployed != Address::ZERO {
+            deployed
+        } else if !nova_cfg.committee_verifier.trim().is_empty() {
+            match nova_cfg.committee_verifier.trim().parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    log::warn!("[attestor] invalid committee_verifier address, skipping BLS share: {e}");
+                    return None;
+                }
+            }
+        } else {
+            return None;
+        }
+    };
+    match build_bls_share(chain_id, committee_verifier, &nova_cfg.bls_secret_key, request) {
+        Ok(Some(share)) => Some((
+            format!("0x{}", hex::encode(share.share)),
+            format!("0x{}", hex::encode(share.pubkey)),
+        )),
+        Ok(None) => None,
+        Err(e) => {
+            log::warn!("[attestor] BLS share computation failed (continuing without it): {e}");
+            None
+        }
+    }
 }
 
 fn handle_attest(ctx: AttestorContext, request: AttestRequest) -> warp::reply::Response {
@@ -298,9 +402,19 @@ fn handle_attest(ctx: AttestorContext, request: AttestRequest) -> warp::reply::R
 
     match build_attestation(ctx.chain_id, ctx.verifier, &attestor_key, &request) {
         Ok(att) => {
+            // Optionally also produce a BLS committee share, bound to the
+            // committee verifier address (domain-separated from the ECDSA gate).
+            let nova_cfg = &configuration::settings::get_settings().nova_verifier;
+            let bls = build_committee_share_for_handler(ctx.chain_id, nova_cfg, &request);
+            let (bls_share, bls_pubkey) = match bls {
+                Some((s, p)) => (Some(s), Some(p)),
+                None => (None, None),
+            };
             let body = AttestResponse {
                 signature: format!("0x{}", hex::encode(att.signature)),
                 attestor: att.attestor.to_checksum(None),
+                bls_share,
+                bls_pubkey,
             };
             warp::reply::with_status(warp::reply::json(&body), StatusCode::OK).into_response()
         }
@@ -356,6 +470,39 @@ mod tests {
             pre_nullifiers_root: format!("0x{}", hex::encode([0u8; 32])),
             num_steps: proof.transaction_count as u64,
         }
+    }
+
+    #[test]
+    fn build_bls_share_produces_verifiable_share() {
+        use lib::proving::nova_v1::bls::{self, SecretKey};
+
+        let chain_id = 31337u64;
+        let committee_verifier = Address::from([0xCDu8; 20]);
+        let sk = SecretKey::from_ikm(&[0x55u8; 32]).unwrap();
+        let key_hex = format!("0x{}", hex::encode(sk.to_bytes()));
+        let proof = synth_proof(96, 20);
+        let req = request_for(&proof, 64);
+
+        let share = build_bls_share(chain_id, committee_verifier, &key_hex, &req)
+            .unwrap()
+            .expect("committee member should produce a share");
+
+        // Recompute the digest exactly as the on-chain verifier does and confirm
+        // the share verifies against the returned pubkey.
+        let pi = [
+            decode_word("p0", &req.public_inputs[0]).unwrap(),
+            decode_word("p1", &req.public_inputs[1]).unwrap(),
+            decode_word("p2", &req.public_inputs[2]).unwrap(),
+            decode_word("p3", &req.public_inputs[3]).unwrap(),
+        ];
+        let preimage = preimage_from_proof(chain_id, committee_verifier, &proof, &pi).unwrap();
+        let digest = alloy::primitives::keccak256(&preimage);
+        assert!(bls::verify_aggregate(&share.pubkey, digest.as_slice(), &share.share).unwrap());
+
+        // No BLS key configured => no share.
+        assert!(build_bls_share(chain_id, committee_verifier, "", &req)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

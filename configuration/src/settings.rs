@@ -80,6 +80,10 @@ pub enum ProvingSystemIdConfig {
     #[default]
     PlonkV1,
     NovaV1,
+    /// BLS12-381 t-of-N committee verifier gate (router id 3). Used in
+    /// `proving_system.enabled` to deploy/register the committee verifier; the
+    /// proposer's `active` prover stays `NovaV1`.
+    NovaBlsV1,
 }
 
 impl ProvingSystemIdConfig {
@@ -87,6 +91,7 @@ impl ProvingSystemIdConfig {
         match self {
             ProvingSystemIdConfig::PlonkV1 => "plonk-v1",
             ProvingSystemIdConfig::NovaV1 => "nova-v1",
+            ProvingSystemIdConfig::NovaBlsV1 => "nova-bls-v1",
         }
     }
 
@@ -94,6 +99,7 @@ impl ProvingSystemIdConfig {
         match s {
             "plonk-v1" | "plonkv1" | "PlonkV1" => Some(ProvingSystemIdConfig::PlonkV1),
             "nova-v1" | "novav1" | "NovaV1" => Some(ProvingSystemIdConfig::NovaV1),
+            "nova-bls-v1" | "novablsv1" | "NovaBlsV1" => Some(ProvingSystemIdConfig::NovaBlsV1),
             _ => None,
         }
     }
@@ -247,6 +253,42 @@ pub struct NovaVerifierConfig {
     /// committed.
     #[serde(default)]
     pub attestor_key: String,
+
+    /// Hex-encoded BLS12-381 secret-key scalar (32-byte big-endian) for this
+    /// node's attestor in the committee gate (`NovaCommitteeVerifier`). Each
+    /// committee member configures its own. Empty => this node does not produce
+    /// BLS shares. **Production keys supplied out-of-band, never committed.**
+    #[serde(default)]
+    pub bls_secret_key: String,
+
+    /// On-chain `NovaCommitteeVerifier` address. The BLS attestation preimage is
+    /// domain-separated by this address, so it MUST match the deployed committee
+    /// verifier (distinct from the ECDSA `nova_verifier` address).
+    #[serde(default)]
+    pub committee_verifier: String,
+
+    /// Committee acceptance threshold `t`. Zero (default) disables the committee
+    /// gate on the proposer side (falls back to the single-attestor path).
+    #[serde(default)]
+    pub committee_threshold: usize,
+
+    /// Ordered committee members. **Order MUST match the on-chain registry**
+    /// (`addAttestor` call order), because signer-bitmap bit `i` selects
+    /// `pubkeys[i]` on-chain.
+    #[serde(default)]
+    pub committee_members: Vec<CommitteeMember>,
+}
+
+/// A single committee attestor: where to fetch its BLS share and its
+/// registered public key (for share validation and bitmap indexing).
+#[derive(Debug, Deserialize, Default, Serialize, Clone)]
+#[allow(unused)]
+pub struct CommitteeMember {
+    /// Base URL of this member's `nightfall_attestor` service.
+    pub url: String,
+    /// Hex (`0x`-optional) 128-byte EIP-2537 G1 public key, matching the
+    /// on-chain `pubkeys[i]`.
+    pub pubkey: String,
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]
@@ -457,6 +499,34 @@ mod tests {
         match tmp_db_url {
             Some(val) => env::set_var("NF4_NIGHTFALL_CLIENT__DB_URL", val),
             None => env::remove_var("NF4_NIGHTFALL_CLIENT__DB_URL"),
+        }
+
+        match tmp_run_mode {
+            Some(val) => env::set_var("NF4_RUN_MODE", val),
+            None => env::remove_var("NF4_RUN_MODE"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_development_committee_config_parses() {
+        let tmp_run_mode = env::var("NF4_RUN_MODE").ok();
+        env::set_var("NF4_RUN_MODE", "development");
+
+        let s = Settings::new().unwrap();
+        let nv = &s.nova_verifier;
+
+        // Inert by default => proposer stays on the single-attestor ECDSA path.
+        assert_eq!(nv.committee_threshold, 0);
+        // The inline-table array deserialises into Vec<CommitteeMember>.
+        assert_eq!(nv.committee_members.len(), 3, "3 dev committee members");
+        for m in &nv.committee_members {
+            assert!(!m.url.is_empty(), "member url set");
+            assert_eq!(
+                m.pubkey.trim().trim_start_matches("0x").len(),
+                256,
+                "EIP-2537 G1 pubkey is 128 bytes (256 hex chars)"
+            );
         }
 
         match tmp_run_mode {

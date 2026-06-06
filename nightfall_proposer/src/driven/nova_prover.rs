@@ -338,6 +338,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             to_word(&nova_proof.historic_root_root)?,
             block_len_word,
         ];
+        let mut block_proof_system_id = <NovaClientProof as Proof>::system_id();
         match crate::driven::attestor_client::obtain_attestation(
             &nova_proof,
             &rollup_proof,
@@ -361,6 +362,20 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                     rollup_proof.len()
                 );
             }
+            crate::driven::attestor_client::AttestationOutcome::Committee { sigma, bitmap } => {
+                // Append `sigma (256) || bitmap (32)` and route the block to the
+                // on-chain `NovaCommitteeVerifier` via the NovaBlsV1 id.
+                rollup_proof.extend_from_slice(&sigma);
+                rollup_proof.extend_from_slice(&bitmap);
+                block_proof_system_id = lib::proving::ProofSystemId::NovaBlsV1;
+                info!(
+                    "[nova prove_block] Appended BLS committee signature ({} + {} bytes, \
+                     proof now {} bytes, system_id=nova-bls-v1)",
+                    sigma.len(),
+                    bitmap.len(),
+                    rollup_proof.len()
+                );
+            }
             crate::driven::attestor_client::AttestationOutcome::Unsigned => {
                 info!("[nova prove_block] Emitting unsigned Nova proof (no attestor configured)");
             }
@@ -374,7 +389,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             transactions,
             rollup_proof,
             block_number: 0,
-            proof_system_id: <NovaClientProof as Proof>::system_id(),
+            proof_system_id: block_proof_system_id,
             nova_ivc_state,
         });
         let total_s = prove_block_start.elapsed().as_secs_f64();

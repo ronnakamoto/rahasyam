@@ -81,7 +81,7 @@ fn prepare_verifier_material(settings: &Settings) -> anyhow::Result<()> {
             let vk = RollupProver::get_decider_vk();
             let _ = write_vk_to_nightfall_toml(&vk);
         }
-        ProvingSystemIdConfig::NovaV1 => {
+        ProvingSystemIdConfig::NovaV1 | ProvingSystemIdConfig::NovaBlsV1 => {
             let nova_keys_dir = ensure_nova_keys_directory()?;
             info!(
                 "Active proving system is NovaV1; skipping PLONK decider_vk wiring. Nova key cache path: {}",
@@ -132,6 +132,8 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                     map.insert("verifier", addr);
                 } else if prev.contains("NovaRollupVerifier") {
                     map.insert("nova_verifier", addr);
+                } else if prev.contains("NovaCommitteeVerifier") {
+                    map.insert("committee_verifier", addr);
                 }
             }
         }
@@ -142,6 +144,10 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                 let addr: Address = addr_s.parse()?;
                 if cname.contains("ProofSystemRouter") && !map.contains_key("verifier") {
                     map.insert("verifier", addr);
+                } else if cname.contains("NovaCommitteeVerifier")
+                    && !map.contains_key("committee_verifier")
+                {
+                    map.insert("committee_verifier", addr);
                 } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier") {
                     map.insert("nova_verifier", addr);
                 }
@@ -204,6 +210,7 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
         x509: Address::ZERO,
         verifier: Address::ZERO,
         nova_verifier: Address::ZERO,
+        committee_verifier: Address::ZERO,
     };
     // -------- replace with *proxy* addresses from broadcast --------
     match proxies_from_broadcast(&path_out) {
@@ -222,6 +229,9 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
             }
             if let Some(a) = proxy_map.get("nova_verifier") {
                 addresses.nova_verifier = *a;
+            }
+            if let Some(a) = proxy_map.get("committee_verifier") {
+                addresses.committee_verifier = *a;
             }
             if settings.mock_prover {
                 if addresses.nightfall == Address::ZERO

@@ -8,6 +8,10 @@ edition = "2021"
 [features]
 default = []
 nova-v1 = ["dep:nova-snark", "dep:ff", "dep:generic-array"]
+# Off-chain BLS12-381 signing for the Nova attestor committee (plan B3).
+# Pulls in `blst` (a C dependency); kept optional so builds that don't need
+# committee signing are unaffected.
+nova-bls = ["nova-v1", "dep:blst"]
 
 [dependencies]
 tokio-util = "0.7.16"
@@ -70,6 +74,9 @@ ff = { version = "0.13", optional = true, features = ["derive"] }
 # we hand to `PoseidonConstants` resolve to the same types nova-snark itself
 # instantiates internally. Bump in lockstep with nova-snark upgrades.
 generic-array = { version = "1.4", optional = true }
+# Off-chain BLS12-381 signing for the Nova attestor committee (plan B3).
+# Byte encodings match the on-chain EIP-2537 verifier (`Bls12381.sol`).
+blst = { version = "0.3", optional = true }
 [build-dependencies]
 configuration = { path = "../configuration" }
 tokio = { version = "1.45.0", features = ["full"] }
@@ -83,3 +90,7 @@ jf-plonk = { git = "https://git@github.com/EYBlockchain/nightfish_CE.git", featu
 url = "2.5.4"
 serde_json = "1.0.140"
 tempfile = "3.10"
+
+[[example]]
+name = "bls_committee_keygen"
+required-features = ["nova-bls"]

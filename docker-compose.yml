@@ -232,6 +232,9 @@ services:
       - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       # The attestation service signs with nova_verifier.attestor_key
       # (from nightfall.toml). It holds NO transaction-sending key.
+      # BLS committee member 0 key (dev deterministic keyset). Inert unless the
+      # committee verifier is deployed AND the proposer's committee_threshold>0.
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR0_BLS_SK:-0x07ac62fff1c1fa60f7fc960a9b50282c95c31f7ce5fb8b8c816602c7fab36c8c}
     deploy:
       resources:
         limits:
@@ -239,6 +242,93 @@ services:
           # (~100 MB on disk, larger in memory) plus the verify working
           # set. Higher than the previous 2 GB, which only covered the
           # Stage-1 structural-only signer. Tune down if headroom allows.
+          memory: 8G
+
+  # --- BLS committee members 1 & 2 (opt-in `committee` profile) -------------
+  # Start alongside the dev stack to run a 2-of-3 committee:
+  #   docker compose --profile development --profile committee up
+  # Then activate aggregation on the proposer with
+  #   NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2
+  attestor2:
+    container_name: nf4_attestor2
+    stop_grace_period: 3s
+    profiles:
+      - committee
+    build:
+      dockerfile: nightfall_attestor/Dockerfile
+      context: .
+    ports:
+      - "3005:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/v1/health" ]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+      start_period: 0s
+    networks:
+      - nightfall_network
+    volumes:
+      - type: volume
+        source: address_data
+        target: /app/configuration/toml
+        read_only: true
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+    environment:
+      - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      - RUST_LOG=${RUST_LOG:-info}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      # BLS committee member 1 key (dev deterministic keyset).
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR1_BLS_SK:-0x2708164e71627b7e217312ad4c1853d56346304332056a497b8d0f218f904295}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  attestor3:
+    container_name: nf4_attestor3
+    stop_grace_period: 3s
+    profiles:
+      - committee
+    build:
+      dockerfile: nightfall_attestor/Dockerfile
+      context: .
+    ports:
+      - "3006:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/v1/health" ]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+      start_period: 0s
+    networks:
+      - nightfall_network
+    volumes:
+      - type: volume
+        source: address_data
+        target: /app/configuration/toml
+        read_only: true
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+    environment:
+      - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      - RUST_LOG=${RUST_LOG:-info}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      # BLS committee member 2 key (dev deterministic keyset).
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR2_BLS_SK:-0x44cfcd8d4dc5e3f74c5773240d4d451a2536b551463b6493bdc81c9e3a579704}
+    deploy:
+      resources:
+        limits:
           memory: 8G
 
   proposer:

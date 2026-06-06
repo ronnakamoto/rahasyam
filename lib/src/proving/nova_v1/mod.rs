@@ -19,6 +19,8 @@
 
 pub mod client_engine;
 pub mod attestation;
+#[cfg(feature = "nova-bls")]
+pub mod bls;
 #[cfg(feature = "nova-v1")]
 pub mod commitment_tree;
 #[cfg(feature = "nova-v1")]

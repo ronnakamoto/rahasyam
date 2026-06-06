@@ -12,6 +12,7 @@
   - [Local installation and testing](#local-installation-and-testing)
     - [Prerequisites for local installation](#prerequisites-for-local-installation)
     - [Download and test](#download-and-test)
+    - [Running the containers (docker compose profiles)](#running-the-containers-docker-compose-profiles)
   - [Configuration](#configuration)
   - [Deployment on a testnet for integration testing](#deployment-on-a-testnet-for-integration-testing)
     - [Preliminaries](#preliminaries)
@@ -28,6 +29,7 @@
   - [Architecture](#architecture)
     - [Comparison with Nightfall\_3](#comparison-with-nightfall_3)
     - [Nightfall\_4 containers](#nightfall_4-containers)
+    - [Proving systems and attestation](#proving-systems-and-attestation)
     - [Client Webhook](#client-webhook)
   - [APIs](#apis)
     - [Client APIs](#client-apis)
@@ -62,7 +64,7 @@ Once validation is complete, the user can intitiate three types of transaction v
 
 1. Deposit: This will pass a payment from the user to the Nightfall smart contract (an escrow transaction). It will create a pending deposit which will later be picked up by the proposer and turned into deposit commitment(s) with an associated proof (this enables a deposit to be treated as a special case of a transfer transaction). User can deposit a fee in a deposit request which can be used to pay other transactions in the future, but it's not compulsory. If user deposit a so-called `deposit_fee`, then this deposit request will generate two commitments: one deposit commitment represents the `value` of the token the user intends to deposit, while the other is a `deposit_fee` commitment, which represents the fee the user deposits into Nightfall to pay the proposer for future transactions. If `deposit_fee == 0`, then there is only one value deposit commitment.
 
-2. Transfer: This operation will select one or two existing commitments of suitable value (sum equal to or greater than the transfer value, with the tokenId matching the tokenId to be transferred). In addition to the transfer value, it will also account for the required fee. Two new output commitments will be created: one for the new owner receiving the transferred commitment, and the other for any change returned to the original owner of the input commitments. A separate fee commitment and fee change commitment will also be generated. All of these commitments will be validated by creating an UltraPlonk proof, ensuring that the operation is correct. The resulting commitments and proof are wrapped into a `ClientTransaction<P>` struct, which is then sent to one or more `proposer`s for inclusion in a Layer 2 block.
+2. Transfer: This operation will select one or two existing commitments of suitable value (sum equal to or greater than the transfer value, with the tokenId matching the tokenId to be transferred). In addition to the transfer value, it will also account for the required fee. Two new output commitments will be created: one for the new owner receiving the transferred commitment, and the other for any change returned to the original owner of the input commitments. A separate fee commitment and fee change commitment will also be generated. All of these commitments will be validated by creating a client transaction proof (an UltraPlonk proof, or a Nova proof when the Nova proving system is selected — see [Proving systems and attestation](#proving-systems-and-attestation)), ensuring that the operation is correct. The resulting commitments and proof are wrapped into a `ClientTransaction<P>` struct, which is then sent to one or more `proposer`s for inclusion in a Layer 2 block.
 
 3. Withdraw: This is a special case of a Transfer but, rather than output commitments being created, suffienct funds are de-escrowed for the recipient to withdraw the amount they are being paid from the Nightfall contract.
 
@@ -70,7 +72,7 @@ The API for these requests is described in detail later on.
 
 `proposer`s also require a certificate. Once validated, they have to register with the RoundRobin smart contract, via the ProposerManager interface. The `proposer`s take turns in a round-robin (other patterns are possible by replacing the contract that implements ProposerManager) to make Layer 2 blocks. The proposers receive transactions, either via their `transaction` endpoint directly from a `client` or, in the case of deposit transactions, from the Nightfall contract. Once a `proposer` has sufficient `client` transations to create a Layer 2 block (64 transactions, currently, but any power of 4 is acceptable) and it is the active `proposer` in the round-robin, it will compute a rollup-proof which, when validated on-chain simultaneously proves all of the client transaction proofs. When incorporating a deposit transaction, the proposer also computes the deposit proof. This is because the Layer 2 block containing the deposit needs to be known to compute the proof, preventing the `client` from computing it in advance.
 
-The rollup poof is extremely compute-intensive (see next next section) and mathematically complex. There is a separate document in the /doc directory [Link when pushed] covering the details of how it works.
+The rollup poof is extremely compute-intensive and mathematically complex. The proving system used for both the client and rollup proofs is configurable (UltraPlonk or Nova-SNARK); see [Proving systems and attestation](#proving-systems-and-attestation).
 
 ## Handling Fees in Transactions
 
@@ -179,6 +181,50 @@ The `nf4_sync_test` will run and check that a second proposer container can star
 
 At this point the integration test is complete and can be stopped with cntl-c.
 
+### Running the containers (docker compose profiles)
+
+Which containers start is controlled by the docker compose `--profile` flag (this is independent of `NF4_RUN_MODE`, which only selects the `nightfall.toml` section — see [Configuration](#configuration)). The most useful profiles are:
+
+| Profile | What it runs | Typical use |
+| --- | --- | --- |
+| `development` | The full local stack on Anvil — `anvil`, `deployer`, `configuration`, `client`(s), `proposer`, `attestor`, the databases — **plus the `test` container** which runs the integration tests and exits. | Local dev + integration test. |
+| `no_test` | The same full local stack **without** the `test`/`sync_test` runners. | Run the stack for manual use or the [Menu UI](#test-ui-using-the-menu-application). |
+| `sync_test` | The `development` stack plus a second proposer (`proposer2`) and the `sync_test` container, which checks that a fresh proposer can synchronise. | Synchronisation test. |
+| `committee` | Adds `attestor2` and `attestor3` (additive). Combine with `development`/`no_test`. | Run a `t-of-N` BLS attestor committee (`nova-bls-v1`). |
+| `anvil` | Only the Anvil blockchain simulator. | A standalone local chain. |
+| `indie-deployer` / `indie-proposer` / `indie-client` | A single standalone `deployer` / `proposer` / `client` that connects to an external network. | Testnet / beta deployments (see the testnet sections below), usually with `--env-file local.env`. |
+
+Common modifiers (environment variables, prepended to the command):
+
+- `NF4_RUN_MODE=<section>` — selects the `nightfall.toml` section (`development` (default), `local`, `base_sepolia`, …).
+- `NF4_MOCK_PROVER=true` — switch to the fast **mock** prover, whose proofs are not cryptographically valid (and the Nova `attestor`/`committee` gates are bypassed, since a mock verifier is deployed). The bundled `development`, `local` and `base_sepolia` sections set `mock_prover = false`, i.e. they use the **real** prover by default, so real proofs require the pre-generated keys above.
+- `--env-file local.env` — supply real (uncommitted) keys, e.g. for a testnet.
+
+Typical commands:
+
+```sh
+# Build images (first run, or after code/config changes)
+docker compose --profile development build
+
+# Full local dev + integration tests (development uses the real prover)
+docker compose --profile development up
+
+# Faster run using the mock prover (proofs not valid; attestor/committee bypassed)
+NF4_MOCK_PROVER=true docker compose --profile development up
+
+# Just the stack, no test runner (e.g. for the Menu UI)
+docker compose --profile no_test up
+
+# A 2-of-3 BLS attestor committee in development
+NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2 \
+  docker compose --profile development --profile committee up
+
+# Tear down and wipe all state (volumes) for a clean restart
+docker compose --profile development down -v
+```
+
+Notes: profiles are additive, so you can pass `--profile` more than once (as in the committee example). `down -v` also removes the named volumes, which resets the databases and the deployed‑address cache — use it whenever you redeploy contracts.
+
 ## Configuration
 
 Most of NF_4 is configured using a single file (`nightfall.toml`) in the project root. This file is read by all applications, even though not all values apply to all applications. Each main section can be selected as a configutation profile via the environment variable NF4_RUN_MODE, and other sections can be added to cover other use cases (e.g. a production config).
@@ -187,7 +233,7 @@ Do not confuse NF4_RUN_MODE, which selects the top-level section of `nightfall.t
 
 Additonally, any configuration item can also be overridden via an enviroment variable by naming an environment variable `NF4_<name of variable in nightfall.toml>`. You do not need to include the main section name: that is taken from the environment variable `NF4_RUN_MODE`. It defaults to `development` if `NF4_RUN_MODE` is not set. Some configuration variables are in sub-categories, for example under `[development.nightfall_deployer]`. Use a double __ to identify a variable within a sub-category (replacing the dot that would be used in the equivalent Rust struct). For example, the `log_level` variable in `nightfall.toml` that is under `[development]` under `[development.nightfall_deployer]` would be overridden by the environment variable `NF4_NIGHTFALL_DEPLOYER__LOG_LEVEL`, provided of course that `NF4_RUN_MODE` is set to `development` (or left unset).
 
-Finally, secret items, such as keys, do not appear in `nightfall.toml` (except for one signing key used for basic testing - which will be removed soon). Depending on the wallet type being used, keys should instead be set via environment variables, a key-store or an HSM. Test keys are currently provided via a `.env` file in the project root, using the LocalWallet type, that sets its keys as environment variables.
+Finally, secret items, such as keys, do not in general appear in `nightfall.toml` (the exceptions are a few clearly-marked dev/test-only keys, such as the basic-testing signing key and the dev Nova `attestor_key`, which must never be used in production). Depending on the wallet type being used, keys should instead be set via environment variables, a key-store or an HSM. Test keys are currently provided via a `.env` file in the project root, using the LocalWallet type, that sets its keys as environment variables.
 NF_4 also supports the AzureWallet type, allowing keys to be securely stored in Azure Key Vault. To use this feature, you can register an NF_4 application in Azure App Registration and grant it access to the stored keys. When enabling this functionality, make sure to set the following environment variables:
 AZURE_VAULT_URL=
 DEPLOYER_SIGNING_KEY_NAME=
@@ -251,8 +297,6 @@ Other items may of course require configuring but they're not anything to do wit
 ```sh
 docker compose --profile development build
 ```
-
-Note that `--profile testnet` will also work but is essentially an alias.
 
 ### Ethereum private keys
 
@@ -380,7 +424,7 @@ The application architecture of NF_4 is similar to NF_3 but is simplified in a n
 1. There are no separate `client` and `proposer` applications which, in NF_3, sign Ethereum transactions provided by either the `client` or `optimist` containers, instead the main `client` and `proposer` applications manage wallets for signing and also submit transactions to the blockchain. Various forms of wallet can be used, from a private key, stored as an environment variable, to a hardware wallet.
 1. The `optimist` container is renamed to `proposer` in NF_4 but otherwise performs a similar role of creating Layer 2 blocks.
 1. There is no `challenger` application; it's not required becasue NF_4 uses a cryptogrpahic (ZKP) rollup, not a cryptoeconomic (Optimistic) rollup.
-1. The client proofs are UltraPlonk proofs, rather than Groth16, and therefore no per-circuit trusted setup is needed (the existing SRS from the Perpetual Powers of Tau ceremony is used for the overall setup).
+1. In the Plonk proving system the client proofs are UltraPlonk proofs, rather than Groth16, and therefore no per-circuit trusted setup is needed (the existing SRS from the Perpetual Powers of Tau ceremony is used for the overall setup). NF_4 also supports an alternative Nova-SNARK (recursive folding / IVC) proving system, which is in fact the default in the `development` and `local` configurations; see [Proving systems and attestation](#proving-systems-and-attestation).
 1. Nightfall Native Tokens are not supported.
 
 ### Nightfall_4 containers
@@ -389,7 +433,8 @@ Nightfall runs with the following containers in production:
 
 1. `deployer`: This is an ephemeral container which deploys the Nightfall contracts to the blockchain, and generates proving and verifying keys for use by the `client` container to make 'client proofs'. It writes to a `config_data` volume all of the static configuration data, the proving and verifying keys and the addresses of the Nightfall contracts that it has deployed. It then exits. This container may or may not be used in production, depending on the requirements of the production deployment.
 1. `client`: This container is the main point of interaction for a user of the Nightfall service. It has an `http://` API, which is very similar to NF_3's and which enables deposit, transfer and withdraw client transactions. It communicates to the blockchain via a conventional blockchain node, which is external to the container, both listening for events and sending in transactions. It signs any ethereum transactions that it sends, using a wallet that it is given access to. Various types of wallet are supported. It generates proofs in support of client transactions and sends them directly to one or more `proposer` containers for incorporation into a Layer 2 block. There is no requirement that the `proposer` is trusted by the `client` but the `client` must be trusted by the user as it has access to their Ethereum and ZKP keys. Each user must run their own client. This is so that each client only has access to a single wallet. The client expects access to a MongoDB url for storage of commitments and metadata. It consumes configuration data from the `config_data` volume.
-1. `proposer`: This container assembles Layer 2 blocks and computes a proof of correct assembly of the blocks, which shows that all the transactions incorporated in the block are correct (a 'rollup proof'). Thus, successful verification of the rollup proof on-chain by the Nightfall contract guarantees that all transactions in the block are correct. It exposes an `http://` API which `client`s can connect to send client transactions to the `proposer`.  Like the `client` container, it connects to the blockchain via an external node and has access to its own wallet to sign transactions which create Layer 2 blocks (`proposeBlock` transactions). It also requires access to a MongoDB to store Merkle tree data, a mempool and metadata. It consumes configuration data from the `config_data` volume. Note that computing a rollup proof is extremely computationally intensive and will take ~15 minutes on a 144 core machine with the compute running in parallel threads across all the cores. Users do not have to trust a `proposer` application and therefore can use `proposer`s provided by third parties. It makes sense for a user to submit a client transaction to multiple `proposer`s to prevent censorship; only one transaction will succeed.
+1. `proposer`: This container assembles Layer 2 blocks and computes a proof of correct assembly of the blocks, which shows that all the transactions incorporated in the block are correct (a 'rollup proof'). Thus, successful verification of the rollup proof on-chain by the Nightfall contract guarantees that all transactions in the block are correct. It exposes an `http://` API which `client`s can connect to send client transactions to the `proposer`.  Like the `client` container, it connects to the blockchain via an external node and has access to its own wallet to sign transactions which create Layer 2 blocks (`proposeBlock` transactions). It also requires access to a MongoDB to store Merkle tree data, a mempool and metadata. It consumes configuration data from the `config_data` volume. Note that computing a rollup proof is extremely computationally intensive and will take ~15 minutes on a 144 core machine with the compute running in parallel threads across all the cores (for the Plonk proving system; the Nova proving system has different performance characteristics). Users do not have to trust a `proposer` application and therefore can use `proposer`s provided by third parties. It makes sense for a user to submit a client transaction to multiple `proposer`s to prevent censorship; only one transaction will succeed.
+1. `attestor`: A standalone attestation service used only with the Nova proving system (`nova-v1` / `nova-bls-v1`). It holds an attestor signing key independently of the `proposer`, independently re-runs the sound off-chain Nova verification (`CompressedSNARK::verify`) for each block proof, and signs only proofs that actually verify. Its signature is what gates on-chain acceptance through the fail-closed `NovaRollupVerifier` (single attestor) or, for a committee, through the `NovaCommitteeVerifier`. Separating the signer from the prover is a deliberate security improvement: a compromised or buggy `proposer` can no longer vouch for its own proofs. It mounts the same pre-generated Nova keys the proposer uses (read-only) so it can run the verification. Not required when using the Plonk proving system. See [Proving systems and attestation](#proving-systems-and-attestation).
 
 No other containers are required, although for development use, the following other containers are provided and run up with `docker compose`:
 
@@ -397,11 +442,23 @@ No other containers are required, although for development use, the following ot
 1. `sync_test`: another test container designed to demonstrate correct synchonisation of a newly created proposer.
 1. `db_proposer`: A MongoDB instance used by the `proposer`. It has an associated volume called `mongodb_proposer_data`.
 1. `db_client`: A MongoDB instance used by the `client`. It has an associated volume called `mongodb_client_data`.
-1. `anvil`: a containerised version of Foundry's Anvil blockchain simulator, which is very similar to Ganache.
+1. `configuration`: an nginx service that serves the static configuration and the deployed-contract addresses over HTTP. Applications read addresses from the shared `address_data` volume first and fall back to this service if the file is not yet available.
+1. `anvil`: a containerised version of Foundry's Anvil blockchain simulator, which is very similar to Ganache. For the Nova proving system it runs with the `--hardfork prague` flag so that the EIP-2537 (BLS12-381) precompiles needed by the `nova-bls-v1` committee verifier are available.
+1. `attestor2`, `attestor3`: additional attestor instances, started only via the opt-in `committee` docker compose profile, used to run a `t-of-N` BLS attestor committee (`nova-bls-v1`) in development. See [Proving systems and attestation](#proving-systems-and-attestation).
 
 ![diagram of NF_4 containers and volumes](images/nf_4_architecture.png)
 
 Figure 1: Diagram of NF_4 volumes and containers in production.
+
+### Proving systems and attestation
+
+NF_4 supports more than one proving system, selected by the `nightfall_proposer.proving_system.active` setting in `nightfall.toml` (the `client` and `proposer` must agree, because the choice determines the format of both the client transaction proofs and the rollup proof). The on-chain `ProofSystemRouter` dispatches each Layer 2 block's rollup proof to the matching verifier, identified by a one-byte proof-system id carried at the front of the proof blob:
+
+- **`plonk-v1` (id 1):** the original UltraPlonk system. Client transaction proofs and the rollup proof are UltraPlonk, verification is fully on-chain, and no trusted attestor is involved. It uses the Perpetual Powers of Tau SRS, so there is no per-circuit trusted setup.
+- **`nova-v1` (id 2):** a Nova-SNARK (recursive folding / IVC) system. **This is the default in the `development` and `local` configurations.** Because the Nova verifier cannot yet be run economically on the EVM, on-chain *acceptance* is gated by a trusted **attestor** (the `attestor` container): the attestor independently re-runs the full, sound Nova verification off-chain and signs the block proof, and the on-chain `NovaRollupVerifier` is fail-closed — it accepts a block only if it carries a valid signature from the configured attestor. The proof's soundness remains cryptographic; only its on-chain acceptance depends on the attestor being honest.
+- **`nova-bls-v1` (id 3):** the same Nova proofs, but gated by a **`t-of-N` BLS attestor committee** instead of a single attestor. Each committee member runs its own `attestor`, verifies the proof, and co-signs with BLS12-381; the `proposer` aggregates the signatures and the on-chain `NovaCommitteeVerifier` accepts the block when at least `t` of the `N` members have signed, checked as a single aggregated signature using the EVM's BLS12-381 (EIP-2537) precompiles. This removes the single attestor key as a point of failure (soundness then requires at least `t` of `N` members to be honest). It is opt-in via the committee configuration and requires a Prague-or-later chain (for EIP-2537).
+
+The single-attestor (`nova-v1`) and committee (`nova-bls-v1`) verifiers can be registered with the router side-by-side, which allows a dual-gate migration from one to the other. Committee keys are generated with `cargo run -p lib --features nova-bls --example bls_committee_keygen`.
 
 ### Client Webhook
 
