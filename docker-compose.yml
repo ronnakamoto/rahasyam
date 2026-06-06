@@ -16,7 +16,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -64,7 +64,7 @@ services:
       - NF4_NIGHTFALL_CLIENT__DB_URL=mongodb://nf4_db_client:27017
       - AZURE_VAULT_URL=${AZURE_VAULT_URL}
       - AZURE_KEY_NAME=${CLIENT_SIGNING_KEY_NAME}
-      - CLIENT_SIGNING_KEY_NAME=${CLIENT_SIGNING_KEY_NAME}          
+      - CLIENT_SIGNING_KEY_NAME=${CLIENT_SIGNING_KEY_NAME}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
@@ -86,7 +86,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -130,7 +130,7 @@ services:
     ports:
       - "3002:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -172,16 +172,61 @@ services:
       # development profile (the proposer can prove the same circuit
       # in parallel on a separate node in production).
       - RAYON_NUM_THREADS=1
-      - NF4_SIGNING_KEY=${CLIENT2_SIGNING_KEY}      
-      - NF4_NIGHTFALL_CLIENT__DB_URL=mongodb://nf4_db_client2:27017      
+      - NF4_SIGNING_KEY=${CLIENT2_SIGNING_KEY}
+      - NF4_NIGHTFALL_CLIENT__DB_URL=mongodb://nf4_db_client2:27017
       - NF4_NIGHTFALL_CLIENT__LOG_LEVEL=info # Mostly the client2 logs are a repeat of client1 logs, so we can reduce the log level to error
-      - AZURE_VAULT_URL=${AZURE_VAULT_URL}    
-      - AZURE_KEY_NAME=${CLIENT_SIGNING_KEY_NAME}    
+      - AZURE_VAULT_URL=${AZURE_VAULT_URL}
+      - AZURE_KEY_NAME=${CLIENT_SIGNING_KEY_NAME}
       - CLIENT_SIGNING_KEY_NAME=${CLIENT2_SIGNING_KEY_NAME}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - WEBHOOK_URL=${WEBHOOK_URL}
+  attestor:
+    container_name: nf4_attestor
+    stop_grace_period: 3s
+    profiles:
+      - proposer
+      - development
+      - sync_test
+      - no_test
+    build:
+      dockerfile: nightfall_attestor/Dockerfile
+      context: .
+    # platform: linux/amd64 # Build native on Apple Silicon (links lib's nova-v1 deps).
+    ports:
+      - "3004:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/v1/health" ]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+      start_period: 0s
+    networks:
+      - nightfall_network
+    volumes:
+      - type: volume
+        source: address_data
+        target: /app/configuration/toml
+        read_only: true
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+    stdin_open: true # keep stdin open, so we can print things in docker compose up
+    tty: true # required for logs to print in colour
+    environment:
+      - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      - RUST_LOG=${RUST_LOG:-info}
+      # The attestation service signs with nova_verifier.attestor_key
+      # (from nightfall.toml). It holds NO transaction-sending key.
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
   proposer:
     container_name: nf4_proposer
     stop_grace_period: 3s
@@ -197,7 +242,7 @@ services:
     ports:
       - "3001:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -218,11 +263,18 @@ services:
         condition: service_healthy
       deployer:
         condition: service_completed_successfully
+      attestor:
+        condition: service_healthy
     stdin_open: true # keep stdin open, so we can print things in docker compose up
     tty: true # required for logs to print in colour
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      # Delegate Nova proof attestation to the standalone, independently
+      # keyed attestation service (Stage 1 of the decentralised-attestor
+      # roadmap). Empty/unset would fall back to local signing with
+      # nova_verifier.attestor_key.
+      - NF4_NIGHTFALL_ATTESTOR__URL=${NF4_NIGHTFALL_ATTESTOR__URL:-http://attestor:3001}
       # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
       # permutation polynomials each hold their own working buffer; with
       # 8+ logical CPUs (default in the container) peak RSS during the
@@ -241,7 +293,7 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
       - NF4_NETWORK__LOG_CHUNK_SIZE=${NF4_NETWORK__LOG_CHUNK_SIZE:-}
       - NF4_SIGNING_KEY=${PROPOSER_SIGNING_KEY}
-      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false}  # NovaV1 does not support MockProver
+      - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-false} # NovaV1 does not support MockProver
       - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_MAX_WAIT_SECS=60
       - NF4_NIGHTFALL_PROPOSER__BLOCK_ASSEMBLY_TARGET_FILL_RATIO=0.05
@@ -269,7 +321,7 @@ services:
     ports:
       - "3001:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -293,7 +345,6 @@ services:
       - NF4_ETHEREUM_CLIENT_URL
       - NF4_CONTRACTS__DEPLOY_CONTRACTS=${NF4_CONTRACTS__DEPLOY_CONTRACTS:-false}
 
-
   proposer2:
     container_name: nf4_proposer2
     stop_grace_period: 3s
@@ -306,7 +357,7 @@ services:
     ports:
       - "3003:3000"
     healthcheck:
-      test: ["CMD", "wget" ,"--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/v1/health" ]
       interval: 5s
       timeout: 90s
       retries: 10
@@ -380,13 +431,13 @@ services:
       timeout: 90s
       retries: 10
       start_period: 0s
-    command: mongod --quiet --logpath /dev/null 
+    command: mongod --quiet --logpath /dev/null
     ports:
-      - "27017:27017"    
+      - "27017:27017"
     networks:
       - nightfall_network
-  #  volumes:
-  #    - mongodb_client_data:/data/db
+    #  volumes:
+    #    - mongodb_client_data:/data/db
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
 
@@ -405,13 +456,13 @@ services:
       timeout: 90s
       retries: 10
       start_period: 0s
-    command: mongod --quiet --logpath /dev/null 
+    command: mongod --quiet --logpath /dev/null
     ports:
-      - "27020:27017"    
+      - "27020:27017"
     networks:
       - nightfall_network
-  #  volumes:
-  #    - mongodb_client2_data:/data/db
+    #  volumes:
+    #    - mongodb_client2_data:/data/db
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
 
@@ -427,18 +478,18 @@ services:
     image: mongo:8.0
     restart: unless-stopped
     ports:
-      - "27018:27017"    
+      - "27018:27017"
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017 --quiet || exit 1
       interval: 10s
       timeout: 90s
       retries: 10
       start_period: 0s
-    command: mongod --quiet --logpath /dev/null 
+    command: mongod --quiet --logpath /dev/null
     networks:
       - nightfall_network
-  #  volumes:
-  #    - mongodb_proposer_data:/data/db
+    #  volumes:
+    #    - mongodb_proposer_data:/data/db
     environment:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
 
@@ -449,14 +500,14 @@ services:
       - sync_test
     image: mongo:8.0
     ports:
-      - "27019:27017"    
+      - "27019:27017"
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017 --quiet || exit 1
       interval: 10s
       timeout: 90s
       retries: 10
       start_period: 0s
-    command: mongod --quiet --logpath /dev/null 
+    command: mongod --quiet --logpath /dev/null
     networks:
       - nightfall_network
     environment:
@@ -604,7 +655,7 @@ services:
       context: .
     platform: linux/amd64 # Required for building on M1 Macs
     healthcheck:
-      test: ["CMD", "curl", "-H", "Content-Type:", "application/json", "-X", "POST", "--data", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "0.0.0.0:8545"]
+      test: [ "CMD", "curl", "-H", "Content-Type:", "application/json", "-X", "POST", "--data", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "0.0.0.0:8545" ]
       interval: 10s
       timeout: 90s
       retries: 10
@@ -614,7 +665,7 @@ services:
     networks:
       - nightfall_network
     ports:
-      - "8545:8545" 
+      - "8545:8545"
     environment:
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
     deploy:
@@ -674,7 +725,6 @@ services:
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
 
-  
     depends_on:
       client:
         condition: service_healthy
@@ -727,7 +777,7 @@ services:
         condition: service_healthy
       proposer2:
         condition: service_healthy
-    
+
 volumes:
   # mongodb_client_data:
   # mongodb_client2_data:
@@ -737,9 +787,8 @@ volumes:
   toml_data:
 
 networks:
-   nightfall_network:
+  nightfall_network:
     ipam:
       driver: default
       config:
         - subnet: "172.18.0.0/24"
-          

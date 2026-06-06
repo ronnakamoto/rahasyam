@@ -171,6 +171,43 @@ pub struct TestConfig {
     pub log_level: String,
 }
 
+/// Configuration for the standalone Nova attestation service
+/// (`nightfall_attestor`) and the proposer-side client that calls it.
+#[derive(Debug, Deserialize, Serialize)]
+#[allow(unused)]
+pub struct AttestorServiceConfig {
+    /// URL of the attestation service the proposer calls to obtain a
+    /// Nova proof attestation (e.g. `http://attestor:3001`). Empty means
+    /// the proposer signs locally with `nova_verifier.attestor_key`
+    /// (single-signer dev path), preserving existing behaviour.
+    #[serde(default)]
+    pub url: String,
+    /// Log level for the attestation service binary.
+    #[serde(default = "default_attestor_log_level")]
+    pub log_level: String,
+    /// `address:port` the attestation service binds to.
+    #[serde(default = "default_attestor_bind")]
+    pub bind: String,
+}
+
+fn default_attestor_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_attestor_bind() -> String {
+    "0.0.0.0:3001".to_string()
+}
+
+impl Default for AttestorServiceConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            log_level: default_attestor_log_level(),
+            bind: default_attestor_bind(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default, Serialize)]
 #[allow(unused)]
 pub struct EthereumClientConfig {
@@ -197,6 +234,19 @@ pub struct NovaVerifierConfig {
     pub g2_one_y0: String,
     pub g2_one_y1: String,
     pub commitment_scheme: u64,
+    /// Hex-encoded ECDSA private key of the trusted Nova attestor.
+    ///
+    /// The proposer signs every Nova `rollup_proof` with this key (see
+    /// `nightfall_proposer::driven::nova_prover`) and the deployer
+    /// derives the matching address and calls
+    /// `NovaRollupVerifier.setAttestor` so the on-chain fail-closed
+    /// gate accepts the signed proofs. Empty (the default) means no
+    /// attestor is configured: the proposer appends no signature and
+    /// the contract rejects all Nova proofs. **Dev/test only** — a
+    /// production attestor key must be supplied out-of-band, never
+    /// committed.
+    #[serde(default)]
+    pub attestor_key: String,
 }
 
 #[derive(Debug, Deserialize, Default, Serialize)]
@@ -242,6 +292,8 @@ pub struct Settings {
     pub contracts: Contracts,
     pub nightfall_deployer: DeployerConfig,
     pub nightfall_proposer: ProposerConfig,
+    #[serde(default)]
+    pub nightfall_attestor: AttestorServiceConfig,
     pub network: Network,
     pub ethereum_client_url: String,
     pub nightfall_test: TestConfig,

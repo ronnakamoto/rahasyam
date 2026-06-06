@@ -286,22 +286,61 @@ where
     // There's one more case, where this is the first block, so we must be synchronised in the sense that our block count is the
     // same as the blockchain's block count, but we've lost the commitment data. In this case, we need to update the trees too.
     // If we don't have the data from the first block, out commitment root will be zero.
-    let commitment_root = <Client as CommitmentTree<Fr254>>::get_root(db)
+    // Commitment-tree root BEFORE any event-driven append. This is used
+    // only to detect the empty-tree bootstrap case in the guard below; it
+    // must NOT be compared against this block's commitments_root. The
+    // proposer speculatively pre-inserts each block's leaves into the
+    // authoritative trees at prove time (see
+    // `nova_prover::prepare_state_transition`) and may already be several
+    // blocks ahead of the event being handled, so the current root
+    // legitimately differs from an older block's root. The authoritative
+    // consistency check runs on the append path only (inside the guard).
+    let commitment_root_before_append = <Client as CommitmentTree<Fr254>>::get_root(db)
         .await
         .map_err(|_| {
             EventHandlerError::IOError("Could not retrieve commitment root".to_string())
         })?;
     // Compute the historic root once. We only APPEND it to the historic-root
     // tree inside the guard below so a block proposed by us doesn't
-    // double-append the same historic root. The value is still needed for
-    // the post-guard verification check (commitment root vs historic root).
+    // double-append the same historic root.
     let historic_root: Fr254 = FrBn254::try_from(blk.commitments_root)
         .map_err(|_| EventHandlerError::IOError("Could not convert to Fr254".to_string()))?
         .into();
-    if our_address != sender_address
-        || !sync_status.is_synchronised()
-        || commitment_root.0.is_zero()
+    // Decide whether to (re)build the trees from this event.
+    //
+    // A block we proved ourselves already had its leaves inserted into the
+    // authoritative JF trees at prove time (see the `prepare_state_transition`
+    // implementations), and `speculative_state` holds a snapshot of the
+    // pre-insert state for it. Three cases:
+    //
+    //   1. Our own block, landed as-is: `confirm_front` matches the front
+    //      outstanding speculative block and drops its snapshot (it is now
+    //      confirmed). We must NOT append — the leaves are already present;
+    //      re-appending would double-insert and corrupt the tree.
+    //   2. Someone else's block, or a resync, while we still hold speculative
+    //      state: our local trees are ahead of (and diverge from) the confirmed
+    //      block, so we first roll all speculation back to the confirmed tip,
+    //      then append this block's leaves from the event.
+    //   3. No speculative state (non-proposer sync, bootstrap, or post-reset
+    //      replay): append directly.
+    let our_block_confirmed = our_address == sender_address
+        && crate::driven::speculative_state::confirm_front(db, historic_root).await;
+    if !our_block_confirmed
+        && (our_address != sender_address
+            || !sync_status.is_synchronised()
+            || commitment_root_before_append.0.is_zero())
     {
+        // Serialise these live-tree mutations against a concurrent rollback on
+        // the finality task (the assembly task is already excluded via the
+        // sync_status write lock held by this handler).
+        let _tree_guard = crate::driven::speculative_state::tree_mutation_lock().await;
+        // If we are about to rebuild from the event but still hold speculative
+        // tree state, that state belongs to a block of ours that did not land
+        // as-is; revert it to the confirmed tip before appending so we don't
+        // stack this block's leaves on top of our stale speculation.
+        if crate::driven::speculative_state::has_outstanding().await {
+            crate::driven::speculative_state::rollback_all(db).await;
+        }
         let commitments = &blk
             .transactions
             .iter()
@@ -342,15 +381,35 @@ where
             .map_err(|_| {
                 EventHandlerError::IOError("Could not store historic root".to_string())
             })?;
-    }
 
-    // it's worth checking that the historic root agrees with what's in the commitment tree
-    if commitment_root != historic_root {
-        error!(
-            "Historic root does not match commitment tree root. Historic root: {historic_root}, Commitment tree root: {commitment_root}"
-        );
-    } else {
-        debug!("Historic root matches commitment tree root");
+        // We have just (re)built the local commitment tree up to and
+        // including this block from the BlockProposed event, so the tree
+        // root MUST now equal the block's on-chain commitments_root.
+        // Reading the root AFTER the append is essential: the pre-append
+        // root is the prior block's root. This invariant only holds on
+        // this append path. For the proposer's own blocks (the skipped
+        // branch) the tree is speculatively pre-inserted at prove time and
+        // may be several blocks ahead, so a current-vs-old-block-root
+        // comparison there is meaningless; that path is instead validated
+        // by the block-hash comparison earlier in this handler. A mismatch
+        // here is a genuine divergence between the locally-rebuilt state
+        // and the chain (the existing missing-block / block-hash checks
+        // drive the reset-and-replay resync recovery).
+        let commitment_root_after_append = <Client as CommitmentTree<Fr254>>::get_root(db)
+            .await
+            .map_err(|_| {
+                EventHandlerError::IOError("Could not retrieve commitment root".to_string())
+            })?;
+        if commitment_root_after_append != historic_root {
+            error!(
+                "Commitment tree root does not match the block's commitments_root after \
+                 syncing layer 2 block {layer_2_block_number_in_event} from its BlockProposed \
+                 event. Block commitments_root: {historic_root}, rebuilt commitment tree root: \
+                 {commitment_root_after_append}"
+            );
+        } else {
+            debug!("Commitment tree root matches the block's commitments_root");
+        }
     }
 
     // see if we need to update the synchronisation status

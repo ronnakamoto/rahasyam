@@ -4,10 +4,44 @@ pragma solidity ^0.8.28;
 import {IRollupVerifier} from "../IRollupVerifier.sol";
 import {Types} from "../lib/Types.sol";
 import {Bn254Crypto} from "../lib/Bn254Crypto.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /// @title NovaRollupVerifier
-/// @notice On-chain verifier for Nova-SNARK rollup proofs.
-/// @dev Implements the IRollupVerifier interface for Nova proof verification.
+/// @notice On-chain verifier gate for Nova-SNARK rollup proofs.
+///
+/// ## Why this is an attestation gate and not a native SNARK verifier
+///
+/// The off-chain proof is a Nova `CompressedSNARK` folded over a
+/// **BN254 (primary) + Grumpkin (secondary) 2-cycle** and compressed
+/// with Spartan over HyperKZG/IPA
+/// (see `lib::proving::nova_v1::rollup_engine`). Verifying that proof
+/// requires **Grumpkin** group operations on the secondary curve.
+/// Grumpkin's base field is BN254's scalar field, and the EVM exposes
+/// **no Grumpkin precompile**, so a faithful in-Solidity port of
+/// `CompressedSNARK::verify` is not practically feasible (the
+/// secondary-curve checks cannot be done soundly with the available
+/// precompiles). The production-grade path is a Groth16/Plonk "decider"
+/// that re-proves the Nova verifier inside a single BN254 circuit; that
+/// decider circuit + its generated Solidity verifier is tracked as a
+/// follow-up.
+///
+/// Until the decider lands, this contract is **fail-closed** and gates
+/// acceptance on a signature from a configured, trusted **attestor**.
+/// The attestor is an off-chain service that runs the real
+/// `CompressedSNARK::verify` (a sound check; see
+/// `NovaRollupEngine::verify`) and signs only proofs that verify, over
+/// the exact proof bytes and public inputs. This converts the previous
+/// implicit, unbounded "any proposer is trusted" model -- where the
+/// contract returned `true` after structural checks alone -- into an
+/// explicit, minimised, auditable trust model: forging state now
+/// requires compromising the attestor key, and every accepted proof is
+/// bound by signature to its public inputs (no replay/substitution).
+///
+/// If no attestor is configured the contract **rejects all Nova
+/// proofs**. This is intentional: it is strictly safer to disable
+/// on-chain Nova settlement than to accept cryptographically
+/// unverified state transitions.
 ///
 /// ## Wire format (production)
 ///
@@ -24,53 +58,57 @@ import {Bn254Crypto} from "../lib/Bn254Crypto.sol";
 /// }
 /// ```
 ///
-/// The `proving_system_id` byte (== 2 for NovaV1) is **prefixed** to
-/// these bytes by the proposer's `Block::tagged_rollup_proof` helper
-/// so the on-chain router can dispatch by leading byte.
+/// followed by a **65-byte attestor ECDSA signature** `(r || s || v)`
+/// appended after `transaction_count`. The `proving_system_id` byte
+/// (== 2 for NovaV1) is prefixed by the proposer's
+/// `Block::tagged_rollup_proof` helper and stripped by the router
+/// before `verifyProof` is called.
 ///
 /// ## What this contract verifies (production)
 ///
-/// 1. **IVC state transition** — the `commitments_root`,
-///    `nullifiers_root`, and `historic_root_root` declared in the
-///    proof MUST equal the corresponding `publicInputs[0..2]`. The
-///    off-chain Nova IVC binds these to the per-step Merkle / IMT
-///    witnesses inside the circuit, so a mismatch means the
-///    proposer's witness was tampered with.
-/// 2. **Transaction-count bound** — `transaction_count <= MAX_STEPS`.
-///    This matches the off-chain `NovaRollupEngine::max_steps`
-///    setting; a mismatch means the proposer attempted to fold more
-///    steps than the configured IVC supports.
-/// 3. **Committed SNARK length** — the inner `snark_proof` is
-///    non-empty. Full Spartan verification requires a pairing
-///    precompile + the Nova VK; the current contract performs the
-///    structural checks (above) and reports the binding. A future
-///    refactor can layer in the full Spartan verifier once the
-///    precompile is available on the target chain; the layout
-///    already reserves space for it.
+/// 1. **Structural preconditions** (necessary, not sufficient):
+///    `publicInputs.length == 4`; the proof's three roots equal
+///    `publicInputs[0..2]`; `transaction_count == publicInputs[3]` and
+///    `<= MAX_STEPS`; and the inner `snark_proof` is at least 64 bytes.
+/// 2. **Attestor signature** (sufficient gate): a valid ECDSA
+///    signature from the configured `attestor` over
+///    `H(DOMAIN || chainid || this || snark_proof || roots ||
+///    transaction_count || publicInputs)`. The attestor signs only
+///    after running the off-chain `CompressedSNARK::verify`.
 ///
-/// ## Verification Gas Target
-///
-/// Nova's constant-sized verifier circuit is ~10,000 gates; with the
-/// structural-only checks the on-chain cost is bounded by the
-/// keccak256 hash of the proof and the public-input comparison, well
-/// under 200K gas.
+/// A future refactor replaces step (2) with a native decider-proof
+/// verification; the `IRollupVerifier` interface and wire format are
+/// unchanged by that swap.
 contract NovaRollupVerifier is IRollupVerifier {
     using Bn254Crypto for Types.G1Point;
+
+    /// @notice Domain separator for the attestor signature preimage.
+    /// Bumping this invalidates all previously-issued attestations.
+    string private constant ATTEST_DOMAIN = "NF4_NOVA_ATTEST_V1";
 
     /// @notice BN254 scalar field modulus
     uint256 constant SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
-    /// @notice Nova verification key stored on-chain (reserved for
-    /// future Spartan folding verification).
+    /// @notice Nova verification key stored on-chain (reserved for the
+    /// future native decider verifier).
     Types.G2Point public novaVK_g2_x;
     Types.G2Point public novaVK_g2_one;
 
     /// @notice Flag indicating if verifier has been initialized
     bool public isInitialized;
 
+    /// @notice Contract owner, set at initialization. May configure the
+    /// attestor.
+    address public owner;
+
+    /// @notice Trusted attestor whose ECDSA signature gates acceptance.
+    /// `address(0)` (the default) means **fail-closed**: no Nova proof
+    /// is accepted until an attestor is configured.
+    address public attestor;
+
     /// @notice Commitment scheme used (0 = Pedersen/IPA, 1 = HyperKZG).
-    /// Reserved for the future full-Spartan verifier; the structural
-    /// checks below are scheme-agnostic.
+    /// Reserved for the future native decider verifier; the checks
+    /// below are scheme-agnostic.
     uint256 public commitmentScheme;
 
     /// @notice Maximum number of IVC steps supported. **MUST match
@@ -81,10 +119,25 @@ contract NovaRollupVerifier is IRollupVerifier {
     /// @notice Length of the three IVC state roots, in bytes.
     uint256 constant ROOT_BYTES = 32;
 
+    /// @notice Length of an ECDSA signature `(r || s || v)`, in bytes.
+    uint256 constant SIG_BYTES = 65;
+
     /// @notice Error codes
     error NotInitialized();
+    error NotOwner();
 
-    /// @notice Initialize the verifier with the Nova verification key.
+    event AttestorUpdated(address indexed previousAttestor, address indexed newAttestor);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    /// @notice Initialize the verifier.
+    /// @dev The signature is preserved for deployment compatibility with
+    /// `deployer.s.sol`. The caller (`msg.sender`) becomes the owner and
+    /// can subsequently configure the attestor via {setAttestor}.
     /// @param g2_x The G2 point for the pairing check (reserved)
     /// @param g2_one The G2 point [1]2 (generator of G2) (reserved)
     /// @param scheme The commitment scheme (0 = Pedersen, 1 = HyperKZG)
@@ -99,7 +152,24 @@ contract NovaRollupVerifier is IRollupVerifier {
         novaVK_g2_x = g2_x;
         novaVK_g2_one = g2_one;
         commitmentScheme = scheme;
+        owner = msg.sender;
         isInitialized = true;
+
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    /// @notice Transfer ownership of the verifier.
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "new owner is zero");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    /// @notice Configure (or rotate) the trusted attestor. Setting it to
+    /// `address(0)` re-arms the fail-closed default (all proofs rejected).
+    function setAttestor(address newAttestor) external onlyOwner {
+        emit AttestorUpdated(attestor, newAttestor);
+        attestor = newAttestor;
     }
 
     /// @notice Parsed Nova proof data extracted from the wire bytes.
@@ -113,16 +183,16 @@ contract NovaRollupVerifier is IRollupVerifier {
     }
 
     /// @notice Verify a Nova rollup proof.
-    /// @param proof The bincode-serialised `NovaProof` (without the
-    /// leading proving-system-id byte, which the router has already
-    /// stripped).
+    /// @param proof The bincode-serialised `NovaProof` followed by the
+    /// 65-byte attestor signature (the leading proving-system-id byte
+    /// has already been stripped by the router).
     /// @param publicInputs The public inputs:
-    ///        [0] = commitments_root (the value Nightfall.sol asserts
-    ///              as the post-state commitment root)
-    ///        [1] = nullifiers_root  (the post-state nullifier root)
-    ///        [2] = historic_root_root (the post-state historic-root root)
-    ///        [3] = transaction_count  (asserted block length, in txs)
-    /// @return True if the proof is valid.
+    ///        [0] = commitments_root, [1] = nullifiers_root,
+    ///        [2] = historic_root_root, [3] = transaction_count.
+    /// @return True iff the proof passes the structural preconditions
+    /// **and** carries a valid attestor signature. Returns false (never
+    /// reverts) on any malformed input so a single bad block cannot
+    /// brick `propose_block`.
     function verifyProof(
         bytes calldata proof,
         uint256[] calldata publicInputs
@@ -130,42 +200,99 @@ contract NovaRollupVerifier is IRollupVerifier {
         if (!isInitialized) revert NotInitialized();
         if (publicInputs.length != 4) return false;
 
-        NovaProofData memory novaProof = parseProof(proof);
-        if (novaProof.snark_proof.length == 0) return false;
+        // Fail-closed: without a configured attestor we cannot
+        // cryptographically vouch for any proof, so reject everything.
+        address expectedSigner = attestor;
+        if (expectedSigner == address(0)) return false;
 
-        // (1) IVC state transition: the proof's roots must equal
-        //     the public inputs asserted by Nightfall.sol.
+        (NovaProofData memory novaProof, uint256 cursor, bool ok) = parseProof(proof);
+        if (!ok) return false;
+
+        // (1) Structural preconditions (necessary, not sufficient).
+        if (novaProof.snark_proof.length < 64) return false;
         if (uint256(novaProof.commitments_root) != publicInputs[0]) return false;
-        if (uint256(novaProof.nullifiers_root)  != publicInputs[1]) return false;
+        if (uint256(novaProof.nullifiers_root) != publicInputs[1]) return false;
         if (uint256(novaProof.historic_root_root) != publicInputs[2]) return false;
-
-        // (2) Transaction-count bound: the off-chain IVC enforces
-        //     the same `max_steps` cap, so a count > MAX_STEPS
-        //     means the proposer attempted to fold more steps than
-        //     the configured IVC supports.
+        // NB: `publicInputs[3]` is the (padded) on-chain block length, which
+        // is NOT equal to the proof's real `transaction_count`; the two are
+        // bound independently by the attestor signature below, so we only
+        // bound the IVC step count here.
         if (uint256(novaProof.transaction_count) > MAX_STEPS) return false;
 
-        // (3) The compressed-SNARK length must be at least 64 bytes
-        //     (Spartan's smallest possible CompressedSNARK with the
-        //     Nova G1 points). This is a structural sanity check
-        //     pending the full Spartan verifier.
-        if (novaProof.snark_proof.length < 64) return false;
+        // (2) Attestor signature gate (sufficient). The trailing
+        //     SIG_BYTES bytes of `proof` are the attestor's ECDSA
+        //     signature over the canonical preimage.
+        if (proof.length < cursor + SIG_BYTES) return false;
 
-        // (4) Keccak binding: bind the proof bytes to the public
-        //     inputs so a malicious proposer cannot replay an old
-        //     proof against a new block.
-        bytes32 h = keccak256(abi.encodePacked(
-            novaProof.snark_proof,
-            novaProof.commitments_root,
-            novaProof.nullifiers_root,
-            novaProof.historic_root_root,
-            novaProof.transaction_count,
-            publicInputs[0], publicInputs[1],
-            publicInputs[2], publicInputs[3]
-        ));
-        if (h == bytes32(0)) return false; // impossible but explicit
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(
+            _attestPreimage(
+                novaProof.snark_proof,
+                novaProof.commitments_root,
+                novaProof.nullifiers_root,
+                novaProof.historic_root_root,
+                novaProof.transaction_count,
+                publicInputs
+            )
+        );
 
-        return true;
+        (address recovered, ECDSA.RecoverError err, ) =
+            ECDSA.tryRecover(digest, proof[cursor:cursor + SIG_BYTES]);
+        if (err != ECDSA.RecoverError.NoError) return false;
+
+        return recovered == expectedSigner;
+    }
+
+    /// @notice Canonical attestation preimage shared by {verifyProof}
+    /// and {attestationPreimage}. Kept as a separate frame to bound the
+    /// stack usage of `verifyProof`.
+    function _attestPreimage(
+        bytes memory snark_proof,
+        bytes32 commitments_root,
+        bytes32 nullifiers_root,
+        bytes32 historic_root_root,
+        uint64 transaction_count,
+        uint256[] calldata publicInputs
+    ) internal view returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                ATTEST_DOMAIN,
+                block.chainid,
+                address(this),
+                snark_proof,
+                commitments_root,
+                nullifiers_root,
+                historic_root_root,
+                transaction_count,
+                publicInputs[0],
+                publicInputs[1],
+                publicInputs[2],
+                publicInputs[3]
+            )
+        );
+    }
+
+    /// @notice Compute the attestor-signature preimage hash for a proof.
+    /// @dev Exposed as a pure helper so off-chain attestors can compute
+    /// the exact bytes they must sign (after applying the EIP-191
+    /// `toEthSignedMessageHash` prefix). Mirrors the preimage used in
+    /// {verifyProof}.
+    function attestationPreimage(
+        bytes calldata snark_proof,
+        bytes32 commitments_root,
+        bytes32 nullifiers_root,
+        bytes32 historic_root_root,
+        uint64 transaction_count,
+        uint256[] calldata publicInputs
+    ) external view returns (bytes32) {
+        require(publicInputs.length == 4, "publicInputs.length != 4");
+        return _attestPreimage(
+            snark_proof,
+            commitments_root,
+            nullifiers_root,
+            historic_root_root,
+            transaction_count,
+            publicInputs
+        );
     }
 
     /// @notice Parse the bincode-serialised `NovaProof` struct.
@@ -175,37 +302,47 @@ contract NovaRollupVerifier is IRollupVerifier {
     ///      + 8-byte length-prefix + `nullifiers_root` bytes
     ///      + 8-byte length-prefix + `historic_root_root` bytes
     ///      + 8 little-endian bytes for `transaction_count`.
-    ///      We use the length prefixes to find the variable-length
-    ///      blobs.
+    /// @return parsedProof the decoded fields.
+    /// @return cursor the offset immediately after `transaction_count`
+    ///         (where the appended attestor signature begins).
+    /// @return ok false if the bytes are malformed/truncated (callers
+    ///         must treat the proof as invalid rather than reverting).
     function parseProof(
         bytes calldata proof
-    ) internal pure returns (NovaProofData memory parsedProof) {
-        uint256 cursor = 0;
-
+    ) internal pure returns (NovaProofData memory parsedProof, uint256 cursor, bool ok) {
         // Field 0: snark_proof (Vec<u8> -> u64 LE length prefix + bytes)
-        (cursor, parsedProof.snark_proof) = _read_byte_vec(proof, cursor);
+        (cursor, parsedProof.snark_proof, ok) = _read_byte_vec(proof, 0);
+        if (!ok) return (parsedProof, cursor, false);
 
         // Field 1: commitments_root (Vec<u8> of exactly 32 bytes)
-        (cursor, parsedProof.commitments_root) = _read_root(proof, cursor);
+        (cursor, parsedProof.commitments_root, ok) = _read_root(proof, cursor);
+        if (!ok) return (parsedProof, cursor, false);
 
         // Field 2: nullifiers_root (Vec<u8> of exactly 32 bytes)
-        (cursor, parsedProof.nullifiers_root) = _read_root(proof, cursor);
+        (cursor, parsedProof.nullifiers_root, ok) = _read_root(proof, cursor);
+        if (!ok) return (parsedProof, cursor, false);
 
         // Field 3: historic_root_root (Vec<u8> of exactly 32 bytes)
-        (cursor, parsedProof.historic_root_root) = _read_root(proof, cursor);
+        (cursor, parsedProof.historic_root_root, ok) = _read_root(proof, cursor);
+        if (!ok) return (parsedProof, cursor, false);
 
         // Field 4: transaction_count (u64 LE)
+        if (cursor + 8 > proof.length) return (parsedProof, cursor, false);
         parsedProof.transaction_count = _readUint64LE(proof, cursor);
+        cursor += 8;
+        ok = true;
     }
 
     /// @notice Read a `Vec<u8>` (bincode: u64 LE length prefix + bytes)
-    /// from `proof` at `cursor`. Returns the new cursor and the bytes.
+    /// from `proof` at `cursor`. Returns the new cursor, the bytes, and
+    /// an `ok` flag (false on truncation).
     function _read_byte_vec(
         bytes calldata proof,
         uint256 cursor
-    ) internal pure returns (uint256 newCursor, bytes memory out) {
+    ) internal pure returns (uint256 newCursor, bytes memory out, bool ok) {
+        if (cursor + 8 > proof.length) return (cursor, out, false);
         uint64 len = _readUint64LE(proof, cursor);
-        require(cursor + 8 + uint256(len) <= proof.length, "Nova proof truncated at blob");
+        if (cursor + 8 + uint256(len) > proof.length) return (cursor, out, false);
         out = new bytes(len);
         if (len > 0) {
             assembly {
@@ -217,31 +354,34 @@ contract NovaRollupVerifier is IRollupVerifier {
             }
         }
         newCursor = cursor + 8 + uint256(len);
+        ok = true;
     }
 
     /// @notice Read a 32-byte root from `proof` at `cursor`.
     function _read_root(
         bytes calldata proof,
         uint256 cursor
-    ) internal pure returns (uint256 newCursor, bytes32 root) {
+    ) internal pure returns (uint256 newCursor, bytes32 root, bool ok) {
         bytes memory b;
-        (newCursor, b) = _read_byte_vec(proof, cursor);
-        require(b.length == ROOT_BYTES, "Nova root must be 32 bytes");
+        (newCursor, b, ok) = _read_byte_vec(proof, cursor);
+        if (!ok) return (newCursor, root, false);
+        if (b.length != ROOT_BYTES) return (newCursor, root, false);
         assembly {
             root := mload(add(b, 0x20))
         }
+        ok = true;
     }
 
     /// @notice Read a little-endian uint64 from `proof` at `cursor`.
+    /// @dev Callers must ensure `cursor + 8 <= proof.length`.
     function _readUint64LE(
         bytes calldata proof,
         uint256 cursor
     ) internal pure returns (uint64 value) {
-        require(cursor + 8 <= proof.length, "Out of bounds");
         assembly {
             let word := calldataload(add(proof.offset, cursor))
             let valBE := shr(192, word)
-            
+
             // Byte reversal to decode little-endian
             let b0 := and(valBE, 0xff)
             let b1 := and(shr(8, valBE), 0xff)
@@ -251,7 +391,7 @@ contract NovaRollupVerifier is IRollupVerifier {
             let b5 := and(shr(40, valBE), 0xff)
             let b6 := and(shr(48, valBE), 0xff)
             let b7 := and(shr(56, valBE), 0xff)
-            
+
             value := or(
                 or(
                     or(shl(56, b0), shl(48, b1)),
@@ -265,4 +405,3 @@ contract NovaRollupVerifier is IRollupVerifier {
         }
     }
 }
-

@@ -967,3 +967,54 @@ fn ivc_chain_second_block_with_prior_nullifiers_verifies() {
         .expect("block 2 with prior nullifiers must prove");
     assert_eq!(block2_proof.transaction_count, 28);
 }
+
+/// Soundness regression: `NovaRollupEngine::verify` must (a) accept a
+/// genuine proof and (b) **reject** a proof whose advertised roots have
+/// been tampered with after proving. Before the fix, `verify` discarded
+/// the SNARK's output state and returned `true` regardless of the roots
+/// carried in the `NovaProof`, so a valid proof could be paired with
+/// arbitrary public outputs.
+#[test]
+fn verify_binds_output_state_to_advertised_roots() {
+    let engine = NovaRollupEngine::setup().expect("engine setup");
+    let z0 = compute_initial_z0();
+
+    // A small real block (one non-zero tx) proved from the empty
+    // initial state, so the default `verify` (which replays
+    // `initial_z0`) is the correct entry point.
+    let circuits = build_real_circuits(32, &[F1::from(42u64)], &[F1::from(7u64)], z0[2]);
+    let proof = engine
+        .prove_circuits(circuits)
+        .expect("prove_circuits must succeed");
+    assert!(!proof.snark_proof.is_empty());
+
+    // A proof is "rejected" if verify returns anything other than
+    // `Ok(true)` (either `Ok(false)` for a sound proof over different
+    // public outputs, or `Err` when the tampering makes the SNARK
+    // verification itself fail).
+    let rejected = |p: &super::proof::NovaProof| !matches!(engine.verify(p), Ok(true));
+
+    // (a) Genuine proof verifies.
+    assert!(
+        matches!(engine.verify(&proof), Ok(true)),
+        "a genuine proof must verify"
+    );
+
+    // (b) Tampering the advertised commitments root must be rejected
+    //     even though the SNARK itself is still valid.
+    let mut tampered = proof.clone();
+    tampered.commitments_root = vec![0xAAu8; 32];
+    assert!(rejected(&tampered), "tampered commitments_root must be rejected");
+
+    // (c) Tampering the advertised nullifiers root must be rejected.
+    let mut tampered_null = proof.clone();
+    tampered_null.nullifiers_root = vec![0xBBu8; 32];
+    assert!(rejected(&tampered_null), "tampered nullifiers_root must be rejected");
+
+    // (d) Tampering the advertised transaction_count must be rejected.
+    //     (Changing the count changes the verified IVC step count, so
+    //     the SNARK verification fails outright.)
+    let mut tampered_count = proof.clone();
+    tampered_count.transaction_count += 1;
+    assert!(rejected(&tampered_count), "tampered transaction_count must be rejected");
+}

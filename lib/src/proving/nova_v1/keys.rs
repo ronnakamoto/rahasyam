@@ -655,6 +655,118 @@ mod tests {
         snark.verify(&vk2, 1, &z0).expect("verify with reloaded VK failed");
     }
 
+    /// DIAGNOSTIC: does a **real (non-padding)** one-step circuit
+    /// produce a `CompressedSNARK` that verifies in-process (fresh keys,
+    /// no disk cache)? If this passes but the engine path fails, the
+    /// fault is in the on-disk key cache; if it fails, the real step
+    /// circuit itself yields a non-verifying compressed proof.
+    #[test]
+    fn compressed_snark_real_circuit_verifies() {
+        use crate::proving::nova_v1::commitment_tree::{
+            compute_initial_z0, InMemoryCommitmentStorage, InMemoryNullifierStorage,
+            NeptuneCommitmentTree, NeptuneIMT,
+        };
+        use nova_snark::nova::RecursiveSNARK;
+
+        let pp = build_pp();
+        let (pk, vk) =
+            CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
+
+        let z0: Vec<F1> = compute_initial_z0();
+        let depth = 32u32;
+
+        // Build one real step (commitment = 42, nullifier = 7).
+        let commitment = F1::from(42u64);
+        let nullifier = F1::from(7u64);
+        let mut commit_tree =
+            NeptuneCommitmentTree::new(depth, InMemoryCommitmentStorage::new());
+        let mut null_imt = NeptuneIMT::new(depth, InMemoryNullifierStorage::new());
+
+        let (commit_root, commit_path) = commit_tree.append(commitment);
+        let (low_leaf, null_witness) = null_imt
+            .get_non_inclusion_witness(nullifier)
+            .expect("low leaf");
+        null_imt.insert_nullifier(nullifier).expect("insert");
+        let new_leaf_index = null_imt.next_insert_index().saturating_sub(1);
+        let null_insertion = crate::proving::nova_v1::merkle::ImtInsertionWitness {
+            new_leaf_index: F1::from(new_leaf_index),
+            updated_low_path: null_imt.inclusion_path(low_leaf.index),
+            new_leaf_path: null_imt.inclusion_path(new_leaf_index),
+        };
+        let null_root = null_imt.root();
+
+        let circuit = Circuit::new_real(
+            depth as usize,
+            commit_root,
+            null_root,
+            z0[2],
+            commitment,
+            commit_path,
+            null_witness,
+            null_insertion,
+        );
+
+        let mut rs = RecursiveSNARK::<E1, E2, Circuit>::new(&pp, &circuit, &z0).unwrap();
+        rs.prove_step(&pp, &circuit).unwrap();
+        rs.verify(&pp, 1, &z0).expect("recursive verify");
+
+        let compressed =
+            CompressedSNARK::<_, _, _, S1, S2>::prove(&pp, &pk, &rs).expect("compress");
+        compressed
+            .verify(&vk, 1, &z0)
+            .expect("real-circuit CompressedSNARK::verify must pass");
+
+        // Decisive: a REAL circuit's compressed proof must also survive a
+        // bincode round-trip (the engine serializes it into NovaProof and
+        // the verifier deserializes it).
+        let bytes = bincode::serialize(&compressed).expect("serialize");
+        let roundtripped: CompressedSNARK<E1, E2, Circuit, S1, S2> =
+            bincode::deserialize(&bytes).expect("deserialize");
+        roundtripped
+            .verify(&vk, 1, &z0)
+            .expect("round-tripped real-circuit CompressedSNARK::verify must pass");
+    }
+
+    /// DIAGNOSTIC: does a `CompressedSNARK` survive a `bincode`
+    /// round-trip and still verify? The off-chain attestor verifies a
+    /// `CompressedSNARK` that was serialized by the prover and
+    /// deserialized from the proof bytes, so the round-trip MUST be
+    /// lossless. This pins that contract with a real one-step proof.
+    #[test]
+    fn compressed_snark_survives_bincode_roundtrip() {
+        use crate::proving::nova_v1::commitment_tree::compute_initial_z0;
+        use nova_snark::nova::RecursiveSNARK;
+
+        let pp = build_pp();
+        let (pk, vk) =
+            CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
+
+        // Real (non-zero) initial state, padding step (passes roots through).
+        let z0: Vec<F1> = compute_initial_z0();
+        assert_eq!(z0.len(), 5);
+        let circuit = Circuit::padding();
+
+        let mut rs = RecursiveSNARK::<E1, E2, Circuit>::new(&pp, &circuit, &z0).unwrap();
+        rs.prove_step(&pp, &circuit).unwrap();
+        rs.verify(&pp, 1, &z0).expect("recursive verify");
+
+        let compressed =
+            CompressedSNARK::<_, _, _, S1, S2>::prove(&pp, &pk, &rs).expect("compress");
+
+        // (a) In-memory verify must pass.
+        compressed
+            .verify(&vk, 1, &z0)
+            .expect("in-memory CompressedSNARK::verify must pass");
+
+        // (b) After a bincode round-trip it must STILL verify.
+        let bytes = bincode::serialize(&compressed).expect("serialize");
+        let roundtripped: CompressedSNARK<E1, E2, Circuit, S1, S2> =
+            bincode::deserialize(&bytes).expect("deserialize");
+        roundtripped
+            .verify(&vk, 1, &z0)
+            .expect("round-tripped CompressedSNARK::verify must pass");
+    }
+
     /// 1.3.3 — `clear_cache` forces the next call to regenerate.
     #[test]
     fn clear_cache_forces_regeneration() {

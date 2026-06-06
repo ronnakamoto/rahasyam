@@ -18,15 +18,51 @@
 //! is a serialised `PlonkProof`. The Nova rollup folds the **state
 //! transition** (commitments / nullifiers / roots) but does not
 //! re-prove each client transaction; instead it carries the Plonk
-//! proofs forward in the rollup `Block` and the on-chain verifier
-//! trusts the `verify_rollup_proof` path, which (a) verifies the
-//! Nova folding equation, (b) verifies the Spartan SNARK, and (c)
-//! for deposits checks the deposit-data Merkle inclusion. Tampering
-//! with a Plonk client proof is caught at deposit/withdraw time
-//! when the on-chain handler re-checks the commitment/nullifier
-//! pair against the historic state.
+//! proofs forward in the rollup `Block`.
+//!
+//! **On-chain Nova verification is a trusted-attestor gate, not a
+//! native SNARK verifier.** Verifying the Nova `CompressedSNARK`
+//! directly on-chain is infeasible (the secondary Grumpkin curve has
+//! no EVM precompile), so `NovaRollupVerifier.sol` is fail-closed and
+//! accepts a block only when it carries a valid ECDSA signature from a
+//! configured, trusted attestor over the proof bytes and public
+//! inputs. The attestor runs the sound off-chain
+//! [`NovaRollupEngine::verify`] (`rollup_engine.rs`) before signing.
+//! Tampering with a Plonk client proof is additionally caught at
+//! deposit/withdraw time when the on-chain handler re-checks the
+//! commitment/nullifier pair against the historic state. A future
+//! refactor replaces the attestor gate with a Groth16/Plonk
+//! "decider" proof that re-proves the Nova verifier in a single BN254
+//! circuit (verifiable on-chain).
 //!
 //! Why hybrid and not pure Nova? The pure-Nova alternative is to
+//! write a per-client `ClientStepCircuit<F>` and fold it into the
+//! IVC as a separate "client" z-vector. That requires re-architecting
+//! the public-input contract (the on-chain verifier currently
+//! expects a 4-element public input, not a 5-element one) and
+//! rewriting the deposit/withdraw flow. The hybrid model keeps the
+//! existing Plonk client prover, which is mature, audited, and used
+//! in production today.
+//!
+//! ## What this module does
+//!
+//! - `NovaClientEngine::prove` delegates to `PlonkProvingEngine::prove`
+//!   and bincode-serialises the resulting `PlonkProof` into the
+//!   `snark_proof` field of `NovaClientProof`.
+//! - `NovaClientEngine::verify` bincode-deserialises `snark_proof` and
+//!   delegates to `PlonkProvingEngine::verify`.
+//!
+//! No placeholder byte strings, no `vec![1, 2, 3, 4]` stubs.
+//!
+//! ## What this module does **not** do
+//!
+//! The on-chain `NovaRollupVerifier` does **not** consume the
+//! embedded Plonk proofs. Plonk client proof verification is a
+//! synchronous client-side check (run on every event handler and
+//! REST handler in the proposer) and is enforced again on-chain by
+//! the deposit/withdraw paths in `Nightfall.sol`. A future refactor
+//! could embed a Plonk-verifier precompile call into the on-chain
+//! Nova verifier, but that is out of scope for the current pass.
 //! write a per-client `ClientStepCircuit<F>` and fold it into the
 //! IVC as a separate "client" z-vector. That requires re-architecting
 //! the public-input contract (the on-chain verifier currently
