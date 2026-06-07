@@ -16,6 +16,8 @@ use jf_plonk::errors::PlonkError;
 #[cfg(not(feature = "nova-v1"))]
 use jf_primitives::{pcs::prelude::*, rescue::sponge::RescueCRHF};
 #[cfg(not(feature = "nova-v1"))]
+use jf_relation::Arithmetization;
+#[cfg(not(feature = "nova-v1"))]
 use lib::{
     build_transfer_inputs::build_valid_transfer_inputs,
     circuit_key_generation::{generate_rollup_keys_for_production, universal_setup_for_production},
@@ -86,11 +88,20 @@ pub fn generate_proving_keys(settings: &Settings) -> Result<(), PlonkError> {
         // if we're using a mock prover, we won't waste time downloading a real Perpetual Powers of Tau file
         // and generating a structured reference string
         let kzg_srs = if settings.mock_prover {
-            FFTPlonk::<UnivariateKzgPCS<Bn254>>::universal_setup_for_testing(
-                1 << MAX_KZG_DEGREE,
-                &mut rng,
-            )
-            .unwrap()
+            // The client/deposit circuit is far smaller than 2^MAX_KZG_DEGREE.
+            // Sizing the test SRS to the actual circuit (rather than the rollup's
+            // 2^MAX_KZG_DEGREE) avoids generating tens of millions of needless
+            // SRS elements, which otherwise exhausts memory on modest machines.
+            let srs_size = circuit
+                .srs_size(true)
+                .expect("Failed to compute client circuit SRS size")
+                .max(
+                    deposit_base_circuit
+                        .srs_size(true)
+                        .expect("Failed to compute deposit circuit SRS size"),
+                );
+            FFTPlonk::<UnivariateKzgPCS<Bn254>>::universal_setup_for_testing(srs_size, &mut rng)
+                .unwrap()
         } else {
             // Unless we already have a local copy, read a remote perpetual powers of Tau file and save, then extract a KZG structured reference string
             universal_setup_for_production(MAX_KZG_DEGREE)

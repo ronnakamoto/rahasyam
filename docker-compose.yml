@@ -12,7 +12,7 @@ services:
       context: .
 
     stdin_open: true # keep stdin open, so we can print things in docker compose up
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: client does Plonk proving (no solc); build native arm64 on Apple Silicon (matches proposer/attestor).
     ports:
       - "3000:3000"
     healthcheck:
@@ -126,7 +126,7 @@ services:
       context: .
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     stdin_open: true # keep stdin open, so we can print things in docker compose up
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: client2 does Plonk proving (no solc); build native arm64 on Apple Silicon (matches proposer/attestor).
     ports:
       - "3002:3000"
     healthcheck:
@@ -379,6 +379,13 @@ services:
       # roadmap). Empty/unset would fall back to local signing with
       # nova_verifier.attestor_key.
       - NF4_NIGHTFALL_ATTESTOR__URL=${NF4_NIGHTFALL_ATTESTOR__URL:-http://attestor:3001}
+      # Route attestation through the t-of-N BLS committee when requested
+      # (e.g. NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2 with the `committee`
+      # profile). Defaults to 0, i.e. the single-attestor ECDSA path, so
+      # non-committee runs are unchanged. Without this passthrough the proposer
+      # only ever sees committee_threshold=0 from nightfall.toml and never
+      # aggregates BLS shares, even when the committee verifier is deployed.
+      - NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=${NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD:-0}
       # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
       # permutation polynomials each hold their own working buffer; with
       # 8+ logical CPUs (default in the container) peak RSS during the

@@ -13,7 +13,10 @@ RUN mkdir -p /var/www/html/configuration/toml
 COPY ./configuration/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy static files (if any go into /var/www/html/bin)
-COPY ./configuration/bin/keys/proving_key /var/www/html/
+# Directory copy tolerates the PLONK `proving_key` being absent (e.g. Nova-only
+# setups, which are the docker default). The directory always exists in the
+# build context via its tracked placeholder; any generated keys are included.
+COPY ./configuration/bin/keys/ /var/www/html/
 
 RUN chown -R nginx:nginx /var/www/html \     
     && chmod -R 755 /var/www/html  

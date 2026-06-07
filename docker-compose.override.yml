@@ -1,0 +1,46 @@
+# Local override (auto-loaded by `docker compose`) for Apple Silicon (M1/M2).
+#
+# Two distinct concerns:
+#
+# 1. Services that compile/run NO Solidity (proposer, client(s), attestors) are
+#    built NATIVE arm64 (platform pins commented out in docker-compose.yml).
+#    Native execution avoids QEMU entirely, so the heavy Nova/Plonk/blst proving
+#    runs at full speed and never hits the emulated-blst SIGILL. This is the
+#    single biggest performance win on Apple Silicon.
+#
+# 2. Services that DO run Solidity tooling/EVM (anvil, deployer) must stay
+#    linux/amd64, because the statically-linked amd64 `solc` works under
+#    emulation while the arm64 `solc` needs a newer glibc than the base images
+#    ship. Under amd64 emulation, `blst` (Foundry revm EIP-2537 precompiles and
+#    the on-chain BLS committee verification that anvil runs on every block)
+#    selects ADX/BMI2 from a misreported CPUID and SIGILLs. `QEMU_CPU=max` makes
+#    QEMU emulate those instructions in software so `blst` runs correctly.
+#    This requires amd64 to run under QEMU, not Rosetta (Rosetta does not
+#    emulate these instructions). If a Docker restart re-enables Rosetta, turn
+#    off "Use Rosetta for x86/amd64 emulation" in Docker Desktop > Settings >
+#    General (or disable the `rosetta`/`rosetta-wrapper` binfmt entries).
+services:
+  # --- amd64-emulated services that run Solidity/EVM: need QEMU_CPU=max -------
+  anvil:
+    environment:
+      - QEMU_CPU=max
+  deployer:
+    environment:
+      - QEMU_CPU=max
+  # The test runners are amd64 (light orchestration; keep QEMU_CPU=max as a
+  # belt-and-braces guard against any incidental blst use under emulation).
+  test:
+    environment:
+      - QEMU_CPU=max
+  sync_test:
+    environment:
+      - QEMU_CPU=max
+  proposer2:
+    environment:
+      - QEMU_CPU=max
+
+  # --- native-arm64 proving services: no QEMU; just give the proposer more -----
+  #     threads now that it runs natively (deposit/Nova proving is CPU-bound).
+  proposer:
+    environment:
+      - RAYON_NUM_THREADS=4
