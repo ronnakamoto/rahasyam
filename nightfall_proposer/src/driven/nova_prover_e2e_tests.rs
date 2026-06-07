@@ -46,6 +46,11 @@
 
 #![cfg(all(test, feature = "nova-v1"))]
 
+use crate::domain::entities::{ClientTransactionWithMetaData, TxLifecycle};
+use crate::ports::{
+    proving::RecursiveProvingEngine,
+    trees::{CommitmentTree, HistoricRootTree, NullifierTree},
+};
 use ark_bn254::Fr as Fr254;
 use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 use bson::doc;
@@ -56,11 +61,6 @@ use lib::{
     nf_client_proof::PublicInputs,
     proving::nova_v1::proof::{NovaClientProof, NovaProof},
     shared_entities::{ClientTransaction, DepositData},
-};
-use crate::domain::entities::{ClientTransactionWithMetaData, TxLifecycle};
-use crate::ports::{
-    proving::RecursiveProvingEngine,
-    trees::{CommitmentTree, HistoricRootTree, NullifierTree},
 };
 
 use serial_test::serial;
@@ -166,8 +166,8 @@ async fn reset_test_db(client: &mongodb::Client) {
         <mongodb::Client as CommitmentTree<Fr254>>::TREE_NAME,
         <mongodb::Client as HistoricRootTree<Fr254>>::TREE_NAME,
     ] {
-        let _ = <mongodb::Client as IndexedLeaves<Fr254>>::new_indexed_leaves_db(client, tree_id)
-            .await;
+        let _ =
+            <mongodb::Client as IndexedLeaves<Fr254>>::new_indexed_leaves_db(client, tree_id).await;
     }
     let _ = client.database(TEST_DB_NAME).drop().await;
     // Ping the primary so the connection pool's topology redraws
@@ -186,10 +186,8 @@ async fn reset_test_db(client: &mongodb::Client) {
             Ok(_) => break,
             Err(e) if attempt < 4 => {
                 eprintln!("reset_test_db: ping retry {attempt} ({e})");
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    100u64 * (1u64 << attempt),
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(100u64 * (1u64 << attempt)))
+                    .await;
             }
             Err(e) => panic!("reset_test_db: ping failed after 5 attempts: {e}"),
         }
@@ -347,14 +345,22 @@ impl<'a> OnChainCursor<'a> {
     }
 }
 
-fn parse_proof_like_on_chain(rollup_proof: &[u8]) -> (Vec<u8>, [u8; 32], [u8; 32], [u8; 32], usize) {
+fn parse_proof_like_on_chain(
+    rollup_proof: &[u8],
+) -> (Vec<u8>, [u8; 32], [u8; 32], [u8; 32], usize) {
     let mut c = OnChainCursor::new(rollup_proof);
     let snark_proof = c.read_vec();
     let commitments_root = c.read_root();
     let nullifiers_root = c.read_root();
     let historic_root_root = c.read_root();
     let tx_count = c.read_u64() as usize;
-    (snark_proof, commitments_root, nullifiers_root, historic_root_root, tx_count)
+    (
+        snark_proof,
+        commitments_root,
+        nullifiers_root,
+        historic_root_root,
+        tx_count,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +410,10 @@ async fn e2e_one_real_deposit_produces_valid_on_chain_blob() {
     let block = <E as RecursiveProvingEngine<NovaClientProof>>::prove_block(&deposits, &[])
         .await
         .expect("prove_block must succeed for a single real deposit chunk");
-    eprintln!("e2e: prove_block completed in {:.2}s", t_start.elapsed().as_secs_f64());
+    eprintln!(
+        "e2e: prove_block completed in {:.2}s",
+        t_start.elapsed().as_secs_f64()
+    );
 
     // --- On-chain parseProof assertion -----------------------------------
     let (snark_proof_bytes, comm, null, hist, tx_count) =
@@ -438,9 +447,18 @@ async fn e2e_one_real_deposit_produces_valid_on_chain_blob() {
         .to_bytes_be()
         .try_into()
         .expect("Fr254 to 32 bytes");
-    assert_eq!(comm, block_comm_bytes, "commitments_root must be the JF value");
-    assert_eq!(null, block_null_bytes, "nullifiers_root must be the JF value");
-    assert_eq!(hist, block_hist_bytes, "historic_root_root must be the JF value");
+    assert_eq!(
+        comm, block_comm_bytes,
+        "commitments_root must be the JF value"
+    );
+    assert_eq!(
+        null, block_null_bytes,
+        "nullifiers_root must be the JF value"
+    );
+    assert_eq!(
+        hist, block_hist_bytes,
+        "historic_root_root must be the JF value"
+    );
 
     // The on-chain `rollup_proof` blob is a bincode-encoded `NovaProof`
     // struct. Re-deserialise the entire blob and check the inner
@@ -455,12 +473,30 @@ async fn e2e_one_real_deposit_produces_valid_on_chain_blob() {
     // The cursor-read snark_proof bytes must match the decoded
     // inner snark_proof (the on-chain `_read_byte_vec` and the
     // proposer agree on the layout).
-    assert_eq!(snark_proof_bytes, decoded_rollup.snark_proof, "cursor-read snark_proof must match the decoded inner snark_proof");
+    assert_eq!(
+        snark_proof_bytes, decoded_rollup.snark_proof,
+        "cursor-read snark_proof must match the decoded inner snark_proof"
+    );
     // The decoded roots must equal the cursor-read roots.
-    assert_eq!(comm, decoded_rollup.commitments_root.as_slice(), "decoded commitments_root must match cursor");
-    assert_eq!(null, decoded_rollup.nullifiers_root.as_slice(), "decoded nullifiers_root must match cursor");
-    assert_eq!(hist, decoded_rollup.historic_root_root.as_slice(), "decoded historic_root_root must match cursor");
-    assert_eq!(tx_count, decoded_rollup.transaction_count, "decoded transaction_count must match cursor");
+    assert_eq!(
+        comm,
+        decoded_rollup.commitments_root.as_slice(),
+        "decoded commitments_root must match cursor"
+    );
+    assert_eq!(
+        null,
+        decoded_rollup.nullifiers_root.as_slice(),
+        "decoded nullifiers_root must match cursor"
+    );
+    assert_eq!(
+        hist,
+        decoded_rollup.historic_root_root.as_slice(),
+        "decoded historic_root_root must match cursor"
+    );
+    assert_eq!(
+        tx_count, decoded_rollup.transaction_count,
+        "decoded transaction_count must match cursor"
+    );
     // Avoid unused-variable warning for the snark_proof_bytes var.
     let _ = snark_proof_bytes;
 }
@@ -488,8 +524,7 @@ async fn e2e_two_blocks_with_transfer_hydrates_imt() {
     let chunk1 = make_real_plus_padding_chunk();
     let deposits1 = make_deposit_chunk(&chunk1);
     type E = lib::proving::nova_v1::rollup_engine::NovaRollupEngine;
-    <E as lib::proving::RecursiveProvingEngine<NovaClientProof>>::setup()
-        .expect("engine setup");
+    <E as lib::proving::RecursiveProvingEngine<NovaClientProof>>::setup().expect("engine setup");
     let block1 = <E as RecursiveProvingEngine<NovaClientProof>>::prove_block(&deposits1, &[])
         .await
         .expect("block 1 must prove");
@@ -503,18 +538,8 @@ async fn e2e_two_blocks_with_transfer_hydrates_imt() {
     let nullifier_value = Fr254::from(0xdeadbeefu64);
     let transfer_commit = Fr254::from(0x1000u64);
     let fee_commit = Fr254::from(0x2000u64);
-    let commitments = [
-        transfer_commit,
-        Fr254::zero(),
-        fee_commit,
-        Fr254::zero(),
-    ];
-    let nullifiers = [
-        nullifier_value,
-        Fr254::zero(),
-        Fr254::zero(),
-        Fr254::zero(),
-    ];
+    let commitments = [transfer_commit, Fr254::zero(), fee_commit, Fr254::zero()];
+    let nullifiers = [nullifier_value, Fr254::zero(), Fr254::zero(), Fr254::zero()];
     let mut hash_bytes = vec![0u8; 32];
     for b in hash_bytes.iter_mut() {
         *b = Fr254::rand(&mut rng).into_bigint().to_bytes_be()[0];
@@ -538,18 +563,26 @@ async fn e2e_two_blocks_with_transfer_hydrates_imt() {
         historic_roots: vec![],
     };
     let deposits2: Vec<(NovaClientProof, PublicInputs)> = vec![];
-    let block2 = <E as RecursiveProvingEngine<NovaClientProof>>::prove_block(&deposits2, &[client_tx])
-        .await
-        .expect("block 2 (transfer) must prove");
+    let block2 =
+        <E as RecursiveProvingEngine<NovaClientProof>>::prove_block(&deposits2, &[client_tx])
+            .await
+            .expect("block 2 (transfer) must prove");
     eprintln!("e2e: block 2 (transfer) proved");
 
     // Sanity: the on-chain parseProof cursor reads the JF roots for
     // both blocks. This is the assertion that would have caught the
     // "Neptune root leaks into the on-chain blob" regression.
-    let (snark2, _comm2, _null2, _hist2, tx_count2) = parse_proof_like_on_chain(&block2.rollup_proof);
-    assert_eq!(tx_count2, 4, "block 2 transaction_count must be 4 (1 transfer + 3 padding)");
+    let (snark2, _comm2, _null2, _hist2, tx_count2) =
+        parse_proof_like_on_chain(&block2.rollup_proof);
+    assert_eq!(
+        tx_count2, 4,
+        "block 2 transaction_count must be 4 (1 transfer + 3 padding)"
+    );
     assert!(!snark2.is_empty(), "block 2 snark_proof must be non-empty");
-    assert!(!block1.rollup_proof.is_empty(), "block 1 rollup_proof must be non-empty");
+    assert!(
+        !block1.rollup_proof.is_empty(),
+        "block 1 rollup_proof must be non-empty"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -622,9 +655,18 @@ fn e2e_root_rewrite_matches_on_chain_cursor() {
     let comm_fr = Fr254::from_be_bytes_mod_order(&comm);
     let null_fr = Fr254::from_be_bytes_mod_order(&null);
     let hist_fr = Fr254::from_be_bytes_mod_order(&hist);
-    assert_eq!(comm_fr, jf_comm, "commitments_root must be rewritten to the JF value");
-    assert_eq!(null_fr, jf_null, "nullifiers_root must be rewritten to the JF value");
-    assert_eq!(hist_fr, jf_hist, "historic_root_root must be rewritten to the JF value");
+    assert_eq!(
+        comm_fr, jf_comm,
+        "commitments_root must be rewritten to the JF value"
+    );
+    assert_eq!(
+        null_fr, jf_null,
+        "nullifiers_root must be rewritten to the JF value"
+    );
+    assert_eq!(
+        hist_fr, jf_hist,
+        "historic_root_root must be rewritten to the JF value"
+    );
 
     // The Neptune sentinels must not appear anywhere in the wire blob.
     assert!(!rollup_proof.windows(2).any(|w| w == [0xaa, 0xbb]));

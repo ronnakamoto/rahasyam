@@ -49,7 +49,12 @@ nova_dynamic_block_size = true
 
 [development.nightfall_proposer.proving_system]
 active = "nova-v1"
-enabled = ["nova-v1"]
+# `nova-bls-v1` (id 3) is deployed alongside `nova-v1` (id 2) for the dual-gate.
+# The proposer only USES the committee when `nova_verifier.committee_threshold > 0`
+# (default 0 => ECDSA single-attestor path, unchanged). Activate the committee by
+# setting `NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2` and starting the `committee`
+# compose profile (attestor2/attestor3).
+enabled = ["nova-v1", "nova-bls-v1"]
 
 [development.verifier]
 # VK values that the UUPS provider will initialize with
@@ -136,14 +141,48 @@ commitment_scheme = 1
 # accepts them. Address: 0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f
 attestor_key = "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97"
 
+# --- BLS attestor committee (plan B3, opt-in) -----------------------------
+# Deterministic dev keyset: cargo run -p lib --features nova-bls \
+#   --example bls_committee_keygen -- 3 deterministic
+# committee_threshold = 0 keeps the proposer on the single-attestor ECDSA path
+# (no behavioural change). Set to 2 (e.g. NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD)
+# to route attestation through the t-of-N committee. The committee_verifier
+# address is auto-propagated from deployment (addresses.toml); members are
+# listed in on-chain registry order (bitmap bit i -> pubkeys[i]).
+committee_threshold = 0
+committee_members = [
+  { url = "http://attestor:3001", pubkey = "0x00000000000000000000000000000000180a2895dc15b6ce9ad1b3e8057c4a6210581b4e51d2007deb8d56fa5b0b1138b6871e72890d81f35b15695c00d09ab70000000000000000000000000000000008d49e57c9da6149bc04f31daf336a7e5f984e1bebb52df86cfb58571563557eef79d9d41ebc165af9924900f247ee75" },
+  { url = "http://attestor2:3001", pubkey = "0x0000000000000000000000000000000016397433c29968732f191af2733b2eb99205cecdf86f7449ef7db36a6e825e6a57ec176a5c061223f38a2fa9cdd78f59000000000000000000000000000000000aa85bb47f9044c89ecbb63327d256ee5214070a1fbaccea2d15fac4010480907dfa67983e8e511e502870a473569ce9" },
+  { url = "http://attestor3:3001", pubkey = "0x0000000000000000000000000000000005b704b363b233fa86194198286af32b804f47ef088ba07898bcadfbe29f084e4264c445f95016a611baf9158039a746000000000000000000000000000000000ddcda38ea8ca5f290aa6fbc2dbe3e9230ca2b8546e2bfc9658a7ddf59981943bba36a8f1f66652387365e54bca0660a" },
+]
+
+# Consumed by the deploy script (_deployNovaCommitteeVerifier): registers each
+# attestor with its proof-of-possession and the on-chain threshold (router id 3).
+[development.nova_committee]
+threshold = 2
+pubkeys = [
+  "0x00000000000000000000000000000000180a2895dc15b6ce9ad1b3e8057c4a6210581b4e51d2007deb8d56fa5b0b1138b6871e72890d81f35b15695c00d09ab70000000000000000000000000000000008d49e57c9da6149bc04f31daf336a7e5f984e1bebb52df86cfb58571563557eef79d9d41ebc165af9924900f247ee75",
+  "0x0000000000000000000000000000000016397433c29968732f191af2733b2eb99205cecdf86f7449ef7db36a6e825e6a57ec176a5c061223f38a2fa9cdd78f59000000000000000000000000000000000aa85bb47f9044c89ecbb63327d256ee5214070a1fbaccea2d15fac4010480907dfa67983e8e511e502870a473569ce9",
+  "0x0000000000000000000000000000000005b704b363b233fa86194198286af32b804f47ef088ba07898bcadfbe29f084e4264c445f95016a611baf9158039a746000000000000000000000000000000000ddcda38ea8ca5f290aa6fbc2dbe3e9230ca2b8546e2bfc9658a7ddf59981943bba36a8f1f66652387365e54bca0660a",
+]
+pops = [
+  "0x000000000000000000000000000000000340fe70ffb08d85476e3123d1a47249e44c2335e0c892bc147e3735d289a99583c3da0bf8ff486d864c3b2dd47589500000000000000000000000000000000009780f2f5feff3bc65d75978fe2e1ba0debc2aaa2c75be857da4cdf38740c4b2dfeec97e7e3e3a5decba2e58087145b000000000000000000000000000000000063a7bdc8915ff1753612ca122ce50f1589d1974112d003c6c0b3a71c46e6373f928c9abb38f436aca17174bf25ddaba000000000000000000000000000000000e3392d8e0f8905a007d77750ace67a896f06507f3d4eebc642c8264c0ec5b80bc29133ccb19df654e8ed4281990137f",
+  "0x00000000000000000000000000000000137db81b629949b2c1304591425106ac30473e4042ad140ec143ce433eefbfc58d9bd378ec47c0923972683a05375c2a000000000000000000000000000000000675a101e566ce660ba4c3a983ca2019c30141be339d940f8c3604a04bce3b4e7a756693a0cd5269a8124a2dbf29d8df000000000000000000000000000000000d01df145b2d37901ac99941beb4c62ace715347b229df74b6a4f12c2335ac42557c0746b0f5d49949945bf654a1aff2000000000000000000000000000000000bfe2b21f3819b5ddc49940c139548bff3d1fec31933c3999508e42b5cbedbf94cde197b7a99334f28966de176212b51",
+  "0x0000000000000000000000000000000012a6bbe764a05b0e34a82cf051ddce11fe68976f226d55fe73a1ef63598c65ccdfb754b068a4bc568d76dbce3d1c3d1f0000000000000000000000000000000017b58e59ecbe542f4f4bfd7c25b42353a74c05206ccf5129a010c67821d559716c2753bb08610c639186b05ddc5ceff60000000000000000000000000000000002cc2e2e52ec337670611d3db647db08d5aee66987cfc838731f3ee3388b69fd375378e063e7a2e71d45321e3c28d649000000000000000000000000000000000d6f98094bfd63310c9c58b75da39133e9822cbb17e2ad2fd3a65032178db2842dcee16e4ea7404c92d21b92789bcbc3",
+]
+
 [development.nightfall_test]
 log_level = "info"
 
 [development.nightfall_attestor]
-# Standalone Nova attestation service. Leave `url` empty to keep the
-# proposer signing locally with nova_verifier.attestor_key (default dev
-# path used by nf4_test). Set e.g. "http://attestor:3001" to delegate
-# attestation to a separately-keyed service.
+# Standalone Nova attestation service. This `url` default is empty, which
+# would make the proposer sign locally with nova_verifier.attestor_key.
+# NOTE: the docker-compose `development` profile OVERRIDES this via
+# `NF4_NIGHTFALL_ATTESTOR__URL` (default `http://attestor:3001`), so the
+# containerised nf4_test run delegates attestation to the standalone
+# `attestor` service (which mounts the Nova keys and runs the sound
+# CompressedSNARK::verify before signing). Leave empty only for non-docker
+# runs where the proposer should sign locally.
 url = ""
 log_level = "info"
 bind = "0.0.0.0:3001"

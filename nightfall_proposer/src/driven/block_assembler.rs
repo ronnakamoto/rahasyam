@@ -324,8 +324,7 @@ impl TryFrom<Nightfall::Block> for Block {
         let proof_system_id = if proof_bytes.is_empty() {
             lib::proving::ProofSystemId::default()
         } else {
-            lib::proving::ProofSystemId::from_u8(proof_bytes[0])
-                .unwrap_or_default()
+            lib::proving::ProofSystemId::from_u8(proof_bytes[0]).unwrap_or_default()
         };
 
         let proof_content = if proof_bytes.is_empty() {

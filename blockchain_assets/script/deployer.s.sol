@@ -13,6 +13,7 @@ import "../contracts/X509/Sha.sol";
 import "../contracts/proof_verification/MockVerifier.sol";
 import "../contracts/proof_verification/plonk_v1/RollupProofVerifier.sol";
 import "../contracts/proof_verification/nova_v1/NovaRollupVerifier.sol";
+import "../contracts/proof_verification/nova_v1/NovaCommitteeVerifier.sol";
 import "../contracts/proof_verification/ProofSystemRouter.sol";
 import "../contracts/proof_verification/IRollupVerifier.sol";
 import "../contracts/proof_verification/IVKProvider.sol";
@@ -218,6 +219,10 @@ contract Deployer is Script {
                 IRollupVerifier novaVerifier = _deployNovaVerifier(toml, mockProver);
                 router.register(2, novaVerifier);
                 console.log("Registered NovaV1 verifier at:", address(novaVerifier));
+            } else if (keccak256(abi.encodePacked(enabledPs[i])) == keccak256(abi.encodePacked("nova-bls-v1"))) {
+                IRollupVerifier novaCommittee = _deployNovaCommitteeVerifier(toml, mockProver, owners);
+                router.register(3, novaCommittee);
+                console.log("Registered NovaBlsV1 committee verifier at:", address(novaCommittee));
             }
         }
 
@@ -257,6 +262,49 @@ contract Deployer is Script {
         _configureNovaAttestor(novaImpl, toml);
 
         return IRollupVerifier(address(novaImpl));
+    }
+
+    /// @notice Deploy and configure the BLS12-381 committee verifier
+    /// (`NovaBlsV1`, router id 3): register each attestor's pubkey with its
+    /// proof-of-possession and set the `t-of-N` threshold. Committee keys/PoPs
+    /// are produced off-chain (`cargo run -p lib --features nova-bls --example
+    /// bls_committee_keygen`) and supplied via `[{runMode}.nova_committee]`
+    /// (`pubkeys`, `pops`, `threshold`).
+    function _deployNovaCommitteeVerifier(
+        string memory toml,
+        bool mockProver,
+        Owners memory owners
+    ) internal returns (IRollupVerifier) {
+        if (mockProver) {
+            return new MockVerifier();
+        }
+
+        // Owner = deployer so the registration calls below pass `onlyOwner`
+        // within this broadcast; transferred to the verifier owner afterwards.
+        NovaCommitteeVerifier committee = new NovaCommitteeVerifier(owners.deployer);
+
+        string[] memory pubkeys = toml.readStringArray(
+            string.concat(runMode, ".nova_committee.pubkeys")
+        );
+        string[] memory pops = toml.readStringArray(
+            string.concat(runMode, ".nova_committee.pops")
+        );
+        require(pubkeys.length == pops.length, "committee pubkeys/pops length mismatch");
+
+        for (uint256 j = 0; j < pubkeys.length; j++) {
+            committee.addAttestor(vm.parseBytes(pubkeys[j]), vm.parseBytes(pops[j]));
+        }
+
+        uint256 t = toml.readUint(string.concat(runMode, ".nova_committee.threshold"));
+        committee.setThreshold(t);
+        console.log("Committee verifier registered attestors:", pubkeys.length);
+        console.log("Committee verifier threshold:", t);
+
+        if (owners.verifierOwner != owners.deployer && owners.verifierOwner != address(0)) {
+            committee.transferOwnership(owners.verifierOwner);
+        }
+
+        return IRollupVerifier(address(committee));
     }
 
     /// @notice Derive the Nova attestor address from the configured

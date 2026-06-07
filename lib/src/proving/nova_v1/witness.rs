@@ -38,7 +38,7 @@ use super::commitment_tree::{
     InMemoryCommitmentStorage, InMemoryNullifierStorage, NeptuneCommitmentTree, NeptuneIMT,
 };
 use super::merkle::{ImtInsertionWitness, ImtNonInclusionWitness};
-use super::rollup_engine::{E1, F1, RollupCircuit};
+use super::rollup_engine::{RollupCircuit, E1, F1};
 
 /// The off-chain Neptune commitment tree / nullifier IMT depth. Matches
 /// the on-chain value used in `compute_initial_z0` and the DB
@@ -189,11 +189,7 @@ pub fn build_rollup_circuits(inputs: &RollupWitnessInputs) -> RollupWitness {
     let pre_nullifiers_root = null_imt.root();
 
     let mut circuits = Vec::with_capacity(inputs.commitments.len());
-    for (&commitment, &nullifier) in inputs
-        .commitments
-        .iter()
-        .zip(inputs.nullifiers.iter())
-    {
+    for (&commitment, &nullifier) in inputs.commitments.iter().zip(inputs.nullifiers.iter()) {
         // MEMORY OPTIMISATION: For padding transactions (nullifier is
         // zero), skip the expensive 32-depth Neptune tree operations
         // entirely. The gadgets in `RollupStepCircuit` are gated off
@@ -330,11 +326,7 @@ mod tests {
     #[test]
     fn single_step_yields_one_circuit_and_nonzero_roots() {
         let historic_root = F1::from(0u64);
-        let inputs = RollupWitnessInputs::new(
-            &[F1::from(42u64)],
-            &[F1::from(7u64)],
-            historic_root,
-        );
+        let inputs = RollupWitnessInputs::new(&[F1::from(42u64)], &[F1::from(7u64)], historic_root);
         let witness = build_rollup_circuits(&inputs);
         assert_eq!(witness.circuits.len(), 1);
         assert!(!witness.circuits[0].is_padding);
@@ -407,11 +399,7 @@ mod tests {
         // a different post-state IMT root. The pre-block state is
         // the only thing that differs, so any difference is
         // attributable to the prior-nullifier hydration.
-        let empty_inputs = RollupWitnessInputs::new(
-            &commitments,
-            &nullifiers,
-            historic_root,
-        );
+        let empty_inputs = RollupWitnessInputs::new(&commitments, &nullifiers, historic_root);
         let empty_witness = build_rollup_circuits(&empty_inputs);
         assert_ne!(
             witness.new_nullifiers_root, empty_witness.new_nullifiers_root,
@@ -512,8 +500,17 @@ mod tests {
         assert_eq!(witness.circuits.len(), 3);
         // Verify the per-step low-leaf assignments use the prior
         // values, not the zero leaf.
-        assert_eq!(witness.circuits[0].nullifier_witness.low_value, F1::from(15u64));
-        assert_eq!(witness.circuits[1].nullifier_witness.low_value, F1::from(25u64));
-        assert_eq!(witness.circuits[2].nullifier_witness.low_value, F1::from(5u64));
+        assert_eq!(
+            witness.circuits[0].nullifier_witness.low_value,
+            F1::from(15u64)
+        );
+        assert_eq!(
+            witness.circuits[1].nullifier_witness.low_value,
+            F1::from(25u64)
+        );
+        assert_eq!(
+            witness.circuits[2].nullifier_witness.low_value,
+            F1::from(5u64)
+        );
     }
 }

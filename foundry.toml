@@ -12,7 +12,7 @@ cache_path = "blockchain_assets/cache"
 broadcast = "blockchain_assets/logs"
 gas_reports = ["Nightfall"]
 fs_permissions = [{ access = "read-write", path = "./" }]
-evm_version = "cancun"
+evm_version = "prague"
 remappings = [
     "@openzeppelin/contracts/=blockchain_assets/solidity_lib/openzeppelin-contracts/contracts/",
     "@forge-std/=blockchain_assets/solidity_lib/forge-std/src/",

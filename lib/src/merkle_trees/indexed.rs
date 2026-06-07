@@ -491,8 +491,13 @@ where
                 .insert_nullifiers_for_circuit(leaf_chunk, tree_id)
                 .await?;
             circuit_infos.push(circuit_info);
-            log::info!("[batch_insert_nullifiers] tree={}: chunk {}/{} completed in {:.2}s",
-                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
+            log::info!(
+                "[batch_insert_nullifiers] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id,
+                idx + 1,
+                total_chunks,
+                step_start.elapsed().as_secs_f64()
+            );
         }
         Ok(circuit_infos)
     }
@@ -704,10 +709,7 @@ impl<F: PrimeField + PoseidonParams> IndexedLeaves<F> for mongodb::Client {
         Ok(())
     }
 
-    async fn get_all_leaves(
-        &self,
-        tree_id: &str,
-    ) -> Result<Vec<IndexedLeaf<F>>, Self::Error> {
+    async fn get_all_leaves(&self, tree_id: &str) -> Result<Vec<IndexedLeaf<F>>, Self::Error> {
         let collection_name = format!("{}_{}", tree_id, "indexed_leaves");
         let db = self.database(<Self as IndexedLeaves<F>>::DB);
         let collection = db.collection::<IndexedLeaf<F>>(&collection_name);
@@ -716,7 +718,11 @@ impl<F: PrimeField + PoseidonParams> IndexedLeaves<F> for mongodb::Client {
             .await
             .map_err(MerkleTreeError::DatabaseError)?;
         let mut out = Vec::new();
-        while let Some(leaf) = cursor.try_next().await.map_err(MerkleTreeError::DatabaseError)? {
+        while let Some(leaf) = cursor
+            .try_next()
+            .await
+            .map_err(MerkleTreeError::DatabaseError)?
+        {
             out.push(leaf);
         }
         Ok(out)

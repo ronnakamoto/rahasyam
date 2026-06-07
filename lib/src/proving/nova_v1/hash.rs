@@ -38,8 +38,8 @@ use ff::PrimeField;
 use generic_array::typenum::U2;
 use nova_snark::frontend::{
     gadgets::poseidon::{
-        Elt, IOPattern, PoseidonConstants, Simplex, Sponge, SpongeAPI, SpongeCircuit,
-        SpongeOp, SpongeTrait, Strength,
+        Elt, IOPattern, PoseidonConstants, Simplex, Sponge, SpongeAPI, SpongeCircuit, SpongeOp,
+        SpongeTrait, Strength,
     },
     num::AllocatedNum,
     ConstraintSystem, SynthesisError,
@@ -60,11 +60,7 @@ pub fn poseidon_constants<F: PrimeField>() -> PoseidonConstants<F, U2> {
 // ---------------------------------------------------------------------------
 
 /// Native arity-2 Poseidon hash: `out = H(a, b)`.
-pub fn poseidon_hash2_native<F: PrimeField>(
-    constants: &PoseidonConstants<F, U2>,
-    a: F,
-    b: F,
-) -> F {
+pub fn poseidon_hash2_native<F: PrimeField>(constants: &PoseidonConstants<F, U2>, a: F, b: F) -> F {
     let mut sponge = Sponge::<F, U2>::new_with_constants(constants, Simplex);
     let acc = &mut ();
     let pattern = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
@@ -185,15 +181,20 @@ mod tests {
         let native = poseidon_hash2_native(&constants, a, b);
 
         let mut cs = TestConstraintSystem::<F>::new();
-        let a_alloc =
-            AllocatedNum::alloc_infallible(cs.namespace(|| "a"), || a);
-        let b_alloc =
-            AllocatedNum::alloc_infallible(cs.namespace(|| "b"), || b);
-        let out =
-            poseidon_hash2_circuit(&constants, cs.namespace(|| "hash"), &a_alloc, &b_alloc)
-                .unwrap();
-        assert!(cs.is_satisfied(), "circuit unsatisfied: {:?}", cs.which_is_unsatisfied());
-        assert_eq!(out.get_value().unwrap(), native, "circuit hash != native hash");
+        let a_alloc = AllocatedNum::alloc_infallible(cs.namespace(|| "a"), || a);
+        let b_alloc = AllocatedNum::alloc_infallible(cs.namespace(|| "b"), || b);
+        let out = poseidon_hash2_circuit(&constants, cs.namespace(|| "hash"), &a_alloc, &b_alloc)
+            .unwrap();
+        assert!(
+            cs.is_satisfied(),
+            "circuit unsatisfied: {:?}",
+            cs.which_is_unsatisfied()
+        );
+        assert_eq!(
+            out.get_value().unwrap(),
+            native,
+            "circuit hash != native hash"
+        );
     }
 
     /// `H(a, b, c)` must produce the same field element natively and in-circuit.
@@ -210,10 +211,19 @@ mod tests {
         let a_alloc = AllocatedNum::alloc_infallible(cs.namespace(|| "a"), || a);
         let b_alloc = AllocatedNum::alloc_infallible(cs.namespace(|| "b"), || b);
         let c_alloc = AllocatedNum::alloc_infallible(cs.namespace(|| "c"), || c);
-        let out =
-            poseidon_hash3_circuit(&constants, cs.namespace(|| "hash"), &a_alloc, &b_alloc, &c_alloc)
-                .unwrap();
-        assert!(cs.is_satisfied(), "circuit unsatisfied: {:?}", cs.which_is_unsatisfied());
+        let out = poseidon_hash3_circuit(
+            &constants,
+            cs.namespace(|| "hash"),
+            &a_alloc,
+            &b_alloc,
+            &c_alloc,
+        )
+        .unwrap();
+        assert!(
+            cs.is_satisfied(),
+            "circuit unsatisfied: {:?}",
+            cs.which_is_unsatisfied()
+        );
         assert_eq!(out.get_value().unwrap(), native);
     }
 

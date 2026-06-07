@@ -1,12 +1,12 @@
-use ark_serialize::SerializationError;
 use alloy::primitives::Bytes;
+use ark_serialize::SerializationError;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 
 use crate::nf_client_proof::Proof;
-use crate::proving::RecursiveProvingEngine;
 use crate::proving::ProofSystemId;
+use crate::proving::RecursiveProvingEngine;
 use crate::shared_entities::DepositData;
 use crate::shared_entities::OnChainTransaction;
 
@@ -23,8 +23,7 @@ impl Proof for PlonkBlockProof {
     }
 
     fn from_compressed(compressed: Bytes) -> Result<Self, SerializationError> {
-        bincode::deserialize(&compressed)
-            .map_err(|_| SerializationError::InvalidData)
+        bincode::deserialize(&compressed).map_err(|_| SerializationError::InvalidData)
     }
 
     fn system_id() -> ProofSystemId {

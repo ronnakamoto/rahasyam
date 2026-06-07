@@ -12,7 +12,7 @@ services:
       context: .
 
     stdin_open: true # keep stdin open, so we can print things in docker compose up
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: client does Plonk proving (no solc); build native arm64 on Apple Silicon (matches proposer/attestor).
     ports:
       - "3000:3000"
     healthcheck:
@@ -126,7 +126,7 @@ services:
       context: .
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     stdin_open: true # keep stdin open, so we can print things in docker compose up
-    platform: linux/amd64 # Required for building on M1 Macs
+    # platform: linux/amd64 # Commented out: client2 does Plonk proving (no solc); build native arm64 on Apple Silicon (matches proposer/attestor).
     ports:
       - "3002:3000"
     healthcheck:
@@ -209,6 +209,12 @@ services:
         source: address_data
         target: /app/configuration/toml
         read_only: true
+      # The attestor now runs the sound `CompressedSNARK::verify` before
+      # signing, so it needs the same pre-generated Nova public params +
+      # Spartan verifying key the proposer uses. Mounted read-only: the
+      # keys are pre-generated on the host and must match the proposer's
+      # byte-for-byte (a mismatched VK would make verification fail).
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
     depends_on:
       anvil:
         condition: service_healthy
@@ -220,12 +226,110 @@ services:
       - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
       - RUST_LOG=${RUST_LOG:-info}
+      # Point the Nova key loader at the mounted, pre-generated key cache
+      # (same value the proposer uses) so the attestor loads — rather than
+      # regenerates — the public params + Spartan VK for verification.
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
       # The attestation service signs with nova_verifier.attestor_key
       # (from nightfall.toml). It holds NO transaction-sending key.
+      # BLS committee member 0 key (dev deterministic keyset). Inert unless the
+      # committee verifier is deployed AND the proposer's committee_threshold>0.
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR0_BLS_SK:-0x07ac62fff1c1fa60f7fc960a9b50282c95c31f7ce5fb8b8c816602c7fab36c8c}
     deploy:
       resources:
         limits:
-          memory: 2G
+          # Must hold the deserialized Nova public params + Spartan VK
+          # (~100 MB on disk, larger in memory) plus the verify working
+          # set. Higher than the previous 2 GB, which only covered the
+          # Stage-1 structural-only signer. Tune down if headroom allows.
+          memory: 8G
+
+  # --- BLS committee members 1 & 2 (opt-in `committee` profile) -------------
+  # Start alongside the dev stack to run a 2-of-3 committee:
+  #   docker compose --profile development --profile committee up
+  # Then activate aggregation on the proposer with
+  #   NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2
+  attestor2:
+    container_name: nf4_attestor2
+    stop_grace_period: 3s
+    profiles:
+      - committee
+    build:
+      dockerfile: nightfall_attestor/Dockerfile
+      context: .
+    ports:
+      - "3005:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/v1/health" ]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+      start_period: 0s
+    networks:
+      - nightfall_network
+    volumes:
+      - type: volume
+        source: address_data
+        target: /app/configuration/toml
+        read_only: true
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+    environment:
+      - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      - RUST_LOG=${RUST_LOG:-info}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      # BLS committee member 1 key (dev deterministic keyset).
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR1_BLS_SK:-0x2708164e71627b7e217312ad4c1853d56346304332056a497b8d0f218f904295}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  attestor3:
+    container_name: nf4_attestor3
+    stop_grace_period: 3s
+    profiles:
+      - committee
+    build:
+      dockerfile: nightfall_attestor/Dockerfile
+      context: .
+    ports:
+      - "3006:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/v1/health" ]
+      interval: 5s
+      timeout: 30s
+      retries: 10
+      start_period: 0s
+    networks:
+      - nightfall_network
+    volumes:
+      - type: volume
+        source: address_data
+        target: /app/configuration/toml
+        read_only: true
+      - ./configuration/bin/nova_keys:/app/configuration/bin/nova_keys:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+    environment:
+      - NF4_RUN_MODE=${NF4_RUN_MODE:-development}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+      - RUST_LOG=${RUST_LOG:-info}
+      - NF4_NOVA_KEY_DIR=/app/configuration/bin/nova_keys
+      # BLS committee member 2 key (dev deterministic keyset).
+      - NF4_NOVA_VERIFIER__BLS_SECRET_KEY=${ATTESTOR2_BLS_SK:-0x44cfcd8d4dc5e3f74c5773240d4d451a2536b551463b6493bdc81c9e3a579704}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
 
   proposer:
     container_name: nf4_proposer
@@ -275,6 +379,13 @@ services:
       # roadmap). Empty/unset would fall back to local signing with
       # nova_verifier.attestor_key.
       - NF4_NIGHTFALL_ATTESTOR__URL=${NF4_NIGHTFALL_ATTESTOR__URL:-http://attestor:3001}
+      # Route attestation through the t-of-N BLS committee when requested
+      # (e.g. NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2 with the `committee`
+      # profile). Defaults to 0, i.e. the single-attestor ECDSA path, so
+      # non-committee runs are unchanged. Without this passthrough the proposer
+      # only ever sees committee_threshold=0 from nightfall.toml and never
+      # aggregates BLS shares, even when the committee verifier is deployed.
+      - NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=${NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD:-0}
       # Cap rayon parallelism. The arkworks / jf-plonk parallel FFTs and
       # permutation polynomials each hold their own working buffer; with
       # 8+ logical CPUs (default in the container) peak RSS during the
@@ -528,7 +639,6 @@ services:
         nofile:
           soft: 65536
           hard: 65536
-    platform: linux/amd64 # Required for building on M1 Macs
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     networks:
       - nightfall_network
@@ -553,6 +663,7 @@ services:
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
       - CLIENT_ADDRESS=${CLIENT_ADDRESS}
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
+      - NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=${NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD:-2}
       - AZURE_VAULT_URL=${AZURE_VAULT_URL}
       - DEPLOYER_SIGNING_KEY_NAME=${DEPLOYER_SIGNING_KEY_NAME}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
@@ -567,7 +678,6 @@ services:
     build:
       dockerfile: nightfall_deployer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     networks:
       - nightfall_network
@@ -644,6 +754,7 @@ services:
 
   anvil:
     container_name: anvil
+    hostname: anvil
     stop_grace_period: 3s
     profiles:
       - development
@@ -653,9 +764,8 @@ services:
     build:
       dockerfile: anvil/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
     healthcheck:
-      test: [ "CMD", "curl", "-H", "Content-Type:", "application/json", "-X", "POST", "--data", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "0.0.0.0:8545" ]
+      test: [ "CMD", "curl", "-sfX", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "http://0.0.0.0:8545" ]
       interval: 10s
       timeout: 90s
       retries: 10

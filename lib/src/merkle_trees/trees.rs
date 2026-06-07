@@ -348,10 +348,7 @@ pub trait IndexedLeaves<F: PrimeField> {
     /// `{tree_id}_indexed_leaves` MongoDB collection and is the only
     /// API the Nova proposer needs to hydrate its in-memory Neptune
     /// IMT from the JF nullifier tree.
-    async fn get_all_leaves(
-        &self,
-        tree_id: &str,
-    ) -> Result<Vec<IndexedLeaf<F>>, Self::Error>;
+    async fn get_all_leaves(&self, tree_id: &str) -> Result<Vec<IndexedLeaf<F>>, Self::Error>;
 }
 
 pub mod helper_functions {
@@ -386,11 +383,7 @@ pub mod helper_functions {
     ///   /     \         /     \           /     \               /     \
     /// 7       8        9      10         11     12             13     14
     /// This tree has a height of 3 (4 rows).
-    pub fn make_complete_tree<N>(
-        height: u32,
-        hasher: &impl TreeHasher<N>,
-        leaves: &[N],
-    ) -> Vec<N>
+    pub fn make_complete_tree<N>(height: u32, hasher: &impl TreeHasher<N>, leaves: &[N]) -> Vec<N>
     where
         N: PrimeField,
     {

@@ -841,8 +841,13 @@ where
                 .await
                 .expect("Could not insert for circuit");
             circuit_infos.push(circuit_info);
-            log::info!("[batch_insert_with_circuit_info] tree={}: chunk {}/{} completed in {:.2}s",
-                tree_id, idx + 1, total_chunks, step_start.elapsed().as_secs_f64());
+            log::info!(
+                "[batch_insert_with_circuit_info] tree={}: chunk {}/{} completed in {:.2}s",
+                tree_id,
+                idx + 1,
+                total_chunks,
+                step_start.elapsed().as_secs_f64()
+            );
         }
         Ok(circuit_infos)
     }

@@ -28,7 +28,9 @@ fn merge_key_counts(block_size: u64) -> anyhow::Result<(usize, usize)> {
 }
 
 fn ensure_plonk_real_prover_keys_exist(settings: &Settings) -> anyhow::Result<()> {
-    let keys_dir = std::env::current_dir()?.join("configuration").join("bin/keys");
+    let keys_dir = std::env::current_dir()?
+        .join("configuration")
+        .join("bin/keys");
     let (bn254_merge_count, grumpkin_merge_count) =
         merge_key_counts(settings.nightfall_proposer.block_size)?;
 
@@ -81,7 +83,7 @@ fn prepare_verifier_material(settings: &Settings) -> anyhow::Result<()> {
             let vk = RollupProver::get_decider_vk();
             let _ = write_vk_to_nightfall_toml(&vk);
         }
-        ProvingSystemIdConfig::NovaV1 => {
+        ProvingSystemIdConfig::NovaV1 | ProvingSystemIdConfig::NovaBlsV1 => {
             let nova_keys_dir = ensure_nova_keys_directory()?;
             info!(
                 "Active proving system is NovaV1; skipping PLONK decider_vk wiring. Nova key cache path: {}",
@@ -132,6 +134,8 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                     map.insert("verifier", addr);
                 } else if prev.contains("NovaRollupVerifier") {
                     map.insert("nova_verifier", addr);
+                } else if prev.contains("NovaCommitteeVerifier") {
+                    map.insert("committee_verifier", addr);
                 }
             }
         }
@@ -142,7 +146,12 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                 let addr: Address = addr_s.parse()?;
                 if cname.contains("ProofSystemRouter") && !map.contains_key("verifier") {
                     map.insert("verifier", addr);
-                } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier") {
+                } else if cname.contains("NovaCommitteeVerifier")
+                    && !map.contains_key("committee_verifier")
+                {
+                    map.insert("committee_verifier", addr);
+                } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier")
+                {
                     map.insert("nova_verifier", addr);
                 }
             }
@@ -174,9 +183,14 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
 
     prepare_verifier_material(settings)?;
 
-    // Force a clean rebuild to generate proper build-info files for OpenZeppelin validation
+    // Force a clean rebuild to generate complete build-info files for OpenZeppelin validation.
+    // `forge build --force` can still leave stale/partial artifacts around, which makes
+    // @openzeppelin/foundry-upgrades fail during the deployment script.
+    info!("Cleaning contract artifacts with forge");
+    forge_command(&["clean"]);
+
     info!("Building contracts with forge");
-    forge_command(&["build", "--force"]);
+    forge_command(&["build"]);
 
     info!("Deploying contracts with forge script");
     forge_command(&[
@@ -204,6 +218,7 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
         x509: Address::ZERO,
         verifier: Address::ZERO,
         nova_verifier: Address::ZERO,
+        committee_verifier: Address::ZERO,
     };
     // -------- replace with *proxy* addresses from broadcast --------
     match proxies_from_broadcast(&path_out) {
@@ -222,6 +237,9 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
             }
             if let Some(a) = proxy_map.get("nova_verifier") {
                 addresses.nova_verifier = *a;
+            }
+            if let Some(a) = proxy_map.get("committee_verifier") {
+                addresses.committee_verifier = *a;
             }
             if settings.mock_prover {
                 if addresses.nightfall == Address::ZERO
@@ -329,8 +347,12 @@ pub fn forge_command(command: &[&str]) {
                     String::from_utf8_lossy(&o.stdout)
                 );
             } else {
+                let signal_hint = match o.status.signal() {
+                    Some(4) => "\nProcess was terminated by SIGILL (illegal instruction). If this is running under Docker on Apple Silicon, rebuild/run the deployer for the host-native architecture instead of forcing linux/amd64.",
+                    _ => "",
+                };
                 panic!(
-                "Command 'forge {:?}' executed with failing error code: {:?}\nStandard Output: {}\nStandard Error: {}",
+                "Command 'forge {:?}' executed with failing error code: {:?}{signal_hint}\nStandard Output: {}\nStandard Error: {}",
                 command,
                 o.status,
                 String::from_utf8_lossy(&o.stdout),

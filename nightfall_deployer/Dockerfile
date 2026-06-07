@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1-labs
-FROM ghcr.io/foundry-rs/foundry:v1.1.0 AS foundry
+FROM ghcr.io/foundry-rs/foundry:v1.3.1 AS foundry
 FROM rust:1.88.0 AS builder
 
 COPY ./configuration/trust/ZscalerRootCertificate-2048-SHA256-Feb2025.pem /usr/local/share/ca-certificates/zscaler-root-feb2025.crt
@@ -7,12 +7,10 @@ RUN chmod 644 /usr/local/share/ca-certificates/zscaler-root-feb2025.crt && updat
 
 WORKDIR /app
 RUN mkdir -p bin
-COPY --from=foundry /usr/local/bin/forge ./forge
 COPY --exclude=configuration/bin/*  . .
 RUN mkdir -p configuration/bin/keys configuration/bin/nova_keys
-COPY configuration/bin/keys/proving_key configuration/bin/keys/proving_key
+COPY configuration/bin/keys/ configuration/bin/keys/
 COPY configuration/bin/nova_key[s]/ configuration/bin/nova_keys/
-ENV PATH=/app:$PATH
 RUN --mount=type=cache,id=cargo-registry-v4,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git-v4,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=cargo-target-client-v4,target=/app/target,sharing=private \

@@ -52,8 +52,8 @@ pub mod nova_step_circuit {
     use crate::proving::nova_v1::{
         hash::poseidon_constants,
         merkle::{
-            verify_imt_insertion_circuit, verify_imt_non_inclusion_circuit,
-            verify_merkle_inclusion_circuit, enforce_path_index, AllocatedImtInsertion, AllocatedImtNonInclusion,
+            enforce_path_index, verify_imt_insertion_circuit, verify_imt_non_inclusion_circuit,
+            verify_merkle_inclusion_circuit, AllocatedImtInsertion, AllocatedImtNonInclusion,
             AllocatedMerkleHop, ImtInsertionWitness, ImtNonInclusionWitness, MerklePathHop,
         },
     };
@@ -65,7 +65,6 @@ pub mod nova_step_circuit {
     ///
     /// State vector: `[commitments_root, nullifiers_root, historic_root, tx_count, nullifier_count]`
     pub const ROLLOUP_ARITY: usize = 5;
-
 
     /// Default Merkle / IMT depth for production rollup trees.
     pub const DEFAULT_MERKLE_DEPTH: usize = 32;
@@ -344,10 +343,8 @@ pub mod nova_step_circuit {
             // ----------------------------------------------------------------
             // is_padding witness + enabled = !is_padding.
             // ----------------------------------------------------------------
-            let is_padding_bit = AllocatedBit::alloc(
-                cs.namespace(|| "is_padding"),
-                Some(self.is_padding),
-            )?;
+            let is_padding_bit =
+                AllocatedBit::alloc(cs.namespace(|| "is_padding"), Some(self.is_padding))?;
             let is_padding = Boolean::from(is_padding_bit);
             let enabled = is_padding.not();
 
@@ -369,31 +366,29 @@ pub mod nova_step_circuit {
                     real
                 }
             };
-            let new_commitments_root = AllocatedNum::alloc(
-                cs.namespace(|| "new_commitments_root"),
-                || Ok(pad_fallback(self.new_commitments_root, &old_commitments_root)),
-            )?;
-            let new_nullifiers_root = AllocatedNum::alloc(
-                cs.namespace(|| "new_nullifiers_root"),
-                || Ok(pad_fallback(self.new_nullifiers_root, &old_nullifiers_root)),
-            )?;
-            let new_historic_root = AllocatedNum::alloc(
-                cs.namespace(|| "new_historic_root"),
-                || Ok(pad_fallback(self.new_historic_root, &old_historic_root)),
-            )?;
-            let commitment = AllocatedNum::alloc(
-                cs.namespace(|| "commitment"),
-                || Ok(self.commitment),
-            )?;
+            let new_commitments_root =
+                AllocatedNum::alloc(cs.namespace(|| "new_commitments_root"), || {
+                    Ok(pad_fallback(
+                        self.new_commitments_root,
+                        &old_commitments_root,
+                    ))
+                })?;
+            let new_nullifiers_root =
+                AllocatedNum::alloc(cs.namespace(|| "new_nullifiers_root"), || {
+                    Ok(pad_fallback(self.new_nullifiers_root, &old_nullifiers_root))
+                })?;
+            let new_historic_root =
+                AllocatedNum::alloc(cs.namespace(|| "new_historic_root"), || {
+                    Ok(pad_fallback(self.new_historic_root, &old_historic_root))
+                })?;
+            let commitment =
+                AllocatedNum::alloc(cs.namespace(|| "commitment"), || Ok(self.commitment))?;
             let commitment_path: Vec<AllocatedMerkleHop<F>> = self
                 .commitment_path
                 .iter()
                 .enumerate()
                 .map(|(i, hop)| {
-                    AllocatedMerkleHop::alloc(
-                        cs.namespace(|| format!("commitment_hop_{i}")),
-                        *hop,
-                    )
+                    AllocatedMerkleHop::alloc(cs.namespace(|| format!("commitment_hop_{i}")), *hop)
                 })
                 .collect::<Result<_, _>>()?;
             let nullifier_alloc = AllocatedImtNonInclusion::alloc(
@@ -419,14 +414,13 @@ pub mod nova_step_circuit {
                 &new_commitments_root,
                 &enabled,
             )?;
-            
+
             enforce_path_index(
                 cs.namespace(|| "commitment_path_index"),
                 &commitment_path,
                 &old_tx_count,
                 &enabled,
             )?;
-
 
             // ----------------------------------------------------------------
             // 2. Nullifier IMT non-inclusion (gated on `enabled` AND `nullifier != 0`).
@@ -485,7 +479,7 @@ pub mod nova_step_circuit {
                 insertion_bits,
                 &nullifier_enabled,
             )?;
-            
+
             // Constrain the insertion index to match the path. We use
             // `new_leaf_index` (the actual IMT insertion index) rather
             // than `old_nullifier_count` (the per-block running count),
@@ -501,7 +495,6 @@ pub mod nova_step_circuit {
                 &nullifier_enabled,
             )?;
 
-
             // ----------------------------------------------------------------
             // 3. Padding-step state pass-through.
             //    When `is_padding`, the new roots must equal the old roots.
@@ -514,7 +507,7 @@ pub mod nova_step_circuit {
                 &new_commitments_root,
                 &old_commitments_root,
             )?;
-            
+
             let pad_nullifiers = nullifier_enabled.not();
             conditional_assert_equal(
                 cs.namespace(|| "pad_nullifiers_root_eq"),
@@ -533,16 +526,13 @@ pub mod nova_step_circuit {
             // 4. tx_count update: new_tx_count = old_tx_count + delta,
             //    where delta = enabled (0 or 1).
             // ----------------------------------------------------------------
-            let new_tx_count = AllocatedNum::alloc(
-                cs.namespace(|| "new_tx_count"),
-                || {
-                    let old = old_tx_count
-                        .get_value()
-                        .ok_or(SynthesisError::AssignmentMissing)?;
-                    let d = if self.is_padding { F::ZERO } else { F::ONE };
-                    Ok(old + d)
-                },
-            )?;
+            let new_tx_count = AllocatedNum::alloc(cs.namespace(|| "new_tx_count"), || {
+                let old = old_tx_count
+                    .get_value()
+                    .ok_or(SynthesisError::AssignmentMissing)?;
+                let d = if self.is_padding { F::ZERO } else { F::ONE };
+                Ok(old + d)
+            })?;
             cs.enforce(
                 || "tx_count_delta",
                 |lc| lc + new_tx_count.get_variable() - old_tx_count.get_variable(),
@@ -553,16 +543,18 @@ pub mod nova_step_circuit {
             // ----------------------------------------------------------------
             // 5. nullifier_count update: incremented if nullifier_enabled.
             // ----------------------------------------------------------------
-            let new_nullifier_count = AllocatedNum::alloc(
-                cs.namespace(|| "new_nullifier_count"),
-                || {
+            let new_nullifier_count =
+                AllocatedNum::alloc(cs.namespace(|| "new_nullifier_count"), || {
                     let old = old_nullifier_count
                         .get_value()
                         .ok_or(SynthesisError::AssignmentMissing)?;
-                    let d = if nullifier_enabled.get_value().unwrap_or(false) { F::ONE } else { F::ZERO };
+                    let d = if nullifier_enabled.get_value().unwrap_or(false) {
+                        F::ONE
+                    } else {
+                        F::ZERO
+                    };
                     Ok(old + d)
-                },
-            )?;
+                })?;
             cs.enforce(
                 || "nullifier_count_delta",
                 |lc| lc + new_nullifier_count.get_variable() - old_nullifier_count.get_variable(),
@@ -687,7 +679,11 @@ pub mod nova_step_circuit {
             let mut layer = padded;
             for _ in 0..depth {
                 let is_right = idx & 1 == 1;
-                let sibling = if is_right { layer[idx - 1] } else { layer[idx + 1] };
+                let sibling = if is_right {
+                    layer[idx - 1]
+                } else {
+                    layer[idx + 1]
+                };
                 path.push(MerklePathHop { sibling, is_right });
                 layer = layer
                     .chunks(2)
@@ -757,13 +753,9 @@ pub mod nova_step_circuit {
             sorted_with_zero: Vec<F1>,
             nullifier: F1,
         ) -> (F1, ImtInsertionWitness<F1>) {
-            use crate::proving::nova_v1::commitment_tree::{
-                InMemoryNullifierStorage, NeptuneIMT,
-            };
-            let mut imt = NeptuneIMT::<InMemoryNullifierStorage>::new(
-                depth,
-                InMemoryNullifierStorage::new(),
-            );
+            use crate::proving::nova_v1::commitment_tree::{InMemoryNullifierStorage, NeptuneIMT};
+            let mut imt =
+                NeptuneIMT::<InMemoryNullifierStorage>::new(depth, InMemoryNullifierStorage::new());
             for v in &sorted_with_zero {
                 if !v.is_zero_vartime() {
                     imt.insert_nullifier(*v).expect("seed insert");
@@ -804,10 +796,7 @@ pub mod nova_step_circuit {
             let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
             let satisfied = cs.is_satisfied();
             let unsat = cs.which_is_unsatisfied().map(String::from);
-            let z_out = z_out_alloc
-                .iter()
-                .map(|n| n.get_value().unwrap())
-                .collect();
+            let z_out = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
             (satisfied, unsat, z_out)
         }
 
@@ -825,8 +814,11 @@ pub mod nova_step_circuit {
 
             // nullifier side
             let nullifier = F1::from(30u64);
-            let (old_nullifiers_root, nullifier_witness) =
-                build_nullifier_witness(depth, vec![F1::ZERO, F1::from(10u64), F1::from(50u64)], nullifier);
+            let (old_nullifiers_root, nullifier_witness) = build_nullifier_witness(
+                depth,
+                vec![F1::ZERO, F1::from(10u64), F1::from(50u64)],
+                nullifier,
+            );
             let (new_nullifiers_root, nullifier_insertion) = build_imt_insertion_witness(
                 depth as u32,
                 vec![F1::ZERO, F1::from(10u64), F1::from(50u64)],
@@ -848,13 +840,15 @@ pub mod nova_step_circuit {
             // After seed inserts (10, 50): next_insert_index=3.
             // The new nullifier 30 is inserted at index 3.
             // old_nullifier_count must equal next_insert_index before insertion = 3.
-            let z_in = [F1::ZERO, old_nullifiers_root, F1::ZERO, F1::from(2u64), F1::from(3u64)];
+            let z_in = [
+                F1::ZERO,
+                old_nullifiers_root,
+                F1::ZERO,
+                F1::from(2u64),
+                F1::from(3u64),
+            ];
             let (satisfied, unsat, z_out) = run_step(&circuit, z_in);
-            assert!(
-                satisfied,
-                "valid step must satisfy: {:?}",
-                unsat
-            );
+            assert!(satisfied, "valid step must satisfy: {:?}", unsat);
             assert_eq!(z_out[0], new_commitments_root);
             assert_eq!(z_out[1], new_nullifiers_root);
             assert_eq!(z_out[3], F1::from(3u64), "tx_count must increment");
@@ -895,7 +889,13 @@ pub mod nova_step_circuit {
                 nullifier_insertion,
             );
 
-            let z_in = [F1::ZERO, old_nullifiers_root, F1::ZERO, F1::from(2u64), F1::from(3u64)];
+            let z_in = [
+                F1::ZERO,
+                old_nullifiers_root,
+                F1::ZERO,
+                F1::from(2u64),
+                F1::from(3u64),
+            ];
             let (satisfied, _, _) = run_step(&circuit, z_in);
             assert!(!satisfied, "tampered commitment path must NOT satisfy");
         }
@@ -907,8 +907,7 @@ pub mod nova_step_circuit {
             let commitment = F1::from(77u64);
             let mut commit_leaves = vec![F1::from(1u64), F1::from(2u64)];
             commit_leaves.push(commitment);
-            let (real_root, commitment_path) =
-                build_commitment_tree(depth, commit_leaves, 2);
+            let (real_root, commitment_path) = build_commitment_tree(depth, commit_leaves, 2);
 
             let nullifier = F1::from(30u64);
             let (old_nullifiers_root, nullifier_witness) = build_nullifier_witness(
@@ -935,7 +934,13 @@ pub mod nova_step_circuit {
                 nullifier_insertion,
             );
 
-            let z_in = [F1::ZERO, old_nullifiers_root, F1::ZERO, F1::from(2u64), F1::from(3u64)];
+            let z_in = [
+                F1::ZERO,
+                old_nullifiers_root,
+                F1::ZERO,
+                F1::from(2u64),
+                F1::from(3u64),
+            ];
             let (satisfied, _, _) = run_step(&circuit, z_in);
             assert!(!satisfied, "bogus new_commitments_root must NOT satisfy");
         }
@@ -981,9 +986,18 @@ pub mod nova_step_circuit {
 
             // After seed inserts (10, 30, 50): next_insert_index=4.
             // old_nullifier_count must equal next_insert_index before insertion = 4.
-            let z_in = [F1::ZERO, old_nullifiers_root, F1::ZERO, F1::from(2u64), F1::from(4u64)];
+            let z_in = [
+                F1::ZERO,
+                old_nullifiers_root,
+                F1::ZERO,
+                F1::from(2u64),
+                F1::from(4u64),
+            ];
             let (satisfied, _, _) = run_step(&circuit, z_in);
-            assert!(!satisfied, "double-spend (nullifier in tree) must NOT satisfy");
+            assert!(
+                !satisfied,
+                "double-spend (nullifier in tree) must NOT satisfy"
+            );
         }
 
         /// 1.1.4 — Padding step passes the state through unchanged and the
@@ -991,10 +1005,20 @@ pub mod nova_step_circuit {
         #[test]
         fn step_padding_passes_state_through_and_satisfies() {
             let circuit = RollupStepCircuit::<F1>::padding_with_depth(4);
-            let z_in = [F1::from(11u64), F1::from(22u64), F1::from(33u64), F1::from(44u64), F1::from(55u64)];
+            let z_in = [
+                F1::from(11u64),
+                F1::from(22u64),
+                F1::from(33u64),
+                F1::from(44u64),
+                F1::from(55u64),
+            ];
             let (satisfied, unsat, z_out) = run_step(&circuit, z_in);
             assert!(satisfied, "padding must satisfy: {:?}", unsat);
-            assert_eq!(z_out, z_in.to_vec(), "padding must pass state through unchanged");
+            assert_eq!(
+                z_out,
+                z_in.to_vec(),
+                "padding must pass state through unchanged"
+            );
         }
 
         /// Even if a prover tries to smuggle a different `new_*_root` into
@@ -1010,10 +1034,20 @@ pub mod nova_step_circuit {
             circuit.new_nullifiers_root = F1::from(8888u64);
             circuit.new_historic_root = F1::from(7777u64);
 
-            let z_in = [F1::from(11u64), F1::from(22u64), F1::from(33u64), F1::from(44u64), F1::from(55u64)];
+            let z_in = [
+                F1::from(11u64),
+                F1::from(22u64),
+                F1::from(33u64),
+                F1::from(44u64),
+                F1::from(55u64),
+            ];
             let (satisfied, unsat, z_out) = run_step(&circuit, z_in);
             assert!(satisfied, "padding must always satisfy: {:?}", unsat);
-            assert_eq!(z_out, z_in.to_vec(), "padding MUST pass state through unchanged regardless of struct fields");
+            assert_eq!(
+                z_out,
+                z_in.to_vec(),
+                "padding MUST pass state through unchanged regardless of struct fields"
+            );
         }
 
         /// Conversely, a *non-padding* step trying to lie about roots is
@@ -1094,16 +1128,29 @@ pub mod nova_step_circuit {
             )
             .expect("PublicParams::setup");
 
-            let z0 = vec![F1::ZERO, old_nullifiers_root, F1::ZERO, F1::from(2u64), F1::from(3u64)];
-            let mut rs =
-                RecursiveSNARK::<E1, E2, RollupStepCircuit<F1>>::new(&pp, &real, &z0)
-                    .expect("RecursiveSNARK::new");
-            rs.prove_step(&pp, &real).expect("prove_step (real witness)");
+            let z0 = vec![
+                F1::ZERO,
+                old_nullifiers_root,
+                F1::ZERO,
+                F1::from(2u64),
+                F1::from(3u64),
+            ];
+            let mut rs = RecursiveSNARK::<E1, E2, RollupStepCircuit<F1>>::new(&pp, &real, &z0)
+                .expect("RecursiveSNARK::new");
+            rs.prove_step(&pp, &real)
+                .expect("prove_step (real witness)");
 
             let z_out = rs.verify(&pp, 1, &z0).expect("RecursiveSNARK::verify");
-            assert_eq!(z_out[0], new_commitments_root, "z_out[0] must be new commitments root");
+            assert_eq!(
+                z_out[0], new_commitments_root,
+                "z_out[0] must be new commitments root"
+            );
             assert_eq!(z_out[3], F1::from(3u64), "tx_count must advance by 1");
-            assert_eq!(z_out[4], F1::from(4u64), "nullifier_count must advance by 1");
+            assert_eq!(
+                z_out[4],
+                F1::from(4u64),
+                "nullifier_count must advance by 1"
+            );
         }
     }
 }

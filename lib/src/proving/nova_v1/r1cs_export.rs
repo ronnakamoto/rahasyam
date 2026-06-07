@@ -1,10 +1,10 @@
-use nova_snark::{
-    traits::{circuit::StepCircuit, Engine},
-    provider::Bn256EngineKZG,
-    frontend::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable},
-};
-use ff::{PrimeField, Field};
 use crate::proving::nova_v1::step_circuit::nova_step_circuit::RollupStepCircuit;
+use ff::{Field, PrimeField};
+use nova_snark::{
+    frontend::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable},
+    provider::Bn256EngineKZG,
+    traits::{circuit::StepCircuit, Engine},
+};
 use serde_json::{json, Value};
 
 type E1 = Bn256EngineKZG;
@@ -77,7 +77,12 @@ impl R1CSShape {
 pub struct R1CSExporter<Scalar: PrimeField> {
     num_inputs: usize,
     num_aux: usize,
-    constraints: Vec<(LinearCombination<Scalar>, LinearCombination<Scalar>, LinearCombination<Scalar>, String)>,
+    constraints: Vec<(
+        LinearCombination<Scalar>,
+        LinearCombination<Scalar>,
+        LinearCombination<Scalar>,
+        String,
+    )>,
 }
 
 impl<Scalar: PrimeField> R1CSExporter<Scalar> {
@@ -96,16 +101,17 @@ impl<Scalar: PrimeField> R1CSExporter<Scalar> {
             Index::Aux(i) => self.num_inputs + i,
         };
 
-        let flatten_lc = |lc: &LinearCombination<Scalar>, constraint_idx: usize, out: &mut Vec<SparseEntry>| {
-            for (var, coeff) in lc.iter() {
-                let coeff_bytes = coeff.to_repr();
-                out.push(SparseEntry {
-                    constraint: constraint_idx,
-                    variable: var_index(&var),
-                    coeff_hex: hex::encode(coeff_bytes.as_ref()),
-                });
-            }
-        };
+        let flatten_lc =
+            |lc: &LinearCombination<Scalar>, constraint_idx: usize, out: &mut Vec<SparseEntry>| {
+                for (var, coeff) in lc.iter() {
+                    let coeff_bytes = coeff.to_repr();
+                    out.push(SparseEntry {
+                        constraint: constraint_idx,
+                        variable: var_index(&var),
+                        coeff_hex: hex::encode(coeff_bytes.as_ref()),
+                    });
+                }
+            };
 
         let mut a = Vec::new();
         let mut b = Vec::new();
@@ -199,7 +205,8 @@ impl<Scalar: PrimeField> ConstraintSystem<Scalar> for R1CSExporter<Scalar> {
 /// identical to the shape of a real step.
 pub fn export_rollup_step_r1cs() -> R1CSShape {
     let circuit = RollupStepCircuit::<F1>::padding();
-    let z0 = vec![F1::ZERO; crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLOUP_ARITY];
+    let z0 =
+        vec![F1::ZERO; crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLOUP_ARITY];
     let mut exporter = R1CSExporter::<F1>::new();
     // Allocate input variables for the IVC state z so they are
     // classified as public inputs in the exported R1CS matrices.
@@ -231,8 +238,11 @@ mod tests {
     fn r1cs_export_produces_non_trivial_shape() {
         let shape = export_rollup_step_r1cs();
         assert!(shape.num_constraints > 0, "circuit must emit constraints");
-        assert_eq!(shape.num_inputs, 1 + crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLOUP_ARITY,
-            "inputs = ONE + arity state variables");
+        assert_eq!(
+            shape.num_inputs,
+            1 + crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLOUP_ARITY,
+            "inputs = ONE + arity state variables"
+        );
         // Print summary for human inspection
         println!("R1CS Export Summary:");
         println!("  inputs:      {}", shape.num_inputs);

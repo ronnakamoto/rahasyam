@@ -378,9 +378,7 @@ where
         // and next, the commitments root (historic_root) is stored in the historic root tree
         db.append_historic_commitment_root(&historic_root, true)
             .await
-            .map_err(|_| {
-                EventHandlerError::IOError("Could not store historic root".to_string())
-            })?;
+            .map_err(|_| EventHandlerError::IOError("Could not store historic root".to_string()))?;
 
         // We have just (re)built the local commitment tree up to and
         // including this block from the BlockProposed event, so the tree

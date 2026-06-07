@@ -19,7 +19,7 @@ RUN chmod 644 /usr/local/share/ca-certificates/zscaler-root-feb2025.crt && updat
 # Copy application binaries and configuration
 COPY --from=builder /app/bin/proposer bin/
 RUN mkdir -p configuration/bin/keys configuration/bin/nova_keys
-COPY configuration/bin/keys/proving_key configuration/bin/keys/proving_key
+COPY configuration/bin/keys/ configuration/bin/keys/
 COPY configuration/bin/nova_key[s]/ configuration/bin/nova_keys/
 COPY .env *.env nightfall.toml ./
 

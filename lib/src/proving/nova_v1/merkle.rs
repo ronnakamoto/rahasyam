@@ -46,8 +46,7 @@ use nova_snark::frontend::{
 };
 
 use crate::proving::nova_v1::hash::{
-    poseidon_hash2_circuit, poseidon_hash2_native, poseidon_hash3_circuit,
-    poseidon_hash3_native,
+    poseidon_hash2_circuit, poseidon_hash2_native, poseidon_hash3_circuit, poseidon_hash3_native,
 };
 
 // ---------------------------------------------------------------------------
@@ -185,21 +184,15 @@ where
     let mut current = leaf.clone();
     for (i, hop) in path.iter().enumerate() {
         let mut ns = cs.namespace(|| format!("level_{i}"));
-        let (left, right) =
-            conditional_swap(ns.namespace(|| "swap"), &current, &hop.sibling, &hop.is_right)?;
-        current = poseidon_hash2_circuit(
-            constants,
-            ns.namespace(|| "hash"),
-            &left,
-            &right,
+        let (left, right) = conditional_swap(
+            ns.namespace(|| "swap"),
+            &current,
+            &hop.sibling,
+            &hop.is_right,
         )?;
+        current = poseidon_hash2_circuit(constants, ns.namespace(|| "hash"), &left, &right)?;
     }
-    conditional_assert_equal(
-        cs.namespace(|| "root_eq"),
-        enabled,
-        &current,
-        expected_root,
-    )
+    conditional_assert_equal(cs.namespace(|| "root_eq"), enabled, &current, expected_root)
 }
 
 /// Enforces that the `is_right` bits of a Merkle path perfectly reconstruct the `expected_index`.
@@ -234,7 +227,6 @@ where
     );
     Ok(())
 }
-
 
 // ---------------------------------------------------------------------------
 // Indexed-Merkle-Tree non-inclusion.
@@ -345,7 +337,7 @@ where
             &Boolean::constant(false),
         )?;
     }
-    
+
     // FIX (from Formal Verification): Explicitly enforce that `a` and `b` are within
     // `num_bits` bounds. If they are not bounded, a malicious prover can set `a = p - 1`
     // and `b = 0`, bypassing the difference check.
@@ -368,7 +360,6 @@ where
 
     Ok(())
 }
-
 
 /// Conditionally enforce `a < b`, gated on `enabled`.  When `enabled` is
 /// false the constraint is trivially satisfied; the number of constraints
@@ -426,10 +417,7 @@ where
 ///
 /// Standard zero-test gadget: introduces an auxiliary inverse witness
 /// `inv` so that `x * inv == 1 - is_zero` and `x * is_zero == 0`.
-pub fn is_zero<F, CS>(
-    mut cs: CS,
-    x: &AllocatedNum<F>,
-) -> Result<Boolean, SynthesisError>
+pub fn is_zero<F, CS>(mut cs: CS, x: &AllocatedNum<F>) -> Result<Boolean, SynthesisError>
 where
     F: PrimeField,
     CS: ConstraintSystem<F>,
@@ -515,10 +503,7 @@ where
 
     // 3. low_next_value == 0  ∨  nullifier < low_next_value
     //    Compute the OR by gating the < check on (enabled AND !next_is_zero).
-    let next_is_zero = is_zero(
-        cs.namespace(|| "next_is_zero"),
-        &witness.low_next_value,
-    )?;
+    let next_is_zero = is_zero(cs.namespace(|| "next_is_zero"), &witness.low_next_value)?;
     let next_is_nonzero = next_is_zero.not();
     let upper_check_enabled = Boolean::and(
         cs.namespace(|| "and_enabled_and_nonzero"),
@@ -702,10 +687,8 @@ where
     // depth `d`, valid indices are `[0, 2^d)`, and `2^(d+1) - 1` is
     // still safely above the maximum valid index.
     pow = pow - F::ONE;
-    let upper_bound = AllocatedNum::alloc_infallible(
-        cs.namespace(|| "new_leaf_index_upper_bound"),
-        || pow,
-    );
+    let upper_bound =
+        AllocatedNum::alloc_infallible(cs.namespace(|| "new_leaf_index_upper_bound"), || pow);
     conditional_enforce_less_than(
         cs.namespace(|| "new_leaf_index_in_range"),
         &insertion.new_leaf_index,
@@ -751,7 +734,11 @@ mod tests {
         let mut current = layer.clone();
         for _ in 0..depth {
             let is_right = idx & 1 == 1;
-            let sibling = if is_right { current[idx - 1] } else { current[idx + 1] };
+            let sibling = if is_right {
+                current[idx - 1]
+            } else {
+                current[idx + 1]
+            };
             path.push(MerklePathHop { sibling, is_right });
             // hash layer up
             let next = current
@@ -800,7 +787,11 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(cs.is_satisfied(), "valid path must satisfy: {:?}", cs.which_is_unsatisfied());
+        assert!(
+            cs.is_satisfied(),
+            "valid path must satisfy: {:?}",
+            cs.which_is_unsatisfied()
+        );
     }
 
     #[test]
@@ -930,13 +921,11 @@ mod tests {
 
     /// Build a tiny IMT of depth 3 from three nullifier values; returns
     /// (root, leaves[]) so callers can craft non-inclusion proofs against it.
-    fn build_imt(
-        constants: &PoseidonConstants<F, U2>,
-        values: &[F],
-        depth: usize,
-    ) -> (F, Vec<F>) {
+    fn build_imt(constants: &PoseidonConstants<F, U2>, values: &[F], depth: usize) -> (F, Vec<F>) {
         // Sort values; index 0 is the canonical zero "head" leaf.
-        let sorted: Vec<F> = std::iter::once(F::ZERO).chain(values.iter().copied()).collect();
+        let sorted: Vec<F> = std::iter::once(F::ZERO)
+            .chain(values.iter().copied())
+            .collect();
         // (already sorted in our tests since we pick monotonic inputs)
         // Build leaf hashes: for each leaf, next_value is the next entry (or 0 at the tail).
         let mut leaves = Vec::with_capacity(sorted.len());
@@ -948,7 +937,9 @@ mod tests {
             } else {
                 F::ZERO
             };
-            leaves.push(imt_leaf_hash_native(constants, value, next_index, next_value));
+            leaves.push(imt_leaf_hash_native(
+                constants, value, next_index, next_value,
+            ));
         }
         // Pad to 2^depth with zeros; compute root using build_path machinery.
         let mut padded = leaves.clone();
@@ -966,7 +957,12 @@ mod tests {
         let abytes = a.to_repr();
         let bbytes = b.to_repr();
         // little-endian repr — compare from MSB down
-        for (x, y) in abytes.as_ref().iter().rev().zip(bbytes.as_ref().iter().rev()) {
+        for (x, y) in abytes
+            .as_ref()
+            .iter()
+            .rev()
+            .zip(bbytes.as_ref().iter().rev())
+        {
             match x.cmp(y) {
                 std::cmp::Ordering::Equal => continue,
                 other => return other,
@@ -1010,7 +1006,11 @@ mod tests {
         let constants = poseidon_constants::<F>();
         let depth = 3;
         let sorted = vec![F::ZERO, F::from(10u64), F::from(50u64), F::from(100u64)];
-        let (_root, leaves) = build_imt(&constants, &[F::from(10u64), F::from(50u64), F::from(100u64)], depth);
+        let (_root, leaves) = build_imt(
+            &constants,
+            &[F::from(10u64), F::from(50u64), F::from(100u64)],
+            depth,
+        );
         let nullifier = F::from(30u64); // between 10 and 50
         let (root, witness) = pick_witness(&constants, depth, &sorted, &leaves, nullifier);
 
@@ -1027,7 +1027,11 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(cs.is_satisfied(), "valid non-inclusion must satisfy: {:?}", cs.which_is_unsatisfied());
+        assert!(
+            cs.is_satisfied(),
+            "valid non-inclusion must satisfy: {:?}",
+            cs.which_is_unsatisfied()
+        );
     }
 
     #[test]
@@ -1055,7 +1059,10 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(!cs.is_satisfied(), "nullifier == low_value must fail range check");
+        assert!(
+            !cs.is_satisfied(),
+            "nullifier == low_value must fail range check"
+        );
     }
 
     #[test]
@@ -1081,7 +1088,10 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(!cs.is_satisfied(), "tampered low-leaf path must fail inclusion");
+        assert!(
+            !cs.is_satisfied(),
+            "tampered low-leaf path must fail inclusion"
+        );
     }
 
     #[test]
@@ -1109,7 +1119,11 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(cs.is_satisfied(), "tail-nullifier must satisfy: {:?}", cs.which_is_unsatisfied());
+        assert!(
+            cs.is_satisfied(),
+            "tail-nullifier must satisfy: {:?}",
+            cs.which_is_unsatisfied()
+        );
     }
 
     #[test]
@@ -1136,7 +1150,10 @@ mod tests {
             &enabled,
         )
         .unwrap();
-        assert!(cs.is_satisfied(), "disabled non-inclusion must accept anything");
+        assert!(
+            cs.is_satisfied(),
+            "disabled non-inclusion must accept anything"
+        );
     }
 }
 
@@ -1167,10 +1184,22 @@ mod kani_proofs {
 
         // Symbolic path of exactly 4 hops.
         let path: [MerklePathHop<F>; 4] = [
-            MerklePathHop { sibling: any_f(), is_right: kani::any() },
-            MerklePathHop { sibling: any_f(), is_right: kani::any() },
-            MerklePathHop { sibling: any_f(), is_right: kani::any() },
-            MerklePathHop { sibling: any_f(), is_right: kani::any() },
+            MerklePathHop {
+                sibling: any_f(),
+                is_right: kani::any(),
+            },
+            MerklePathHop {
+                sibling: any_f(),
+                is_right: kani::any(),
+            },
+            MerklePathHop {
+                sibling: any_f(),
+                is_right: kani::any(),
+            },
+            MerklePathHop {
+                sibling: any_f(),
+                is_right: kani::any(),
+            },
         ];
 
         let _root = compute_merkle_root_native(&constants, leaf, &path);

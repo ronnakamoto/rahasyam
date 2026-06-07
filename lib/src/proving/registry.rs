@@ -73,9 +73,9 @@ pub type SharedRegistry = Arc<RwLock<ProofSystemRegistry>>;
 mod tests {
     use super::*;
 
-    use serde::{Deserialize, Serialize};
     use alloy::primitives::Bytes;
     use ark_serialize::SerializationError;
+    use serde::{Deserialize, Serialize};
 
     use crate::nf_client_proof::{PrivateInputs, Proof, ProvingEngine, PublicInputs};
     use crate::shared_entities::DepositData;
@@ -117,10 +117,7 @@ mod tests {
             })
         }
 
-        fn verify(
-            _proof: &DummyProof,
-            _public_inputs: &PublicInputs,
-        ) -> Result<bool, Self::Error> {
+        fn verify(_proof: &DummyProof, _public_inputs: &PublicInputs) -> Result<bool, Self::Error> {
             Ok(true)
         }
     }

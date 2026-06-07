@@ -156,21 +156,18 @@ impl ProvingEngine<NovaClientProof> for NovaClientEngine {
         // Delegate to the real Plonk client prover. The hybrid model
         // (see module docs) means client transactions are proved with
         // Plonk; the Nova rollup aggregates the state transition.
-        let plonk_proof = PlonkProvingEngine::prove(private_inputs, public_inputs)
-            .map_err(|e| {
+        let plonk_proof =
+            PlonkProvingEngine::prove(private_inputs, public_inputs).map_err(|e| {
                 NovaClientEngineError(format!("NovaClientEngine::prove (Plonk delegation): {e}"))
             })?;
-        let snark_proof = encode_plonk_proof(&plonk_proof)
-            .map_err(|e| NovaClientEngineError(format!("NovaClientEngine::prove bincode encode: {e}")))?;
+        let snark_proof = encode_plonk_proof(&plonk_proof).map_err(|e| {
+            NovaClientEngineError(format!("NovaClientEngine::prove bincode encode: {e}"))
+        })?;
         Ok(NovaClientProof { snark_proof })
     }
 
-    fn verify(
-        proof: &NovaClientProof,
-        public_inputs: &PublicInputs,
-    ) -> Result<bool, Self::Error> {
-        let plonk_proof =
-            decode_plonk_proof(&proof.snark_proof).map_err(NovaClientEngineError)?;
+    fn verify(proof: &NovaClientProof, public_inputs: &PublicInputs) -> Result<bool, Self::Error> {
+        let plonk_proof = decode_plonk_proof(&proof.snark_proof).map_err(NovaClientEngineError)?;
         // Delegate to the real Plonk client verifier. Any
         // verification failure (mismatched public inputs, bad proof
         // bytes, etc.) bubbles up as a NovaClientEngineError.

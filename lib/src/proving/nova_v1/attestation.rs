@@ -273,7 +273,12 @@ mod tests {
         let nullifiers_root = [0x02u8; 32];
         let historic_root_root = [0x03u8; 32];
         let verifier = Address::from([0x44u8; 20]);
-        let pi = [commitments_root, nullifiers_root, historic_root_root, [0x05u8; 32]];
+        let pi = [
+            commitments_root,
+            nullifiers_root,
+            historic_root_root,
+            [0x05u8; 32],
+        ];
 
         let preimage = attestation_preimage(
             31337,

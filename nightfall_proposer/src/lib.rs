@@ -76,15 +76,23 @@ pub mod initialisation {
                 let is_nova = get_settings().nightfall_proposer.proving_system.active
                     == configuration::settings::ProvingSystemIdConfig::NovaV1;
                 let (tree_height, sub_tree_height) = if is_nova { (32, 0) } else { (29, 3) };
-                <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(&client, tree_height, sub_tree_height)
-                    .await
-                    .expect("Could not create commitment tree");
+                <mongodb::Client as CommitmentTree<Fr254>>::new_commitment_tree(
+                    &client,
+                    tree_height,
+                    sub_tree_height,
+                )
+                .await
+                .expect("Could not create commitment tree");
                 <mongodb::Client as HistoricRootTree<Fr254>>::new_historic_root_tree(&client, 32)
                     .await
                     .expect("Could not create historic root tree");
-                <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(&client, tree_height, sub_tree_height)
-                    .await
-                    .expect("Could not create nullifier tree");
+                <mongodb::Client as NullifierTree<Fr254>>::new_nullifier_tree(
+                    &client,
+                    tree_height,
+                    sub_tree_height,
+                )
+                .await
+                .expect("Could not create nullifier tree");
 
                 <Client as HistoricRootTree<Fr254>>::append_historic_commitment_root(
                     &client,

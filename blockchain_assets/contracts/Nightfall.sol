@@ -754,7 +754,11 @@ contract Nightfall is
             pi = new uint256[](2);
             pi[0] = publicInputsBytes_computed;
             pi[1] = blk.transactions.length;
-        } else if (id == 2) { // NovaV1
+        } else if (id == 2 || id == 3) { // NovaV1 (single-attestor) or NovaBlsV1 (BLS committee)
+            // Both are produced by the Nova prover, so the rollup public inputs
+            // are identical. The proof-system-ID byte (2 vs 3) is what routes the
+            // verification to the matching on-chain verifier inside router.verify
+            // (NovaRollupVerifier for id 2, NovaCommitteeVerifier for id 3).
             // Nova proof doesn't embed feeSum in the proof prefix like Plonk does.
             // Compute the fee sum directly from the transactions.
             feeSumAsNumber = 0;

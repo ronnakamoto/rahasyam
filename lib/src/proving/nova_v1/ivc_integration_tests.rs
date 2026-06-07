@@ -33,15 +33,15 @@ use nova_snark::{
     traits::Engine,
 };
 
+use super::commitment_tree::{
+    compute_initial_z0, InMemoryCommitmentStorage, InMemoryNullifierStorage, NeptuneCommitmentTree,
+    NeptuneIMT,
+};
 use super::hash::poseidon_constants;
 use super::merkle::{compute_merkle_root_native, imt_leaf_hash_native};
-use super::rollup_engine::{E1, NovaRollupEngine, RollupCircuit};
-use super::commitment_tree::{
-    compute_initial_z0, InMemoryCommitmentStorage, InMemoryNullifierStorage,
-    NeptuneCommitmentTree, NeptuneIMT,
-};
-use crate::proving::RecursiveProvingEngine;
+use super::rollup_engine::{NovaRollupEngine, RollupCircuit, E1};
 use crate::nf_client_proof::Proof;
+use crate::proving::RecursiveProvingEngine;
 
 // Type aliases for tests (kept private to this file).
 type E2 = GrumpkinEngine;
@@ -72,8 +72,7 @@ fn build_real_circuits(
     let mut circuits = Vec::with_capacity(commitments.len());
     for (i, (&commitment, &nullifier)) in commitments.iter().zip(nullifiers.iter()).enumerate() {
         // Commitment inclusion: append to the commitment tree.
-        let (neptune_commit_root, neptune_commit_path) =
-            neptune_commit_tree.append(commitment);
+        let (neptune_commit_root, neptune_commit_path) = neptune_commit_tree.append(commitment);
 
         // Nullifier non-inclusion + insertion witness. The IMT finds
         // the low leaf itself from the sorted linked list, so no
@@ -145,20 +144,17 @@ fn build_real_circuits(
 
 /// Drive a single `RollupStepCircuit` through `TestConstraintSystem` and
 /// return whether all constraints are satisfied.
-fn run_step_in_tcs(
-    circuit: &RollupCircuit,
-    z_in: [F1; 5],
-) -> (bool, Option<String>) {
-    use nova_snark::frontend::{num::AllocatedNum, test_cs::TestConstraintSystem, ConstraintSystem};
+fn run_step_in_tcs(circuit: &RollupCircuit, z_in: [F1; 5]) -> (bool, Option<String>) {
+    use nova_snark::frontend::{
+        num::AllocatedNum, test_cs::TestConstraintSystem, ConstraintSystem,
+    };
     use nova_snark::traits::circuit::StepCircuit;
 
     let mut cs = TestConstraintSystem::<F1>::new();
     let z_alloc: Vec<_> = z_in
         .iter()
         .enumerate()
-        .map(|(i, v)| {
-            AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_in_{i}")), || *v)
-        })
+        .map(|(i, v)| AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_in_{i}")), || *v))
         .collect();
     circuit.synthesize(&mut cs, &z_alloc).unwrap();
     let satisfied = cs.is_satisfied();
@@ -173,7 +169,8 @@ fn initial_z0_imt_root_matches_fresh_imt() {
     let z0 = compute_initial_z0();
     let fresh = NeptuneIMT::new(32, InMemoryNullifierStorage::new());
     assert_eq!(
-        z0[1], fresh.root(),
+        z0[1],
+        fresh.root(),
         "z0[1] must equal NeptuneIMT::new(32).root()"
     );
 }
@@ -186,7 +183,11 @@ fn initial_z0_commitment_root_is_zero_fold() {
     // The empty-tree root is what `NeptuneCommitmentTree::new(32).root()`
     // returns (an all-zero tree, no leaves inserted).
     let empty = NeptuneCommitmentTree::new(32, InMemoryCommitmentStorage::new());
-    assert_eq!(z0[0], empty.root(), "z0[0] must equal empty commitment root");
+    assert_eq!(
+        z0[0],
+        empty.root(),
+        "z0[0] must equal empty commitment root"
+    );
 }
 
 /// 3. A single step built with all-zero commitments and all-zero nullifiers
@@ -195,12 +196,7 @@ fn initial_z0_commitment_root_is_zero_fold() {
 #[test]
 fn single_zero_step_satisfies_with_compute_initial_z0() {
     let z0 = compute_initial_z0();
-    let circuits = build_real_circuits(
-        32,
-        &[F1::ZERO; 5],
-        &[F1::ZERO; 5],
-        z0[2],
-    );
+    let circuits = build_real_circuits(32, &[F1::ZERO; 5], &[F1::ZERO; 5], z0[2]);
     assert_eq!(circuits.len(), 5);
     assert!(!circuits[0].is_padding, "first circuit must be real");
 
@@ -244,7 +240,11 @@ fn single_nonzero_step_diagnose_unsat_constraint() {
     let (satisfied, unsat) = run_step_in_tcs(&circuits[0], [z0[0], z0[1], z0[2], z0[3], z0[4]]);
     eprintln!("single non-zero step satisfied: {satisfied}");
     eprintln!("single non-zero step unsat constraint: {unsat:?}");
-    assert!(satisfied, "single non-zero step must satisfy, but constraint {:?} fails", unsat);
+    assert!(
+        satisfied,
+        "single non-zero step must satisfy, but constraint {:?} fails",
+        unsat
+    );
 }
 
 /// 4c. Diagnostic: simulate the IVC step-by-step. After step 0
@@ -265,9 +265,7 @@ fn ivc_two_steps_simulated_outside_recursive_snark() {
     use nova_snark::traits::circuit::StepCircuit;
     let mut cs0 = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
     let z0_alloc: Vec<_> = (0..5)
-        .map(|i| {
-            AllocatedNum::alloc_infallible(cs0.namespace(|| format!("z0_{i}")), || z0[i])
-        })
+        .map(|i| AllocatedNum::alloc_infallible(cs0.namespace(|| format!("z0_{i}")), || z0[i]))
         .collect();
     let z1_alloc = circuits[0].synthesize(&mut cs0, &z0_alloc).unwrap();
     assert!(cs0.is_satisfied(), "step 0 must satisfy");
@@ -275,7 +273,8 @@ fn ivc_two_steps_simulated_outside_recursive_snark() {
     eprintln!("z1 = {:?}", z1);
 
     // Step 1: synthesize with z1 as input.
-    let (s1_satisfied, s1_unsat) = run_step_in_tcs(&circuits[1], [z1[0], z1[1], z1[2], z1[3], z1[4]]);
+    let (s1_satisfied, s1_unsat) =
+        run_step_in_tcs(&circuits[1], [z1[0], z1[1], z1[2], z1[3], z1[4]]);
     eprintln!("step 1 satisfied: {s1_satisfied}");
     eprintln!("step 1 unsat: {s1_unsat:?}");
 }
@@ -298,9 +297,7 @@ fn ivc_chain_4_steps_trace() {
     for (i, circuit) in circuits.iter().enumerate() {
         let mut cs = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
         let z_alloc: Vec<_> = (0..5)
-            .map(|j| {
-                AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j])
-            })
+            .map(|j| AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j]))
             .collect();
         let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
         let ok = cs.is_satisfied();
@@ -335,15 +332,16 @@ fn ivc_chain_5_nonzero_trace() {
     for (i, circuit) in circuits.iter().enumerate() {
         let mut cs = nova_snark::frontend::test_cs::TestConstraintSystem::<F1>::new();
         let z_alloc: Vec<_> = (0..5)
-            .map(|j| {
-                AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j])
-            })
+            .map(|j| AllocatedNum::alloc_infallible(cs.namespace(|| format!("z_{j}")), || z[j]))
             .collect();
         let z_out_alloc = circuit.synthesize(&mut cs, &z_alloc).unwrap();
         let ok = cs.is_satisfied();
         let unsat = cs.which_is_unsatisfied().map(String::from);
         let z_out: Vec<F1> = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
-        eprintln!("step {i}: satisfied={ok} unsat={unsat:?} constraints={}", cs.num_constraints());
+        eprintln!(
+            "step {i}: satisfied={ok} unsat={unsat:?} constraints={}",
+            cs.num_constraints()
+        );
         eprintln!("  z_in  = {:?}", z);
         eprintln!("  z_out = {:?}", z_out);
         if !ok {
@@ -381,12 +379,16 @@ fn r1cs_shape_uniform_across_padding_and_real() {
     let z_alloc_real: Vec<_> = (0..5)
         .map(|i| AllocatedNum::alloc_infallible(cs_real.namespace(|| format!("z_{i}")), || z0[i]))
         .collect();
-    real_circuits[0].synthesize(&mut cs_real, &z_alloc_real).unwrap();
+    real_circuits[0]
+        .synthesize(&mut cs_real, &z_alloc_real)
+        .unwrap();
     let real_constraints = cs_real.num_constraints();
     eprintln!("real constraints: {real_constraints}");
 
-    assert_eq!(pad_constraints, real_constraints,
-        "R1CS shape must be uniform: padding={pad_constraints}, real={real_constraints}");
+    assert_eq!(
+        pad_constraints, real_constraints,
+        "R1CS shape must be uniform: padding={pad_constraints}, real={real_constraints}"
+    );
 }
 
 /// 5. Full IVC chain reproduction of the live proposer's flow.
@@ -405,12 +407,8 @@ fn ivc_chain_with_20_all_zero_circuits_verifies() {
 
         // Build 20 all-zero circuits (matches live DIAG).
         let z0_init = compute_initial_z0();
-        let circuits = build_real_circuits(
-            32,
-            &vec![F1::ZERO; 20],
-            &vec![F1::ZERO; 20],
-            z0_init[2],
-        );
+        let circuits =
+            build_real_circuits(32, &vec![F1::ZERO; 20], &vec![F1::ZERO; 20], z0_init[2]);
         assert_eq!(circuits.len(), 20);
 
         // Run through prove_circuits (the same entry point the proposer uses).
@@ -419,7 +417,10 @@ fn ivc_chain_with_20_all_zero_circuits_verifies() {
             .expect("prove_circuits must succeed for 20 all-zero circuits with correct z0");
 
         assert_eq!(proof.transaction_count, 20);
-        assert!(!proof.snark_proof.is_empty(), "proof must be non-empty for non-empty block");
+        assert!(
+            !proof.snark_proof.is_empty(),
+            "proof must be non-empty for non-empty block"
+        );
     });
 }
 
@@ -628,9 +629,7 @@ fn ivc_chain_random_values_zero_after_nonzero_verifies() {
     let mut rng = rand::thread_rng();
 
     // 24 deposit steps with random non-zero commitments and zero nullifiers
-    let mut commitments: Vec<F1> = (0..24)
-        .map(|_| F1::random(&mut rng))
-        .collect();
+    let mut commitments: Vec<F1> = (0..24).map(|_| F1::random(&mut rng)).collect();
     let mut nullifiers = vec![F1::ZERO; 24];
 
     // Transfer 1: 2 random non-zero + 2 zero
@@ -656,12 +655,8 @@ fn ivc_chain_random_values_zero_after_nonzero_verifies() {
     nullifiers.push(F1::ZERO);
 
     use super::witness::{build_rollup_circuits, RollupWitnessInputs};
-    let inputs = RollupWitnessInputs::with_prior_nullifiers(
-        &commitments,
-        &nullifiers,
-        z0_init[2],
-        vec![],
-    );
+    let inputs =
+        RollupWitnessInputs::with_prior_nullifiers(&commitments, &nullifiers, z0_init[2], vec![]);
     let witness = build_rollup_circuits(&inputs);
     let circuits = witness.circuits;
     assert_eq!(circuits.len(), 32);
@@ -684,7 +679,9 @@ fn test_prover_solidity_wire_compatibility() {
         let engine = NovaRollupEngine::setup().expect("engine setup");
         let z0 = compute_initial_z0();
         let circuits = build_real_circuits(32, &[F1::ZERO; 1], &[F1::ZERO; 1], z0[2]);
-        let proof = engine.prove_circuits(circuits).expect("proving should succeed");
+        let proof = engine
+            .prove_circuits(circuits)
+            .expect("proving should succeed");
 
         let serialized = proof.to_wire_bytes().expect("serialization should succeed");
 
@@ -693,7 +690,7 @@ fn test_prover_solidity_wire_compatibility() {
 
         // helper to read u64 LE from bytes
         let read_u64_le = |data: &[u8], offset: usize| -> u64 {
-            let slice = &data[offset..offset+8];
+            let slice = &data[offset..offset + 8];
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(slice);
             u64::from_le_bytes(bytes)
@@ -704,7 +701,10 @@ fn test_prover_solidity_wire_compatibility() {
         let snark_len = read_u64_le(&serialized, cursor) as usize;
         cursor += 8;
         assert!(cursor + snark_len <= serialized.len());
-        assert_eq!(&serialized[cursor..cursor+snark_len], &proof.snark_proof[..]);
+        assert_eq!(
+            &serialized[cursor..cursor + snark_len],
+            &proof.snark_proof[..]
+        );
         cursor += snark_len;
 
         // Field 1: commitments_root length prefix + bytes
@@ -713,7 +713,10 @@ fn test_prover_solidity_wire_compatibility() {
         assert_eq!(comm_len, 32);
         cursor += 8;
         assert!(cursor + 32 <= serialized.len());
-        assert_eq!(&serialized[cursor..cursor+32], &proof.commitments_root[..]);
+        assert_eq!(
+            &serialized[cursor..cursor + 32],
+            &proof.commitments_root[..]
+        );
         cursor += 32;
 
         // Field 2: nullifiers_root length prefix + bytes
@@ -722,7 +725,7 @@ fn test_prover_solidity_wire_compatibility() {
         assert_eq!(null_len, 32);
         cursor += 8;
         assert!(cursor + 32 <= serialized.len());
-        assert_eq!(&serialized[cursor..cursor+32], &proof.nullifiers_root[..]);
+        assert_eq!(&serialized[cursor..cursor + 32], &proof.nullifiers_root[..]);
         cursor += 32;
 
         // Field 3: historic_root_root length prefix + bytes
@@ -731,7 +734,10 @@ fn test_prover_solidity_wire_compatibility() {
         assert_eq!(hist_len, 32);
         cursor += 8;
         assert!(cursor + 32 <= serialized.len());
-        assert_eq!(&serialized[cursor..cursor+32], &proof.historic_root_root[..]);
+        assert_eq!(
+            &serialized[cursor..cursor + 32],
+            &proof.historic_root_root[..]
+        );
         cursor += 32;
 
         // Field 4: transaction_count
@@ -741,7 +747,11 @@ fn test_prover_solidity_wire_compatibility() {
         cursor += 8;
 
         // Assert no trailing garbage
-        assert_eq!(cursor, serialized.len(), "Solidity verifier would parse trailing bytes as garbage");
+        assert_eq!(
+            cursor,
+            serialized.len(),
+            "Solidity verifier would parse trailing bytes as garbage"
+        );
     });
 }
 
@@ -765,10 +775,7 @@ fn hand_rolled_ivc_with_zero_witnesses_verifies() {
         let z0 = compute_initial_z0();
         let circuits = build_real_circuits(32, &[F1::ZERO; 1], &[F1::ZERO; 1], z0[2]);
         assert_eq!(circuits.len(), 1);
-        let (satisfied, unsat) = run_step_in_tcs(
-            &circuits[0],
-            [z0[0], z0[1], z0[2], z0[3], z0[4]],
-        );
+        let (satisfied, unsat) = run_step_in_tcs(&circuits[0], [z0[0], z0[1], z0[2], z0[3], z0[4]]);
         assert!(satisfied, "single step in TCS must satisfy: {:?}", unsat);
     });
 }
@@ -826,7 +833,11 @@ fn nonzero_nullifier_witness_recomputes_to_z0_imt_root() {
     // After insertion, the IMT root MUST change.
     imt.insert_nullifier(F1::from(42u64))
         .expect("insert must succeed");
-    assert_ne!(imt.root(), z0[1], "IMT root must change after non-zero nullifier insertion");
+    assert_ne!(
+        imt.root(),
+        z0[1],
+        "IMT root must change after non-zero nullifier insertion"
+    );
 }
 
 /// 10. Reproduce the post-reorg transfer block failure.
@@ -898,7 +909,10 @@ fn ivc_chain_second_block_with_prior_nullifiers_trace() {
         let ok = cs.is_satisfied();
         let unsat = cs.which_is_unsatisfied().map(String::from);
         let z_out_vec: Vec<F1> = z_out_alloc.iter().map(|n| n.get_value().unwrap()).collect();
-        eprintln!("block2 step {i}: satisfied={ok} unsat={unsat:?} constraints={}", cs.num_constraints());
+        eprintln!(
+            "block2 step {i}: satisfied={ok} unsat={unsat:?} constraints={}",
+            cs.num_constraints()
+        );
         eprintln!("  z_in  = {:?}", z);
         eprintln!("  z_out = {:?}", z_out_vec);
         if !ok {
@@ -1004,17 +1018,106 @@ fn verify_binds_output_state_to_advertised_roots() {
     //     even though the SNARK itself is still valid.
     let mut tampered = proof.clone();
     tampered.commitments_root = vec![0xAAu8; 32];
-    assert!(rejected(&tampered), "tampered commitments_root must be rejected");
+    assert!(
+        rejected(&tampered),
+        "tampered commitments_root must be rejected"
+    );
 
     // (c) Tampering the advertised nullifiers root must be rejected.
     let mut tampered_null = proof.clone();
     tampered_null.nullifiers_root = vec![0xBBu8; 32];
-    assert!(rejected(&tampered_null), "tampered nullifiers_root must be rejected");
+    assert!(
+        rejected(&tampered_null),
+        "tampered nullifiers_root must be rejected"
+    );
 
     // (d) Tampering the advertised transaction_count must be rejected.
     //     (Changing the count changes the verified IVC step count, so
     //     the SNARK verification fails outright.)
     let mut tampered_count = proof.clone();
     tampered_count.transaction_count += 1;
-    assert!(rejected(&tampered_count), "tampered transaction_count must be rejected");
+    assert!(
+        rejected(&tampered_count),
+        "tampered transaction_count must be rejected"
+    );
+}
+
+/// End-to-end guard for the attestor's `verify_attestation` entry point,
+/// exercising it exactly as the proposer's local single-signer path does:
+/// prove a block, then re-run the sound `CompressedSNARK::verify` using the
+/// proof's (Neptune) roots, the hydrated `pre_nullifiers_root` (here the
+/// empty-tree `z0[1]`) and the **true folded step count** (`circuits.len()`).
+///
+/// This is the regression test for the `nf4_test` development path: with
+/// padding on, `num_steps` (`circuits.len()`) is what the verifier must
+/// replay, so `verify_attestation` MUST accept a genuine proof when given
+/// it — and reject a wrong step count or wrong initial state.
+#[test]
+fn verify_attestation_accepts_genuine_proof_and_rejects_wrong_params() {
+    let engine = NovaRollupEngine::setup().expect("engine setup");
+    let z0 = compute_initial_z0();
+
+    // A small block: 4 deposit steps (zero nullifiers) + 1 transfer step.
+    let commitments: Vec<F1> = (1u64..=5).map(F1::from).collect();
+    let mut nullifiers = vec![F1::ZERO; 4];
+    nullifiers.push(F1::from(77u64));
+    let circuits = build_real_circuits(32, &commitments, &nullifiers, z0[2]);
+    let num_steps = circuits.len();
+
+    let proof = engine
+        .prove_circuits(circuits)
+        .expect("prove_circuits must succeed");
+    assert!(!proof.snark_proof.is_empty());
+
+    // `prove_circuits` proves from the empty initial state, so the hydrated
+    // `pre_nullifiers_root` the attestor would receive is `z0[1]`.
+    let pre_nullifiers_root = z0[1];
+
+    // (a) Genuine proof with the correct step count verifies.
+    let ok = engine
+        .verify_attestation(
+            &proof.snark_proof,
+            &proof.commitments_root,
+            &proof.nullifiers_root,
+            &proof.historic_root_root,
+            proof.transaction_count,
+            num_steps,
+            pre_nullifiers_root,
+        )
+        .expect("verify_attestation must not error on a genuine proof");
+    assert!(
+        ok,
+        "attestor must accept a genuine proof with the correct step count"
+    );
+
+    // (b) Wrong folded step count must NOT be accepted (the folding hash
+    //     binds the step count).
+    let wrong_steps = engine.verify_attestation(
+        &proof.snark_proof,
+        &proof.commitments_root,
+        &proof.nullifiers_root,
+        &proof.historic_root_root,
+        proof.transaction_count,
+        num_steps + 1,
+        pre_nullifiers_root,
+    );
+    assert!(
+        !matches!(wrong_steps, Ok(true)),
+        "a wrong num_steps must be rejected, got {wrong_steps:?}"
+    );
+
+    // (c) Wrong initial state (`z0[1]`) must NOT be accepted.
+    let wrong_z0 = engine.verify_attestation(
+        &proof.snark_proof,
+        &proof.commitments_root,
+        &proof.nullifiers_root,
+        &proof.historic_root_root,
+        proof.transaction_count,
+        num_steps,
+        F1::from(0xDEADu64),
+    );
+    assert!(
+        !matches!(wrong_z0, Ok(true)),
+        "a wrong pre_nullifiers_root must be rejected, got {wrong_z0:?}"
+    );
 }
