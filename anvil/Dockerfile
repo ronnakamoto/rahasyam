@@ -1,4 +1,4 @@
-FROM ghcr.io/foundry-rs/foundry:v1.1.0 AS anvil
+FROM ghcr.io/foundry-rs/foundry:v1.3.1 AS anvil
 FROM debian:bullseye-slim
 ENV ANVIL_IP_ADDR=0.0.0.0
 COPY --from=anvil /usr/local/bin/anvil /usr/local/bin/anvil
@@ -22,4 +22,3 @@ COPY .env ./
 
 # Set entrypoint
 ENTRYPOINT ["./entrypoint.sh"]
-

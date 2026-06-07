@@ -183,9 +183,14 @@ pub async fn deploy_contracts(settings: &Settings) -> Result<(), Box<dyn std::er
 
     prepare_verifier_material(settings)?;
 
-    // Force a clean rebuild to generate proper build-info files for OpenZeppelin validation
+    // Force a clean rebuild to generate complete build-info files for OpenZeppelin validation.
+    // `forge build --force` can still leave stale/partial artifacts around, which makes
+    // @openzeppelin/foundry-upgrades fail during the deployment script.
+    info!("Cleaning contract artifacts with forge");
+    forge_command(&["clean"]);
+
     info!("Building contracts with forge");
-    forge_command(&["build", "--force"]);
+    forge_command(&["build"]);
 
     info!("Deploying contracts with forge script");
     forge_command(&[
@@ -342,8 +347,12 @@ pub fn forge_command(command: &[&str]) {
                     String::from_utf8_lossy(&o.stdout)
                 );
             } else {
+                let signal_hint = match o.status.signal() {
+                    Some(4) => "\nProcess was terminated by SIGILL (illegal instruction). If this is running under Docker on Apple Silicon, rebuild/run the deployer for the host-native architecture instead of forcing linux/amd64.",
+                    _ => "",
+                };
                 panic!(
-                "Command 'forge {:?}' executed with failing error code: {:?}\nStandard Output: {}\nStandard Error: {}",
+                "Command 'forge {:?}' executed with failing error code: {:?}{signal_hint}\nStandard Output: {}\nStandard Error: {}",
                 command,
                 o.status,
                 String::from_utf8_lossy(&o.stdout),

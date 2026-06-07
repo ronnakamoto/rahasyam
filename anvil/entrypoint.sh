@@ -5,7 +5,7 @@ set -e
 # `--hardfork prague` enables the EIP-2537 BLS12-381 precompiles required by the
 # Nova BLS attestor committee verifier (NovaCommitteeVerifier / router id 3).
 # Prague is a superset of Cancun for existing contracts, so this is safe for the
-# Plonk / Nova-ECDSA paths too. (foundry:v1.1.0 supports it.)
+# Plonk / Nova-ECDSA paths too.
 anvil --base-fee 58000000000 --block-time 5 --gas-limit 500000000 --hardfork prague &
 ANVIL_PID=$!
 

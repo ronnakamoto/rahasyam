@@ -639,7 +639,6 @@ services:
         nofile:
           soft: 65536
           hard: 65536
-    platform: linux/amd64 # Required for building on M1 Macs
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     networks:
       - nightfall_network
@@ -664,6 +663,7 @@ services:
       - NF4_SIGNING_KEY=${DEPLOYER_SIGNING_KEY}
       - CLIENT_ADDRESS=${CLIENT_ADDRESS}
       - NF4_MOCK_PROVER=${NF4_MOCK_PROVER:-true}
+      - NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=${NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD:-2}
       - AZURE_VAULT_URL=${AZURE_VAULT_URL}
       - DEPLOYER_SIGNING_KEY_NAME=${DEPLOYER_SIGNING_KEY_NAME}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
@@ -678,7 +678,6 @@ services:
     build:
       dockerfile: nightfall_deployer/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
     # command: ["tail", "-f","/dev/null"] # For debugging if required
     networks:
       - nightfall_network
@@ -755,6 +754,7 @@ services:
 
   anvil:
     container_name: anvil
+    hostname: anvil
     stop_grace_period: 3s
     profiles:
       - development
@@ -764,9 +764,8 @@ services:
     build:
       dockerfile: anvil/Dockerfile
       context: .
-    platform: linux/amd64 # Required for building on M1 Macs
     healthcheck:
-      test: [ "CMD", "curl", "-H", "Content-Type:", "application/json", "-X", "POST", "--data", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "0.0.0.0:8545" ]
+      test: [ "CMD", "curl", "-sfX", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":67}', "http://0.0.0.0:8545" ]
       interval: 10s
       timeout: 90s
       retries: 10
