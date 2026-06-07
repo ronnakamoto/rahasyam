@@ -17,11 +17,11 @@ use ff::{Field, PrimeField};
 use nova_snark::traits::Engine;
 
 use super::commitment_tree::{
-    compute_initial_z0, InMemoryCommitmentStorage, InMemoryNullifierStorage,
-    NeptuneCommitmentTree, NeptuneIMT,
+    compute_initial_z0, InMemoryCommitmentStorage, InMemoryNullifierStorage, NeptuneCommitmentTree,
+    NeptuneIMT,
 };
 use super::merkle::{compute_merkle_root_native, imt_leaf_hash_native};
-use super::rollup_engine::{E1, F1, NovaRollupEngine, RollupCircuit};
+use super::rollup_engine::{NovaRollupEngine, RollupCircuit, E1, F1};
 use super::witness::{build_rollup_circuits, RollupWitnessInputs};
 use crate::proving::RecursiveProvingEngine;
 
@@ -34,10 +34,7 @@ use crate::proving::RecursiveProvingEngine;
 /// for the circuit witnesses. The proposer simply calls
 /// `commit_tree.append(commitment)` and `null_imt.get_non_inclusion_witness(nullifier)`
 /// for each transaction. No low-leaf index extraction, no shadow tree.
-fn build_circuits_proposer_v1(
-    commitments: &[F1],
-    nullifiers: &[F1],
-) -> Vec<RollupCircuit> {
+fn build_circuits_proposer_v1(commitments: &[F1], nullifiers: &[F1]) -> Vec<RollupCircuit> {
     let depth = 32u32;
     let mut commit_tree = NeptuneCommitmentTree::new(depth, InMemoryCommitmentStorage::new());
     let mut null_imt = NeptuneIMT::new(depth, InMemoryNullifierStorage::new());
@@ -196,9 +193,7 @@ fn commitment_tree_fresh_state_root_matches_z0() {
 fn imt_witness_recomputes_to_current_root() {
     let mut imt = NeptuneIMT::new(4, InMemoryNullifierStorage::new());
     imt.insert_nullifier(F1::from(10u64)).unwrap();
-    let (_low_leaf, witness) = imt
-        .get_non_inclusion_witness(F1::from(30u64))
-        .unwrap();
+    let (_low_leaf, witness) = imt.get_non_inclusion_witness(F1::from(30u64)).unwrap();
     let constants = super::hash::poseidon_constants::<F1>();
     let low_hash = imt_leaf_hash_native(
         &constants,
@@ -461,14 +456,11 @@ fn ivc_chain_two_blocks_with_prior_nullifiers_verifies() {
         let historic_root = compute_initial_z0()[2];
 
         // First block: 3 commitments, 3 nullifiers.
-        let block1_commitments: Vec<F1> = vec![F1::from(100u64), F1::from(200u64), F1::from(300u64)];
-        let block1_nullifiers: Vec<F1> =
-            vec![F1::from(10u64), F1::from(20u64), F1::from(30u64)];
-        let inputs1 = RollupWitnessInputs::new(
-            &block1_commitments,
-            &block1_nullifiers,
-            historic_root,
-        );
+        let block1_commitments: Vec<F1> =
+            vec![F1::from(100u64), F1::from(200u64), F1::from(300u64)];
+        let block1_nullifiers: Vec<F1> = vec![F1::from(10u64), F1::from(20u64), F1::from(30u64)];
+        let inputs1 =
+            RollupWitnessInputs::new(&block1_commitments, &block1_nullifiers, historic_root);
         let witness1 = build_rollup_circuits(&inputs1);
         assert_eq!(witness1.circuits.len(), 3);
 
@@ -479,11 +471,7 @@ fn ivc_chain_two_blocks_with_prior_nullifiers_verifies() {
         // leaves.
         let block2_commitments: Vec<F1> = vec![F1::from(400u64), F1::from(500u64)];
         let block2_nullifiers: Vec<F1> = vec![F1::from(15u64), F1::from(25u64)];
-        let prior_nullifiers: Vec<F1> = vec![
-            F1::from(20u64),
-            F1::from(30u64),
-            F1::from(10u64),
-        ];
+        let prior_nullifiers: Vec<F1> = vec![F1::from(20u64), F1::from(30u64), F1::from(10u64)];
         let inputs2 = RollupWitnessInputs::with_prior_nullifiers(
             &block2_commitments,
             &block2_nullifiers,
@@ -543,11 +531,8 @@ fn ivc_live_scenario_block1_deposits_block2_transfers() {
         // === Block 1: 7 deposits, 28 commitments, 28 zero nullifiers ===
         let block1_commitments: Vec<F1> = (1000u64..1028).map(F1::from).collect();
         let block1_nullifiers: Vec<F1> = vec![F1::ZERO; 28];
-        let inputs1 = RollupWitnessInputs::new(
-            &block1_commitments,
-            &block1_nullifiers,
-            historic_root,
-        );
+        let inputs1 =
+            RollupWitnessInputs::new(&block1_commitments, &block1_nullifiers, historic_root);
         let witness1 = build_rollup_circuits(&inputs1);
         assert_eq!(witness1.circuits.len(), 28);
         let _proof1 = engine
@@ -560,26 +545,23 @@ fn ivc_live_scenario_block1_deposits_block2_transfers() {
         // 12-slot array.
         let block2_commitments: Vec<F1> = (2000u64..2012).map(F1::from).collect();
         let block2_nullifiers: Vec<F1> = vec![
-            F1::from(50u64),   // tx 1: transfer
+            F1::from(50u64), // tx 1: transfer
             F1::ZERO,
-            F1::from(60u64),   // tx 1: fee
+            F1::from(60u64), // tx 1: fee
             F1::ZERO,
-            F1::from(70u64),   // tx 2: transfer
+            F1::from(70u64), // tx 2: transfer
             F1::ZERO,
-            F1::from(80u64),   // tx 2: fee
+            F1::from(80u64), // tx 2: fee
             F1::ZERO,
-            F1::from(90u64),   // tx 3: transfer
+            F1::from(90u64), // tx 3: transfer
             F1::ZERO,
-            F1::from(100u64),  // tx 3: fee
+            F1::from(100u64), // tx 3: fee
             F1::ZERO,
         ];
         // The prior-block nullifier set is empty: the first block
         // had all-zero nullifiers, so the DB has nothing to hydrate.
-        let inputs2 = RollupWitnessInputs::new(
-            &block2_commitments,
-            &block2_nullifiers,
-            historic_root,
-        );
+        let inputs2 =
+            RollupWitnessInputs::new(&block2_commitments, &block2_nullifiers, historic_root);
         let witness2 = build_rollup_circuits(&inputs2);
         assert_eq!(witness2.circuits.len(), 12);
         let _proof2 = engine
@@ -600,16 +582,12 @@ fn minimal_4_steps_one_real_nullifier_at_index_0() {
 
         let commitments: Vec<F1> = (1u64..=4).map(F1::from).collect();
         let nullifiers: Vec<F1> = vec![
-            F1::from(100u64),  // real nullifier at index 0
+            F1::from(100u64), // real nullifier at index 0
             F1::ZERO,
             F1::ZERO,
             F1::ZERO,
         ];
-        let inputs = RollupWitnessInputs::new(
-            &commitments,
-            &nullifiers,
-            historic_root,
-        );
+        let inputs = RollupWitnessInputs::new(&commitments, &nullifiers, historic_root);
         let witness = build_rollup_circuits(&inputs);
         assert_eq!(witness.circuits.len(), 4);
         let _proof = engine
@@ -631,14 +609,10 @@ fn minimal_4_steps_one_real_nullifier_at_index_2() {
         let nullifiers: Vec<F1> = vec![
             F1::ZERO,
             F1::ZERO,
-            F1::from(100u64),  // real nullifier at index 2 (fee slot)
+            F1::from(100u64), // real nullifier at index 2 (fee slot)
             F1::ZERO,
         ];
-        let inputs = RollupWitnessInputs::new(
-            &commitments,
-            &nullifiers,
-            historic_root,
-        );
+        let inputs = RollupWitnessInputs::new(&commitments, &nullifiers, historic_root);
         let witness = build_rollup_circuits(&inputs);
         assert_eq!(witness.circuits.len(), 4);
         let _proof = engine
@@ -658,16 +632,12 @@ fn minimal_4_steps_two_real_nullifiers_indices_0_and_2() {
 
         let commitments: Vec<F1> = (1u64..=4).map(F1::from).collect();
         let nullifiers: Vec<F1> = vec![
-            F1::from(100u64),  // transfer nullifier
+            F1::from(100u64), // transfer nullifier
             F1::ZERO,
-            F1::from(200u64),  // fee nullifier
+            F1::from(200u64), // fee nullifier
             F1::ZERO,
         ];
-        let inputs = RollupWitnessInputs::new(
-            &commitments,
-            &nullifiers,
-            historic_root,
-        );
+        let inputs = RollupWitnessInputs::new(&commitments, &nullifiers, historic_root);
         let witness = build_rollup_circuits(&inputs);
         assert_eq!(witness.circuits.len(), 4);
         let _proof = engine

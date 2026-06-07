@@ -110,9 +110,7 @@ fn parse_signature(hex_sig: &str) -> Result<[u8; SIG_BYTES], RollupProofError> {
     let bytes = hex::decode(hex_sig.trim().trim_start_matches("0x"))
         .map_err(|e| err("attestor signature is not valid hex", e))?;
     <[u8; SIG_BYTES]>::try_from(bytes.as_slice()).map_err(|_| {
-        RollupProofError::ParameterError(format!(
-            "attestor signature must be {SIG_BYTES} bytes"
-        ))
+        RollupProofError::ParameterError(format!("attestor signature must be {SIG_BYTES} bytes"))
     })
 }
 
@@ -248,8 +246,14 @@ fn build_attest_request(
             format!("0x{}", hex::encode(public_inputs[2])),
             format!("0x{}", hex::encode(public_inputs[3])),
         ],
-        neptune_commitments_root: format!("0x{}", hex::encode(&verification.neptune_commitments_root)),
-        neptune_nullifiers_root: format!("0x{}", hex::encode(&verification.neptune_nullifiers_root)),
+        neptune_commitments_root: format!(
+            "0x{}",
+            hex::encode(&verification.neptune_commitments_root)
+        ),
+        neptune_nullifiers_root: format!(
+            "0x{}",
+            hex::encode(&verification.neptune_nullifiers_root)
+        ),
         neptune_historic_root_root: format!(
             "0x{}",
             hex::encode(&verification.neptune_historic_root_root)
@@ -262,21 +266,23 @@ fn build_attest_request(
 fn parse_pubkey(hex_pk: &str) -> Result<[u8; bls::PUBKEY_BYTES], RollupProofError> {
     let bytes = hex::decode(hex_pk.trim().trim_start_matches("0x"))
         .map_err(|e| err("committee bls_pubkey is not valid hex", e))?;
-    <[u8; bls::PUBKEY_BYTES]>::try_from(bytes.as_slice())
-        .map_err(|_| RollupProofError::ParameterError(format!(
+    <[u8; bls::PUBKEY_BYTES]>::try_from(bytes.as_slice()).map_err(|_| {
+        RollupProofError::ParameterError(format!(
             "committee bls_pubkey must be {} bytes",
             bls::PUBKEY_BYTES
-        )))
+        ))
+    })
 }
 
 fn parse_share(hex_sig: &str) -> Result<[u8; bls::SIG_BYTES], RollupProofError> {
     let bytes = hex::decode(hex_sig.trim().trim_start_matches("0x"))
         .map_err(|e| err("committee bls_share is not valid hex", e))?;
-    <[u8; bls::SIG_BYTES]>::try_from(bytes.as_slice())
-        .map_err(|_| RollupProofError::ParameterError(format!(
+    <[u8; bls::SIG_BYTES]>::try_from(bytes.as_slice()).map_err(|_| {
+        RollupProofError::ParameterError(format!(
             "committee bls_share must be {} bytes",
             bls::SIG_BYTES
-        )))
+        ))
+    })
 }
 
 /// Aggregate collected `(index, share)` pairs into `(sigma, bitmap)`. The

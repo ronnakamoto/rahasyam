@@ -28,7 +28,9 @@ fn merge_key_counts(block_size: u64) -> anyhow::Result<(usize, usize)> {
 }
 
 fn ensure_plonk_real_prover_keys_exist(settings: &Settings) -> anyhow::Result<()> {
-    let keys_dir = std::env::current_dir()?.join("configuration").join("bin/keys");
+    let keys_dir = std::env::current_dir()?
+        .join("configuration")
+        .join("bin/keys");
     let (bn254_merge_count, grumpkin_merge_count) =
         merge_key_counts(settings.nightfall_proposer.block_size)?;
 
@@ -148,7 +150,8 @@ fn proxies_from_broadcast(path: &Path) -> anyhow::Result<HashMap<&'static str, A
                     && !map.contains_key("committee_verifier")
                 {
                     map.insert("committee_verifier", addr);
-                } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier") {
+                } else if cname.contains("NovaRollupVerifier") && !map.contains_key("nova_verifier")
+                {
                     map.insert("nova_verifier", addr);
                 }
             }

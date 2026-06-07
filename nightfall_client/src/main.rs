@@ -64,7 +64,7 @@ async fn main() -> Result<(), JoinError> {
     let active_id =
         ProvingSystemIdConfig::from_str(settings.nightfall_proposer.proving_system.active.as_str())
             .unwrap_or(ProvingSystemIdConfig::PlonkV1);
-        
+
     let active_id = match active_id {
         ProvingSystemIdConfig::PlonkV1 => lib::proving::ProofSystemId::PlonkV1,
         ProvingSystemIdConfig::NovaV1 | ProvingSystemIdConfig::NovaBlsV1 => {

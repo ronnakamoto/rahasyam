@@ -60,21 +60,21 @@ use crate::{
     driven::rollup_prover::RollupProofError,
     ports::proving::RecursiveProvingEngine,
 };
-use lib::utils::get_block_size;
 use ark_bn254::{Fq as Fq254, Fr as Fr254};
 use ark_ff::{BigInteger, PrimeField};
 use ark_std::{One, Zero};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
-use log::info;
-use sha2::{Digest, Sha256};
-use std::time::Instant;
+use lib::utils::get_block_size;
 use lib::{
     error::ConversionError,
     nf_client_proof::{Proof, PublicInputs},
     proving::nova_v1::proof::{NovaClientProof, NovaProof},
     shared_entities::{DepositData, OnChainTransaction},
 };
+use log::info;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::time::Instant;
 
 /// Container for the Nova proving path's prepped information. Holds both
 /// the per-step circuits and the IMT root after prior-nullifier hydration
@@ -106,7 +106,9 @@ pub struct NovaPreppedInfo {
 //
 // See `temp/Nova-Code-Path-Robustness-Plan.md` for the full robustness
 // audit and the items that have been / are still to be addressed.
-impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for lib::proving::nova_v1::rollup_engine::NovaRollupEngine {
+impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
+    for lib::proving::nova_v1::rollup_engine::NovaRollupEngine
+{
     type PreppedInfo = NovaPreppedInfo;
     type Error = RollupProofError;
     type RecursiveProof = Vec<Fq254>;
@@ -151,8 +153,11 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
     ) -> Result<Block, Self::Error> {
         let prove_block_start = Instant::now();
 
-        info!("[nova prove_block] Starting prepare_state_transition ({} deposits, {} client txs)...",
-            deposit_transactions.len(), client_transactions.len());
+        info!(
+            "[nova prove_block] Starting prepare_state_transition ({} deposits, {} client txs)...",
+            deposit_transactions.len(),
+            client_transactions.len()
+        );
         let prep_start = Instant::now();
         // Snapshot the authoritative JF trees before the speculative inserts in
         // `prepare_state_transition`, so this block can be rolled back if it
@@ -175,8 +180,10 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                 }
             }
         };
-        info!("[nova prove_block] prepare_state_transition completed in {:.2}s",
-            prep_start.elapsed().as_secs_f64());
+        info!(
+            "[nova prove_block] prepare_state_transition completed in {:.2}s",
+            prep_start.elapsed().as_secs_f64()
+        );
 
         info!("[nova prove_block] Starting recursive_prove (offloaded to blocking thread pool)...");
         let prove_start = Instant::now();
@@ -192,8 +199,10 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         let fq_vec = tokio::task::spawn_blocking(move || Self::recursive_prove(info))
             .await
             .map_err(|_e| Self::Error::from(ConversionError::ParseFailed))??;
-        info!("[nova prove_block] recursive_prove completed in {:.2}s",
-            prove_start.elapsed().as_secs_f64());
+        info!(
+            "[nova prove_block] recursive_prove completed in {:.2}s",
+            prove_start.elapsed().as_secs_f64()
+        );
 
         // Recover the original bincode blob. `recursive_prove` packed
         // the blob as 31-byte chunks, each padded to 32 bytes with a
@@ -212,8 +221,11 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             debug_assert_eq!(bytes_be[0], 0, "Fq254 high byte must be zero");
             proof_bytes.extend_from_slice(&bytes_be[1..]);
         }
-        info!("[nova prove_block] Proof decoding completed in {:.2}s ({} bytes)",
-            decode_start.elapsed().as_secs_f64(), proof_bytes.len());
+        info!(
+            "[nova prove_block] Proof decoding completed in {:.2}s ({} bytes)",
+            decode_start.elapsed().as_secs_f64(),
+            proof_bytes.len()
+        );
 
         // Decode the bincode blob so we can (a) populate the
         // in-memory `nova_ivc_state` with the Neptune roots the
@@ -245,12 +257,13 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         // `snark_proof` `Vec<u8>` is preserved byte-for-byte, so the
         // bincode footprint only changes around the three root
         // fields (still 8-byte LE length prefix + 32 bytes each).
-        let rollup_proof = bincode::serialize(&nova_proof).map_err(|e| {
-            RollupProofError::ParameterError(format!("Nova proof serialize: {e}"))
-        })?;
+        let rollup_proof = bincode::serialize(&nova_proof)
+            .map_err(|e| RollupProofError::ParameterError(format!("Nova proof serialize: {e}")))?;
         let mut rollup_proof = rollup_proof;
-        info!("[nova prove_block] Proof re-serialised with JF roots ({} bytes)",
-            rollup_proof.len());
+        info!(
+            "[nova prove_block] Proof re-serialised with JF roots ({} bytes)",
+            rollup_proof.len()
+        );
 
         // Keep the *Neptune* roots in `nova_ivc_state` so off-chain
         // consumers (logs, debug tooling) see what the circuit
@@ -299,9 +312,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                 info!(
                     "[nova prove_block] Padded on-chain transactions array to \
                      block_size={} with {} dummy entries (IVC proved {} real txs)",
-                    block_size,
-                    pad_count,
-                    transaction_count
+                    block_size, pad_count, transaction_count
                 );
             }
         }
@@ -404,21 +415,25 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             rollup_proof_len,
             commitments_root,
         );
-        info!("[nova prove_block] Total prove_block completed in {:.2}s",
-            total_s);
+        info!(
+            "[nova prove_block] Total prove_block completed in {:.2}s",
+            total_s
+        );
         result
     }
 
     async fn prepare_state_transition(
         deposit_transactions: &[(lib::proving::nova_v1::proof::NovaClientProof, PublicInputs)],
-        transactions: &[ClientTransactionWithMetaData<lib::proving::nova_v1::proof::NovaClientProof>],
+        transactions: &[ClientTransactionWithMetaData<
+            lib::proving::nova_v1::proof::NovaClientProof,
+        >],
     ) -> Result<(Self::PreppedInfo, [Fr254; 3]), Self::Error> {
         use crate::initialisation::get_db_connection;
-        use crate::ports::trees::{CommitmentTree, NullifierTree, HistoricRootTree};
+        use crate::ports::trees::{CommitmentTree, HistoricRootTree, NullifierTree};
+        use ark_ff::{BigInteger, PrimeField as ArkPrimeField};
+        use ff::{Field as FfField, PrimeField as FfPrimeField};
         use lib::merkle_trees::trees::MutableTree;
         use lib::proving::nova_v1::rollup_engine::F1;
-        use ark_ff::{PrimeField as ArkPrimeField, BigInteger};
-        use ff::{Field as FfField, PrimeField as FfPrimeField};
 
         let db_conn = get_db_connection().await;
 
@@ -533,8 +548,8 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         // hitting `IMTError::NullifierExists` on the first real
         // nullifier of the block.
         // ------------------------------------------------------------------
-        use lib::proving::nova_v1::witness::{build_rollup_circuits, RollupWitnessInputs};
         use lib::merkle_trees::trees::IndexedLeaves;
+        use lib::proving::nova_v1::witness::{build_rollup_circuits, RollupWitnessInputs};
 
         info!("[nova prepare_state_transition] Loading prior nullifiers from JF nullifier tree for IMT hydration (BEFORE Phase 1)...");
         let prior_load_start = Instant::now();
@@ -569,16 +584,21 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             a_bytes.as_ref().cmp(b_bytes.as_ref())
         });
         prior_nullifiers_f1.dedup();
-        info!("[nova prepare_state_transition] Loaded {} prior nullifier values in {:.2}s",
-            prior_nullifiers_f1.len(), prior_load_start.elapsed().as_secs_f64());
+        info!(
+            "[nova prepare_state_transition] Loaded {} prior nullifier values in {:.2}s",
+            prior_nullifiers_f1.len(),
+            prior_load_start.elapsed().as_secs_f64()
+        );
 
         // ------------------------------------------------------------------
         // Phase 1: JF tree insertions (for state management / DB persistence).
         // ------------------------------------------------------------------
         // Run tree inserts sequentially with detailed per-step logging
         // to identify which exact DB operation is stalling.
-        info!("[nova prepare_state_transition] Starting commitment tree batch insert ({} entries)...",
-            new_commitments.len());
+        info!(
+            "[nova prepare_state_transition] Starting commitment tree batch insert ({} entries)...",
+            new_commitments.len()
+        );
         let tree_insert_start = Instant::now();
 
         let comm_t = Instant::now();
@@ -592,38 +612,44 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         // above) is what actually goes into the on-chain tree so the
         // resulting `commitments_root` matches the JF root the client
         // computes from the on-chain padded `transactions` array.
-        let _comm_infos = <mongodb::Client as CommitmentTree<Fr254>>::batch_insert_with_circuit_info(
-            db_conn,
-            &jf_commitments,
-        )
-        .await
-        .map_err(|e| {
-            RollupProofError::ParameterError(format!(
-                "DB error batch-inserting commitments: {:?}",
-                e
-            ))
-        })?;
+        let _comm_infos =
+            <mongodb::Client as CommitmentTree<Fr254>>::batch_insert_with_circuit_info(
+                db_conn,
+                &jf_commitments,
+            )
+            .await
+            .map_err(|e| {
+                RollupProofError::ParameterError(format!(
+                    "DB error batch-inserting commitments: {:?}",
+                    e
+                ))
+            })?;
         info!("[nova prepare_state_transition] Commitment tree batch insert completed in {:.2}s ({} entries, padded to {} for on-chain alignment)",
             comm_t.elapsed().as_secs_f64(), jf_commitments.len(), padded_leaf_count);
 
-        info!("[nova prepare_state_transition] Starting nullifier tree batch insert ({} entries)...",
-            jf_nullifiers.len());
+        info!(
+            "[nova prepare_state_transition] Starting nullifier tree batch insert ({} entries)...",
+            jf_nullifiers.len()
+        );
         let null_t = Instant::now();
-        let _null_infos = <mongodb::Client as NullifierTree<Fr254>>::batch_insert_with_circuit_info(
-            db_conn,
-            &jf_nullifiers,
-        )
-        .await
-        .map_err(|e| {
-            RollupProofError::ParameterError(format!(
-                "DB error batch-inserting nullifiers: {:?}",
-                e
-            ))
-        })?;
+        let _null_infos =
+            <mongodb::Client as NullifierTree<Fr254>>::batch_insert_with_circuit_info(
+                db_conn,
+                &jf_nullifiers,
+            )
+            .await
+            .map_err(|e| {
+                RollupProofError::ParameterError(format!(
+                    "DB error batch-inserting nullifiers: {:?}",
+                    e
+                ))
+            })?;
         info!("[nova prepare_state_transition] Nullifier tree batch insert completed in {:.2}s ({} entries, padded to {} for on-chain alignment)",
             null_t.elapsed().as_secs_f64(), jf_nullifiers.len(), padded_leaf_count);
-        info!("[nova prepare_state_transition] Both tree inserts completed in {:.2}s",
-            tree_insert_start.elapsed().as_secs_f64());
+        info!(
+            "[nova prepare_state_transition] Both tree inserts completed in {:.2}s",
+            tree_insert_start.elapsed().as_secs_f64()
+        );
 
         // ------------------------------------------------------------------
         // Phase 2: Build neptune trees for circuit witness generation.
@@ -741,14 +767,18 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         let roots_start = Instant::now();
         let final_commitments_root = <mongodb::Client as MutableTree<Fr254>>::get_root(
             db_conn,
-            <mongodb::Client as CommitmentTree<Fr254>>::TREE_NAME
-        ).await.map_err(|e| {
+            <mongodb::Client as CommitmentTree<Fr254>>::TREE_NAME,
+        )
+        .await
+        .map_err(|e| {
             RollupProofError::ParameterError(format!("DB error getting commitment root: {:?}", e))
         })?;
         let final_nullifiers_root = <mongodb::Client as MutableTree<Fr254>>::get_root(
             db_conn,
-            <mongodb::Client as NullifierTree<Fr254>>::TREE_NAME
-        ).await.map_err(|e| {
+            <mongodb::Client as NullifierTree<Fr254>>::TREE_NAME,
+        )
+        .await
+        .map_err(|e| {
             RollupProofError::ParameterError(format!("DB error getting nullifier root: {:?}", e))
         })?;
 
@@ -758,16 +788,27 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                 &final_commitments_root,
                 false,
             )
-            .await.map_err(|e| {
-                RollupProofError::ParameterError(format!("DB error appending historic root: {:?}", e))
+            .await
+            .map_err(|e| {
+                RollupProofError::ParameterError(format!(
+                    "DB error appending historic root: {:?}",
+                    e
+                ))
             })?;
         info!("[nova prepare_state_transition] Final roots + historic root append completed in {:.2}s",
             roots_start.elapsed().as_secs_f64());
 
-        Ok((NovaPreppedInfo {
-            circuits: rollup_circuits,
-            pre_nullifiers_root: witness.pre_nullifiers_root,
-        }, [final_commitments_root, final_nullifiers_root, updated_historic_root_fr]))
+        Ok((
+            NovaPreppedInfo {
+                circuits: rollup_circuits,
+                pre_nullifiers_root: witness.pre_nullifiers_root,
+            },
+            [
+                final_commitments_root,
+                final_nullifiers_root,
+                updated_historic_root_fr,
+            ],
+        ))
     }
 
     fn recursive_prove(info: Self::PreppedInfo) -> Result<Vec<Fq254>, Self::Error> {
@@ -780,7 +821,10 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         // invoked for legacy callers; the canonical entry point is
         // `prove_block` below.
         use ark_ff::PrimeField;
-        info!("[nova recursive_prove] Starting Nova engine with {} circuits", info.circuits.len());
+        info!(
+            "[nova recursive_prove] Starting Nova engine with {} circuits",
+            info.circuits.len()
+        );
         let total_start = Instant::now();
 
         let engine = lib::proving::nova_v1::rollup_engine::NovaRollupEngine::new();
@@ -789,11 +833,18 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
                 .try_into()
                 .expect("initial z0 must have 5 elements");
         z0[1] = info.pre_nullifiers_root;
-        info!("[nova recursive_prove] Calling prove_circuits_with_z0 (pre_nullifiers_root = {:?})...", info.pre_nullifiers_root);
+        info!(
+            "[nova recursive_prove] Calling prove_circuits_with_z0 (pre_nullifiers_root = {:?})...",
+            info.pre_nullifiers_root
+        );
         let prove_start = Instant::now();
-        let proof = engine.prove_circuits_with_z0(info.circuits, z0)
+        let proof = engine
+            .prove_circuits_with_z0(info.circuits, z0)
             .map_err(|e| RollupProofError::ParameterError(format!("Nova prove error: {}", e)))?;
-        info!("[nova recursive_prove] prove_circuits completed in {:.2}s", prove_start.elapsed().as_secs_f64());
+        info!(
+            "[nova recursive_prove] prove_circuits completed in {:.2}s",
+            prove_start.elapsed().as_secs_f64()
+        );
 
         // Serialise the real `NovaProof` to its on-wire format and
         // round-trip it through the trait's Fq254 packing. The
@@ -804,8 +855,11 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         let proof_bytes = proof
             .to_wire_bytes()
             .map_err(|e| RollupProofError::ParameterError(format!("Nova proof serialize: {e}")))?;
-        info!("[nova recursive_prove] Serialization completed in {:.2}s ({} bytes)",
-            ser_start.elapsed().as_secs_f64(), proof_bytes.len());
+        info!(
+            "[nova recursive_prove] Serialization completed in {:.2}s ({} bytes)",
+            ser_start.elapsed().as_secs_f64(),
+            proof_bytes.len()
+        );
 
         let mut fq_vec = Vec::new();
         for chunk in proof_bytes.chunks(31) {
@@ -818,8 +872,10 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
             fq_vec.push(Fq254::zero());
         }
 
-        info!("[nova recursive_prove] Total recursive_prove completed in {:.2}s",
-            total_start.elapsed().as_secs_f64());
+        info!(
+            "[nova recursive_prove] Total recursive_prove completed in {:.2}s",
+            total_start.elapsed().as_secs_f64()
+        );
         Ok(fq_vec)
     }
 
@@ -827,9 +883,9 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
     ) -> Result<lib::proving::nova_v1::proof::NovaClientProof, Self::Error> {
+        use lib::nf_client_proof::PrivateInputs;
         use lib::nf_client_proof::ProvingEngine;
         use lib::proving::nova_v1::client_engine::NovaClientEngine;
-        use lib::nf_client_proof::PrivateInputs;
 
         let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
         // Compute the actual deposit commitments / nullifiers / compressed
@@ -845,10 +901,9 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof> for l
         // unsatisfiable".
         *public_inputs = compute_deposit_public_inputs(deposit_data);
 
-        let result =
-            NovaClientEngine::prove(&mut private_inputs, public_inputs).map_err(|e| {
-                RollupProofError::ParameterError(format!("Nova deposit proof error: {}", e))
-            });
+        let result = NovaClientEngine::prove(&mut private_inputs, public_inputs).map_err(|e| {
+            RollupProofError::ParameterError(format!("Nova deposit proof error: {}", e))
+        });
         // Restore the computed public inputs. The Plonk delegation may
         // overwrite the deposit mode flag and recompute commitments from
         // the witness, but the deposit-data-derived values are the
@@ -1269,9 +1324,18 @@ mod tests {
         let comm_fr = Fr254::from_be_bytes_mod_order(&comm_bytes);
         let null_fr = Fr254::from_be_bytes_mod_order(&null_bytes);
         let hist_fr = Fr254::from_be_bytes_mod_order(&hist_bytes);
-        assert_eq!(comm_fr, jf_comm, "commitments_root must be rewritten to the JF value");
-        assert_eq!(null_fr, jf_null, "nullifiers_root must be rewritten to the JF value");
-        assert_eq!(hist_fr, jf_hist, "historic_root_root must be rewritten to the JF value");
+        assert_eq!(
+            comm_fr, jf_comm,
+            "commitments_root must be rewritten to the JF value"
+        );
+        assert_eq!(
+            null_fr, jf_null,
+            "nullifiers_root must be rewritten to the JF value"
+        );
+        assert_eq!(
+            hist_fr, jf_hist,
+            "historic_root_root must be rewritten to the JF value"
+        );
 
         // And the Neptune roots are no longer present anywhere in
         // the wire blob (their 0xaa/0xbb/0xcc/0xdd/0xee/0xff
@@ -1326,9 +1390,7 @@ mod tests {
         const BLOCK_LEAVES: usize = 8;
 
         // Real commitments (4 non-zero leaves).
-        let real_commitments: Vec<Fr254> = (1u64..=4)
-            .map(|i| Fr254::from(100u64 + i))
-            .collect();
+        let real_commitments: Vec<Fr254> = (1u64..=4).map(|i| Fr254::from(100u64 + i)).collect();
         assert_eq!(real_commitments.len(), REAL_LEAVES);
 
         let hasher = Poseidon::<Fr254>::new();

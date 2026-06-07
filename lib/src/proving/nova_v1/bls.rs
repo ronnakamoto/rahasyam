@@ -57,8 +57,12 @@ impl std::fmt::Display for BlsError {
             BlsError::ShortIkm(n) => write!(f, "BLS IKM too short ({n} < 32)"),
             BlsError::BadScalarLen(n) => write!(f, "BLS secret key must be 32 bytes (got {n})"),
             BlsError::InvalidScalar => write!(f, "BLS secret key is not a canonical Fr scalar"),
-            BlsError::BadPubkeyLen(n) => write!(f, "BLS pubkey must be {PUBKEY_BYTES} bytes (got {n})"),
-            BlsError::BadSigLen(n) => write!(f, "BLS signature must be {SIG_BYTES} bytes (got {n})"),
+            BlsError::BadPubkeyLen(n) => {
+                write!(f, "BLS pubkey must be {PUBKEY_BYTES} bytes (got {n})")
+            }
+            BlsError::BadSigLen(n) => {
+                write!(f, "BLS signature must be {SIG_BYTES} bytes (got {n})")
+            }
             BlsError::NotInSubgroup => write!(f, "BLS point not in the prime-order subgroup"),
             BlsError::Empty => write!(f, "empty input to BLS aggregation"),
         }
@@ -114,7 +118,10 @@ fn p1_from_128(b: &[u8]) -> Result<blst_p1, BlsError> {
     if b.len() != PUBKEY_BYTES {
         return Err(BlsError::BadPubkeyLen(b.len()));
     }
-    let aff = blst_p1_affine { x: fp_from_64(&b[0..64]), y: fp_from_64(&b[64..128]) };
+    let aff = blst_p1_affine {
+        x: fp_from_64(&b[0..64]),
+        y: fp_from_64(&b[64..128]),
+    };
     if !unsafe { blst_p1_affine_in_g1(&aff) } {
         return Err(BlsError::NotInSubgroup);
     }
@@ -128,8 +135,12 @@ fn p2_from_256(b: &[u8]) -> Result<blst_p2, BlsError> {
         return Err(BlsError::BadSigLen(b.len()));
     }
     let aff = blst_p2_affine {
-        x: blst_fp2 { fp: [fp_from_64(&b[0..64]), fp_from_64(&b[64..128])] },
-        y: blst_fp2 { fp: [fp_from_64(&b[128..192]), fp_from_64(&b[192..256])] },
+        x: blst_fp2 {
+            fp: [fp_from_64(&b[0..64]), fp_from_64(&b[64..128])],
+        },
+        y: blst_fp2 {
+            fp: [fp_from_64(&b[128..192]), fp_from_64(&b[192..256])],
+        },
     };
     if !unsafe { blst_p2_affine_in_g2(&aff) } {
         return Err(BlsError::NotInSubgroup);
@@ -142,7 +153,15 @@ fn p2_from_256(b: &[u8]) -> Result<blst_p2, BlsError> {
 fn hash_to_g2(msg: &[u8], dst: &[u8]) -> blst_p2 {
     let mut h = blst_p2::default();
     unsafe {
-        blst_hash_to_g2(&mut h, msg.as_ptr(), msg.len(), dst.as_ptr(), dst.len(), ptr::null(), 0)
+        blst_hash_to_g2(
+            &mut h,
+            msg.as_ptr(),
+            msg.len(),
+            dst.as_ptr(),
+            dst.len(),
+            ptr::null(),
+            0,
+        )
     };
     h
 }
@@ -317,7 +336,10 @@ mod tests {
 
     fn dehex(s: &str) -> Vec<u8> {
         let s = s.trim().trim_start_matches("0x");
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     // Fixed 32-byte stand-in for keccak256(attestation_preimage(..)).
@@ -334,12 +356,18 @@ mod tests {
         let sigma = aggregate_signatures(&[sig0, sig1]).unwrap();
         let apk = aggregate_public_keys(&[sk0.public_key(), sk1.public_key()]).unwrap();
 
-        assert!(verify_aggregate(&apk, &msg, &sigma).unwrap(), "valid aggregate must verify");
+        assert!(
+            verify_aggregate(&apk, &msg, &sigma).unwrap(),
+            "valid aggregate must verify"
+        );
 
         // Wrong message must not verify.
         let mut bad = msg.clone();
         bad[0] ^= 0x01;
-        assert!(!verify_aggregate(&apk, &bad, &sigma).unwrap(), "tampered message must fail");
+        assert!(
+            !verify_aggregate(&apk, &bad, &sigma).unwrap(),
+            "tampered message must fail"
+        );
     }
 
     /// Byte-for-byte parity with the vectors the on-chain
@@ -359,11 +387,18 @@ mod tests {
         let sk1 = SecretKey::from_ikm(&[0x22u8; 32]).unwrap();
         let msg = dehex(MSG_HEX);
 
-        assert_eq!(sk0.public_key().to_vec(), expected_pk0, "pubkey encoding drift vs on-chain");
+        assert_eq!(
+            sk0.public_key().to_vec(),
+            expected_pk0,
+            "pubkey encoding drift vs on-chain"
+        );
 
-        let sigma =
-            aggregate_signatures(&[sk0.sign(&msg), sk1.sign(&msg)]).unwrap();
-        assert_eq!(sigma.to_vec(), expected_sigma, "aggregate signature drift vs on-chain");
+        let sigma = aggregate_signatures(&[sk0.sign(&msg), sk1.sign(&msg)]).unwrap();
+        assert_eq!(
+            sigma.to_vec(),
+            expected_sigma,
+            "aggregate signature drift vs on-chain"
+        );
     }
 
     #[test]
@@ -399,7 +434,10 @@ mod tests {
 
     #[test]
     fn rejects_short_ikm() {
-        assert!(matches!(SecretKey::from_ikm(&[0u8; 16]), Err(BlsError::ShortIkm(16))));
+        assert!(matches!(
+            SecretKey::from_ikm(&[0u8; 16]),
+            Err(BlsError::ShortIkm(16))
+        ));
     }
 
     #[test]
@@ -418,10 +456,16 @@ mod tests {
 
     #[test]
     fn rejects_bad_scalar() {
-        assert!(matches!(SecretKey::from_bytes(&[0u8; 16]), Err(BlsError::BadScalarLen(16))));
+        assert!(matches!(
+            SecretKey::from_bytes(&[0u8; 16]),
+            Err(BlsError::BadScalarLen(16))
+        ));
         // The Fr modulus itself is not a canonical scalar (must be < r).
         let r = dehex("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
-        assert!(matches!(SecretKey::from_bytes(&r), Err(BlsError::InvalidScalar)));
+        assert!(matches!(
+            SecretKey::from_bytes(&r),
+            Err(BlsError::InvalidScalar)
+        ));
     }
 
     fn hex_str(b: &[u8]) -> String {

@@ -1,18 +1,18 @@
-use configuration::settings::{self, Settings};
 #[cfg(not(feature = "nova-v1"))]
 use ark_bn254::{Bn254, Fq as Fq254};
 #[cfg(not(feature = "nova-v1"))]
 use ark_serialize::{CanonicalSerialize, Write};
 #[cfg(not(feature = "nova-v1"))]
 use ark_std::rand;
+use configuration::settings::{self, Settings};
+#[cfg(feature = "nova-v1")]
+use jf_plonk::errors::PlonkError;
 #[cfg(not(feature = "nova-v1"))]
 use jf_plonk::{
     errors::PlonkError,
     nightfall::{ipa_structs::VerificationKeyId, FFTPlonk},
     proof_system::UniversalSNARK,
 };
-#[cfg(feature = "nova-v1")]
-use jf_plonk::errors::PlonkError;
 #[cfg(not(feature = "nova-v1"))]
 use jf_primitives::{pcs::prelude::*, rescue::sponge::RescueCRHF};
 #[cfg(not(feature = "nova-v1"))]

@@ -48,12 +48,12 @@ where
 
     let mut bytes = Vec::<u8>::from_hex_string(hex_str).map_err(serde::de::Error::custom)?;
     bytes.reverse(); // Convert to little-endian (which is the expected format for the arkworks deserialiser)
-    // NOTE: We use `Validate::No` here so that commitments previously stored with
-    // out-of-field or off-curve elements (e.g. the BabyJubJub public-key point
-    // emitted by the proposer for some deposit/transfer preimages) can still
-    // round-trip through the REST API. Strict validation is still enforced at
-    // every point where the value is consumed by a cryptographic operation
-    // (circuit witness generation, signature verification, etc.).
+                     // NOTE: We use `Validate::No` here so that commitments previously stored with
+                     // out-of-field or off-curve elements (e.g. the BabyJubJub public-key point
+                     // emitted by the proposer for some deposit/transfer preimages) can still
+                     // round-trip through the REST API. Strict validation is still enforced at
+                     // every point where the value is consumed by a cryptographic operation
+                     // (circuit witness generation, signature verification, etc.).
     let a = A::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::No)
         .map_err(serde::de::Error::custom)?;
     Ok(a)

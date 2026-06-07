@@ -607,9 +607,6 @@ mod tests {
             ProvingSystemIdConfig::from_str("nova-v1"),
             Some(ProvingSystemIdConfig::NovaV1)
         );
-        assert_eq!(
-            ProvingSystemIdConfig::from_str("unknown"),
-            None
-        );
+        assert_eq!(ProvingSystemIdConfig::from_str("unknown"), None);
     }
 }

@@ -39,21 +39,21 @@
 
 #[cfg(feature = "nova-v1")]
 mod nova_integration {
-    use std::sync::{Arc, OnceLock};
-    use crate::proving::nova_v1::proof::{NovaProof, NovaClientProof};
     use crate::proving::nova_v1::commitment_tree::compute_initial_z0;
+    use crate::proving::nova_v1::proof::{NovaClientProof, NovaProof};
     use crate::proving::nova_v1::step_circuit::nova_step_circuit::{
         RollupIvcState, RollupStepCircuit,
     };
     use crate::proving::{ProvingError, RecursiveProvingEngine};
     use crate::shared_entities::{DepositData, OnChainTransaction};
+    use std::sync::{Arc, OnceLock};
 
+    use ff::PrimeField;
     use nova_snark::{
         nova::{CompressedSNARK, PublicParams, RecursiveSNARK},
         provider::{Bn256EngineKZG, GrumpkinEngine},
         traits::{snark::RelaxedR1CSSNARKTrait, Engine},
     };
-    use ff::PrimeField;
 
     // ------------------------------------------------------------------
     // Type aliases following the minroot example pattern.
@@ -114,8 +114,10 @@ mod nova_integration {
 
     // Global caches for the keys so they are only loaded/generated once
     static PUBLIC_PARAMS: OnceLock<Arc<PublicParams<E1, E2, RollupCircuit>>> = OnceLock::new();
-    static SNARK_PK: OnceLock<Arc<nova_snark::nova::ProverKey<E1, E2, RollupCircuit, S1, S2>>> = OnceLock::new();
-    static SNARK_VK: OnceLock<Arc<nova_snark::nova::VerifierKey<E1, E2, RollupCircuit, S1, S2>>> = OnceLock::new();
+    static SNARK_PK: OnceLock<Arc<nova_snark::nova::ProverKey<E1, E2, RollupCircuit, S1, S2>>> =
+        OnceLock::new();
+    static SNARK_VK: OnceLock<Arc<nova_snark::nova::VerifierKey<E1, E2, RollupCircuit, S1, S2>>> =
+        OnceLock::new();
 
     impl NovaRollupEngine {
         /// Default upper bound on the number of IVC steps per block.
@@ -191,7 +193,7 @@ mod nova_integration {
                 bytes
             }
 
-                RollupIvcState {
+            RollupIvcState {
                 commitments_root: f1_to_bytes(z_out[0]),
                 nullifiers_root: f1_to_bytes(z_out[1]),
                 historic_root_root: f1_to_bytes(z_out[2]),
@@ -256,7 +258,10 @@ mod nova_integration {
             let z0 = Self::initial_z0();
             log::info!(
                 "[nova-v1] z0 = [{:?}, {:?}, {:?}, {:?}]",
-                z0[0], z0[1], z0[2], z0[3]
+                z0[0],
+                z0[1],
+                z0[2],
+                z0[3]
             );
 
             // ------------------------------------------------------------------
@@ -268,17 +273,14 @@ mod nova_integration {
                 .map_err(|e| ProvingError::ProvingFailed(format!("RecursiveSNARK::new: {e}")))?;
 
             for (i, circuit) in circuits.iter().enumerate() {
-                rs.prove_step(&**pp, circuit).map_err(|e| {
-                    ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}"))
-                })?;
+                rs.prove_step(&**pp, circuit)
+                    .map_err(|e| ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}")))?;
             }
 
             // Extract final IVC state from the output z vector.
-            let z_out = rs
-                .verify(&**pp, num_steps, &z0)
-                .map_err(|e| {
-                    ProvingError::VerificationFailed(format!("IVC verify (state extract): {e}"))
-                })?;
+            let z_out = rs.verify(&**pp, num_steps, &z0).map_err(|e| {
+                ProvingError::VerificationFailed(format!("IVC verify (state extract): {e}"))
+            })?;
             let ivc_state = Self::extract_ivc_state(&z_out);
 
             // ------------------------------------------------------------------
@@ -344,7 +346,11 @@ mod nova_integration {
             let num_steps = circuits.len();
             log::info!(
                 "[nova-v1] prove_circuits_with_z0: z0 = [{:?}, {:?}, {:?}, {:?}, {:?}]",
-                z0[0], z0[1], z0[2], z0[3], z0[4]
+                z0[0],
+                z0[1],
+                z0[2],
+                z0[3],
+                z0[4]
             );
 
             let first_circuit = circuits.first().unwrap();
@@ -352,16 +358,13 @@ mod nova_integration {
                 .map_err(|e| ProvingError::ProvingFailed(format!("RecursiveSNARK::new: {e}")))?;
 
             for (i, circuit) in circuits.iter().enumerate() {
-                rs.prove_step(&**pp, circuit).map_err(|e| {
-                    ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}"))
-                })?;
+                rs.prove_step(&**pp, circuit)
+                    .map_err(|e| ProvingError::ProvingFailed(format!("prove_step[{i}]: {e}")))?;
             }
 
-            let z_out = rs
-                .verify(&**pp, num_steps, &z0)
-                .map_err(|e| {
-                    ProvingError::VerificationFailed(format!("IVC verify (state extract): {e}"))
-                })?;
+            let z_out = rs.verify(&**pp, num_steps, &z0).map_err(|e| {
+                ProvingError::VerificationFailed(format!("IVC verify (state extract): {e}"))
+            })?;
             let ivc_state = Self::extract_ivc_state(&z_out);
 
             log::info!("[nova-v1] compressing {} steps with Spartan…", num_steps);
@@ -397,7 +400,9 @@ mod nova_integration {
         where
             Self: Sized,
         {
-            use nova_snark::frontend::{num::AllocatedNum, test_cs::TestConstraintSystem, ConstraintSystem};
+            use nova_snark::frontend::{
+                num::AllocatedNum, test_cs::TestConstraintSystem, ConstraintSystem,
+            };
             use nova_snark::traits::circuit::StepCircuit;
 
             let key_manager = crate::proving::nova_v1::keys::NovaKeyManager::with_default_dir();
@@ -434,19 +439,15 @@ mod nova_integration {
             // generated via the supplied closure and persisted.
             PUBLIC_PARAMS.get_or_init(|| {
                 let pp = key_manager
-                    .load_or_generate_ivc_pk(
-                        expected_arity,
-                        expected_constraint_count,
-                        || {
-                            let dummy_circuit = RollupCircuit::padding();
-                            PublicParams::<E1, E2, RollupCircuit>::setup(
-                                &dummy_circuit,
-                                &*S1::ck_floor(),
-                                &*S2::ck_floor(),
-                            )
-                            .expect("PublicParams setup failed")
-                        },
-                    )
+                    .load_or_generate_ivc_pk(expected_arity, expected_constraint_count, || {
+                        let dummy_circuit = RollupCircuit::padding();
+                        PublicParams::<E1, E2, RollupCircuit>::setup(
+                            &dummy_circuit,
+                            &*S1::ck_floor(),
+                            &*S2::ck_floor(),
+                        )
+                        .expect("PublicParams setup failed")
+                    })
                     .expect("Failed to load or generate PublicParams");
                 Arc::new(pp)
             });
@@ -542,11 +543,7 @@ mod nova_integration {
         /// empty-tree `z0` for the first block, or the hydrated
         /// `pre_nullifiers_root` for subsequent blocks) and signs only
         /// when it returns `Ok(true)`.
-        pub fn verify_with_z0(
-            &self,
-            proof: &NovaProof,
-            z0: [F1; 5],
-        ) -> Result<bool, ProvingError> {
+        pub fn verify_with_z0(&self, proof: &NovaProof, z0: [F1; 5]) -> Result<bool, ProvingError> {
             // Empty proof for empty block is valid by convention.
             if proof.snark_proof.is_empty() && proof.transaction_count == 0 {
                 return Ok(true);
@@ -563,7 +560,9 @@ mod nova_integration {
             // Deserialize the compressed SNARK.
             let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
                 .map_err(|e| {
-                    ProvingError::VerificationFailed(format!("CompressedSNARK deserialization: {e}"))
+                    ProvingError::VerificationFailed(format!(
+                        "CompressedSNARK deserialization: {e}"
+                    ))
                 })?;
 
             let vk = SNARK_VK.get().ok_or_else(|| {
@@ -606,7 +605,9 @@ mod nova_integration {
             let _ = Self::setup()?;
             let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
                 .map_err(|e| {
-                    ProvingError::VerificationFailed(format!("CompressedSNARK deserialization: {e}"))
+                    ProvingError::VerificationFailed(format!(
+                        "CompressedSNARK deserialization: {e}"
+                    ))
                 })?;
             let vk = SNARK_VK.get().ok_or_else(|| {
                 ProvingError::VerificationFailed("SNARK VK not initialized".into())
@@ -670,9 +671,9 @@ mod nova_integration {
                 return Ok(false);
             }
 
-            let mut z0: [F1; 5] = compute_initial_z0().try_into().map_err(|_| {
-                ProvingError::VerificationFailed("initial z0 arity != 5".into())
-            })?;
+            let mut z0: [F1; 5] = compute_initial_z0()
+                .try_into()
+                .map_err(|_| ProvingError::VerificationFailed("initial z0 arity != 5".into()))?;
             z0[1] = pre_nullifiers_root;
 
             // Reconstruct the pre-rewrite proof: identical `snark_proof`
@@ -703,11 +704,9 @@ mod nova_integration {
         ) -> Result<bool, ProvingError> {
             // (1) Cryptographic verification: returns the proven output
             //     state `zn` (the primary engine's z vector).
-            let zn = compressed
-                .verify(vk, num_steps, z0)
-                .map_err(|e| {
-                    ProvingError::VerificationFailed(format!("CompressedSNARK::verify: {e}"))
-                })?;
+            let zn = compressed.verify(vk, num_steps, z0).map_err(|e| {
+                ProvingError::VerificationFailed(format!("CompressedSNARK::verify: {e}"))
+            })?;
 
             // (2) Bind the proven output state to the advertised roots.
             //     `zn` is `[commitments_root, nullifiers_root,
@@ -770,13 +769,13 @@ mod nova_integration {
 
 #[cfg(not(feature = "nova-v1"))]
 mod nova_integration {
+    use crate::proving::nova_v1::proof::{NovaClientProof, NovaProof};
     use crate::proving::{ProvingError, RecursiveProvingEngine};
-    use crate::proving::nova_v1::proof::{NovaProof, NovaClientProof};
     use crate::shared_entities::{DepositData, OnChainTransaction};
 
     /// Stub implementation when nova-v1 feature is not enabled.
     pub struct NovaRollupEngine;
-    
+
     // Stub types to satisfy the re-export at the bottom of the file
     pub type RollupCircuit = super::step_circuit::RollupStepCircuit;
     pub type F1 = ark_bn254::Fr;
@@ -835,4 +834,4 @@ mod nova_integration {
 }
 
 // Re-export for use in parent module.
-pub use nova_integration::{NovaRollupEngine, RollupCircuit, F1, E1};
+pub use nova_integration::{NovaRollupEngine, RollupCircuit, E1, F1};

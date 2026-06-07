@@ -6,8 +6,8 @@ pub mod rollup_engine;
 use alloy::primitives::Address;
 
 use super::{ProofSystemId, ProvingSystem};
-use crate::proving::plonk_v1::rollup_engine::PlonkRollupEngine;
 use crate::proving::plonk_v1::keys::PlonkVerifyingKey;
+use crate::proving::plonk_v1::rollup_engine::PlonkRollupEngine;
 
 pub struct PlonkV1System;
 

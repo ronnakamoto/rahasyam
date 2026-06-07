@@ -6,12 +6,12 @@ use crate::{
         trees::{CommitmentTree, HistoricRootTree, NullifierTree},
     },
 };
+use ark_bn254::Fr as Fr254;
 use ark_std::Zero;
 use lib::{
     nf_client_proof::{Proof, ProvingEngine, PublicInputs},
     shared_entities::{ClientTransaction, OnChainTransaction},
 };
-use ark_bn254::Fr as Fr254;
 use log::{error, info, warn};
 use std::{
     error::Error,

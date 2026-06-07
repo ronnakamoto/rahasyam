@@ -172,17 +172,18 @@ pub fn verify_forwarded_proof(request: &AttestRequest) -> Result<(), Attestation
         AttestationServiceError::BadRequest(format!("proof is not a valid NovaProof: {e}"))
     })?;
 
-    let neptune_commitments_root =
-        decode_root("neptune_commitments_root", &request.neptune_commitments_root)?;
+    let neptune_commitments_root = decode_root(
+        "neptune_commitments_root",
+        &request.neptune_commitments_root,
+    )?;
     let neptune_nullifiers_root =
         decode_root("neptune_nullifiers_root", &request.neptune_nullifiers_root)?;
     let neptune_historic_root_root = decode_root(
         "neptune_historic_root_root",
         &request.neptune_historic_root_root,
     )?;
-    let pre_nullifiers_root = f1_from_hex(request.pre_nullifiers_root.trim()).map_err(|e| {
-        AttestationServiceError::BadRequest(format!("pre_nullifiers_root: {e}"))
-    })?;
+    let pre_nullifiers_root = f1_from_hex(request.pre_nullifiers_root.trim())
+        .map_err(|e| AttestationServiceError::BadRequest(format!("pre_nullifiers_root: {e}")))?;
 
     let engine = NovaRollupEngine::new();
     let verified = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -354,7 +355,9 @@ fn build_committee_share_for_handler(
             match nova_cfg.committee_verifier.trim().parse() {
                 Ok(a) => a,
                 Err(e) => {
-                    log::warn!("[attestor] invalid committee_verifier address, skipping BLS share: {e}");
+                    log::warn!(
+                        "[attestor] invalid committee_verifier address, skipping BLS share: {e}"
+                    );
                     return None;
                 }
             }
@@ -362,7 +365,12 @@ fn build_committee_share_for_handler(
             return None;
         }
     };
-    match build_bls_share(chain_id, committee_verifier, &nova_cfg.bls_secret_key, request) {
+    match build_bls_share(
+        chain_id,
+        committee_verifier,
+        &nova_cfg.bls_secret_key,
+        request,
+    ) {
         Ok(Some(share)) => Some((
             format!("0x{}", hex::encode(share.share)),
             format!("0x{}", hex::encode(share.pubkey)),
@@ -518,12 +526,7 @@ mod tests {
         // must verify against the exact preimage the contract rebuilds.
         let mut block_len_word = [0u8; 32];
         block_len_word[24..].copy_from_slice(&64u64.to_be_bytes());
-        let pi = [
-            [0x11u8; 32],
-            [0x22u8; 32],
-            [0x33u8; 32],
-            block_len_word,
-        ];
+        let pi = [[0x11u8; 32], [0x22u8; 32], [0x33u8; 32], block_len_word];
         let preimage = attestation_preimage(
             chain_id,
             verifier,

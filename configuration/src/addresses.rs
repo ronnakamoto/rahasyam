@@ -353,7 +353,7 @@ impl Addresses {
         }
         if !mock_prover && self.verifier == Address::ZERO && self.nova_verifier == Address::ZERO {
             return Err(AddressesError::ZeroAddress(
-                "verifier (plonk or nova)".into()
+                "verifier (plonk or nova)".into(),
             ));
         }
         Ok(())

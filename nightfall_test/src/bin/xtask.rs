@@ -46,12 +46,17 @@ const CLIENT_URL: &str = "http://localhost:3000";
 #[derive(Debug)]
 enum Cmd {
     InfraUp,
-    InfraDown { volumes: bool },
+    InfraDown {
+        volumes: bool,
+    },
     InfraLogs,
     NovaKeygen,
     NovaBuild,
     NovaE2e,
-    NovaFast { skip_deploy: bool, skip_keygen: bool },
+    NovaFast {
+        skip_deploy: bool,
+        skip_keygen: bool,
+    },
     Down,
 }
 
@@ -141,14 +146,7 @@ fn main() -> Result<()> {
 fn infra_up() -> Result<()> {
     println!("[xtask] Starting dev-infra ring ({COMPOSE_FILE})…");
     let status = Command::new("docker")
-        .args([
-            "compose",
-            "-f",
-            COMPOSE_FILE,
-            "up",
-            "-d",
-            "--wait",
-        ])
+        .args(["compose", "-f", COMPOSE_FILE, "up", "-d", "--wait"])
         .status()
         .context("failed to invoke docker compose")?;
     if !status.success() {
@@ -274,10 +272,16 @@ fn anvil_chain_id() -> Result<()> {
 fn nova_keygen() -> Result<()> {
     let key_dir = nova_key_dir();
     if key_dir.join("nova_ivc_pk_v3.bin").exists() {
-        println!("[xtask] Nova keys already present in {}; skipping keygen.", key_dir.display());
+        println!(
+            "[xtask] Nova keys already present in {}; skipping keygen.",
+            key_dir.display()
+        );
         return Ok(());
     }
-    println!("[xtask] Pregenerating Nova keys into {}…", key_dir.display());
+    println!(
+        "[xtask] Pregenerating Nova keys into {}…",
+        key_dir.display()
+    );
     let status = Command::new("cargo")
         .args([
             "run",
@@ -434,7 +438,10 @@ fn nova_fast(skip_deploy: bool, skip_keygen: bool) -> Result<()> {
 
     // 6. Wait for /v1/health on both.
     wait_for_http(&format!("{CLIENT_URL}/v1/health"), Duration::from_secs(60))?;
-    wait_for_http(&format!("{PROPOSER_URL}/v1/health"), Duration::from_secs(60))?;
+    wait_for_http(
+        &format!("{PROPOSER_URL}/v1/health"),
+        Duration::from_secs(60),
+    )?;
 
     // 7. Run the 3-tx scenario (deposit, transfer, withdraw).
     run_3tx_scenario()?;
@@ -448,7 +455,11 @@ fn nova_fast(skip_deploy: bool, skip_keygen: bool) -> Result<()> {
 
 fn spawn_host_bin(name: &str) -> Result<Child> {
     let bin = bin_path(name);
-    println!("[xtask] Starting {} on host (binary: {})…", name, bin.display());
+    println!(
+        "[xtask] Starting {} on host (binary: {})…",
+        name,
+        bin.display()
+    );
     let child = Command::new(bin)
         .env("NF4_RUN_MODE", "local")
         .env("NF4_MOCK_PROVER", "false")
@@ -469,7 +480,10 @@ fn bin_path(name: &str) -> PathBuf {
 }
 
 fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
-    println!("[xtask] Waiting for {url} (timeout: {}s)…", timeout.as_secs());
+    println!(
+        "[xtask] Waiting for {url} (timeout: {}s)…",
+        timeout.as_secs()
+    );
     let deadline = Instant::now() + timeout;
     loop {
         if let Ok(out) = Command::new("curl").args(["-fsS", url]).output() {
@@ -519,7 +533,9 @@ fn run_3tx_scenario() -> Result<()> {
     println!("[xtask] Both proposer and client are healthy.");
     println!("[xtask] To drive the 3-tx scenario interactively, run in another shell:");
     println!("        NF4_RUN_MODE=local cargo run --release --features nova-v1 --bin menu");
-    println!("[xtask] (or extend this xtask to POST /v1/deposit, /v1/transfer, /v1/withdraw directly).");
+    println!(
+        "[xtask] (or extend this xtask to POST /v1/deposit, /v1/transfer, /v1/withdraw directly)."
+    );
     Ok(())
 }
 

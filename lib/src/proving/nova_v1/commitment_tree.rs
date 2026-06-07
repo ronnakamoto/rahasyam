@@ -72,11 +72,8 @@ pub fn f1_from_hex(hex_str: &str) -> Result<F1, String> {
     let padded_hex = format!("{stripped:0>64}");
     let mut be = [0u8; 32];
     for (i, chunk) in padded_hex.as_bytes().chunks(2).enumerate() {
-        let byte = u8::from_str_radix(
-            std::str::from_utf8(chunk).map_err(|e| e.to_string())?,
-            16,
-        )
-        .map_err(|e| e.to_string())?;
+        let byte = u8::from_str_radix(std::str::from_utf8(chunk).map_err(|e| e.to_string())?, 16)
+            .map_err(|e| e.to_string())?;
         be[i] = byte;
     }
     // `from_repr` expects little-endian bytes.
@@ -195,16 +192,27 @@ impl<S: CommitmentTreeStorage> NeptuneCommitmentTree<S> {
         let constants = poseidon_constants::<F1>();
         let mut zero_hashes = vec![F1::ZERO; depth as usize + 1];
         for i in 1..=depth as usize {
-            zero_hashes[i] = poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
+            zero_hashes[i] =
+                poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
         }
         // Eagerly compute the empty-tree root and persist the initial
         // metadata. The root is well-defined for an empty tree (all-zero
         // leaves collapsed up to level `depth`).
         let root = zero_hashes[depth as usize];
         let next_leaf_index = 0u64;
-        let meta = CommitmentTreeMetadata { tree_height: depth, next_leaf_index, root };
+        let meta = CommitmentTreeMetadata {
+            tree_height: depth,
+            next_leaf_index,
+            root,
+        };
         storage.save_metadata(&meta);
-        Self { depth, next_leaf_index, zero_hashes, constants, storage }
+        Self {
+            depth,
+            next_leaf_index,
+            zero_hashes,
+            constants,
+            storage,
+        }
     }
 
     /// Hydrate an existing tree from storage. Returns `None` if no
@@ -215,7 +223,8 @@ impl<S: CommitmentTreeStorage> NeptuneCommitmentTree<S> {
         let constants = poseidon_constants::<F1>();
         let mut zero_hashes = vec![F1::ZERO; depth as usize + 1];
         for i in 1..=depth as usize {
-            zero_hashes[i] = poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
+            zero_hashes[i] =
+                poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
         }
         Some(Self {
             depth,
@@ -474,7 +483,8 @@ impl<S: NullifierTreeStorage> NeptuneIMT<S> {
         let constants = poseidon_constants::<F1>();
         let mut zero_hashes = vec![F1::ZERO; depth as usize + 1];
         for i in 1..=depth as usize {
-            zero_hashes[i] = poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
+            zero_hashes[i] =
+                poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
         }
 
         let zero_leaf_hash = poseidon_hash3_native(&constants, F1::ZERO, F1::ZERO, F1::ZERO);
@@ -541,7 +551,8 @@ impl<S: NullifierTreeStorage> NeptuneIMT<S> {
         let constants = poseidon_constants::<F1>();
         let mut zero_hashes = vec![F1::ZERO; depth as usize + 1];
         for i in 1..=depth as usize {
-            zero_hashes[i] = poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
+            zero_hashes[i] =
+                poseidon_hash2_native(&constants, zero_hashes[i - 1], zero_hashes[i - 1]);
         }
         // Re-hydrate the in-memory leaf map by walking the storage.
         let mut leaves = HashMap::new();
@@ -699,16 +710,10 @@ impl<S: NullifierTreeStorage> NeptuneIMT<S> {
         self.rehash_subtree(low_leaf_tree_index, updated_low_hash);
 
         // 4. Insert the new leaf, inheriting the low leaf's old next pointer.
-        self.leaves.insert(
-            new_leaf_index,
-            (nullifier, old_next_index, old_next_value),
-        );
-        let new_leaf_hash = imt_leaf_hash_native(
-            &self.constants,
-            nullifier,
-            old_next_index,
-            old_next_value,
-        );
+        self.leaves
+            .insert(new_leaf_index, (nullifier, old_next_index, old_next_value));
+        let new_leaf_hash =
+            imt_leaf_hash_native(&self.constants, nullifier, old_next_index, old_next_value);
         self.rehash_subtree(new_leaf_index, new_leaf_hash);
 
         // 5. Persist the new and updated leaves to the leaf DB.
@@ -816,7 +821,13 @@ pub fn compute_initial_z0() -> Vec<F1> {
     // Historic root tree: starts empty (all zero leaves) — same root as commitment tree.
     let historic_root = empty_commitment_root;
 
-    vec![empty_commitment_root, imt_root, historic_root, F1::ZERO, F1::ZERO]
+    vec![
+        empty_commitment_root,
+        imt_root,
+        historic_root,
+        F1::ZERO,
+        F1::ZERO,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -867,7 +878,10 @@ mod tests {
             let (root_after, path) = tree.append(F1::from(i + 1));
             let constants = poseidon_constants::<F1>();
             let recomputed = compute_merkle_root_native(&constants, F1::from(i + 1), &path);
-            assert_eq!(root_after, recomputed, "path must recompute to current root");
+            assert_eq!(
+                root_after, recomputed,
+                "path must recompute to current root"
+            );
             assert_eq!(root_after, tree.root());
         }
         assert_eq!(tree.leaf_count(), 8);
@@ -925,7 +939,11 @@ mod tests {
             witness.low_next_value,
         );
         let recomputed = compute_merkle_root_native(&constants, low_leaf_hash, &witness.path);
-        assert_eq!(recomputed, imt.root(), "witness must recompute to current root");
+        assert_eq!(
+            recomputed,
+            imt.root(),
+            "witness must recompute to current root"
+        );
     }
 
     #[test]
@@ -1003,6 +1021,10 @@ mod tests {
         let imt: NeptuneIMT<InMemoryNullifierStorage> =
             NeptuneIMT::new(32, InMemoryNullifierStorage::new());
         let z0 = compute_initial_z0();
-        assert_eq!(z0[1], imt.root(), "z0[1] must match a fresh NeptuneIMT root");
+        assert_eq!(
+            z0[1],
+            imt.root(),
+            "z0[1] must match a fresh NeptuneIMT root"
+        );
     }
 }

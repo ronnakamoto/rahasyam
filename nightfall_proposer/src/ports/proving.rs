@@ -1,5 +1,5 @@
-use std::{error::Error, fmt::Display};
 use log::info;
+use std::{error::Error, fmt::Display};
 use tokio::time::Instant;
 
 use crate::{
@@ -39,8 +39,11 @@ pub trait RecursiveProvingEngine<P: Proof> {
     ) -> Result<Block, Self::Error> {
         let prove_block_start = Instant::now();
 
-        info!("[prove_block] Starting prepare_state_transition ({} deposits, {} client txs)...",
-            deposit_transactions.len(), client_transactions.len());
+        info!(
+            "[prove_block] Starting prepare_state_transition ({} deposits, {} client txs)...",
+            deposit_transactions.len(),
+            client_transactions.len()
+        );
         let prep_start = Instant::now();
         // Snapshot the authoritative JF trees before `prepare_state_transition`
         // mutates them speculatively, so the block can be rolled back if it
@@ -64,19 +67,23 @@ pub trait RecursiveProvingEngine<P: Proof> {
                 }
             }
         };
-        info!("[prove_block] prepare_state_transition completed in {:.2}s", prep_start.elapsed().as_secs_f64());
+        info!(
+            "[prove_block] prepare_state_transition completed in {:.2}s",
+            prep_start.elapsed().as_secs_f64()
+        );
 
         info!("[prove_block] Starting recursive_prove (offloaded to blocking thread pool)...");
         let prove_start = Instant::now();
-        let proof = tokio::task::spawn_blocking(move || {
-            Self::recursive_prove(info)
-        })
-        .await
-        .map_err(|_e| {
-            // JoinError → convert to our Error type via ConversionError
-            ConversionError::ParseFailed
-        })??;
-        info!("[prove_block] recursive_prove completed in {:.2}s", prove_start.elapsed().as_secs_f64());
+        let proof = tokio::task::spawn_blocking(move || Self::recursive_prove(info))
+            .await
+            .map_err(|_e| {
+                // JoinError → convert to our Error type via ConversionError
+                ConversionError::ParseFailed
+            })??;
+        info!(
+            "[prove_block] recursive_prove completed in {:.2}s",
+            prove_start.elapsed().as_secs_f64()
+        );
 
         let serialize_start = Instant::now();
         let proof_vec: Vec<Fq254> = proof.into();
@@ -89,8 +96,11 @@ pub trait RecursiveProvingEngine<P: Proof> {
                 bytes
             })
             .collect::<Vec<u8>>();
-        info!("[prove_block] Proof serialization completed in {:.2}s ({} bytes)",
-            serialize_start.elapsed().as_secs_f64(), proof_bytes.len());
+        info!(
+            "[prove_block] Proof serialization completed in {:.2}s ({} bytes)",
+            serialize_start.elapsed().as_secs_f64(),
+            proof_bytes.len()
+        );
 
         let result = Ok(Block {
             commitments_root,
@@ -119,7 +129,10 @@ pub trait RecursiveProvingEngine<P: Proof> {
             // them yet.
             nova_ivc_state: Default::default(),
         });
-        info!("[prove_block] Total prove_block completed in {:.2}s", prove_block_start.elapsed().as_secs_f64());
+        info!(
+            "[prove_block] Total prove_block completed in {:.2}s",
+            prove_block_start.elapsed().as_secs_f64()
+        );
         result
     }
     /// The proving engine decides how it handles proving state transition so we make it define how it needs the

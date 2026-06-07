@@ -1,8 +1,8 @@
 use ark_bn254::Fr as Fr254;
 use ark_serialize::SerializationError;
 use lib::{
-    serialization::{ark_de_hex, ark_se_hex},
     proving::ProofSystemId,
+    serialization::{ark_de_hex, ark_se_hex},
     shared_entities::DepositData,
     shared_entities::{ClientTransaction, OnChainTransaction},
 };
@@ -44,11 +44,23 @@ pub struct Block {
 /// because the BN254 scalar field is the same).
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NovaIvcBlockState {
-    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        default,
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex"
+    )]
     pub nova_commitments_root: Fr254,
-    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        default,
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex"
+    )]
     pub nova_nullifiers_root: Fr254,
-    #[serde(default, serialize_with = "ark_se_hex", deserialize_with = "ark_de_hex")]
+    #[serde(
+        default,
+        serialize_with = "ark_se_hex",
+        deserialize_with = "ark_de_hex"
+    )]
     pub nova_historic_root_root: Fr254,
     #[serde(default)]
     pub transaction_count: u64,

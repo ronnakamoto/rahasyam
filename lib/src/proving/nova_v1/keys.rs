@@ -128,7 +128,12 @@ impl NovaKeyManager {
         C: nova_snark::traits::circuit::StepCircuit<E1::Scalar>,
     {
         let path = self.ivc_pk_path();
-        if let Some(pp) = read_envelope(&path, "PublicParams", expected_arity, expected_constraint_count)? {
+        if let Some(pp) = read_envelope(
+            &path,
+            "PublicParams",
+            expected_arity,
+            expected_constraint_count,
+        )? {
             return Ok(pp);
         }
         log::info!(
@@ -137,7 +142,13 @@ impl NovaKeyManager {
         );
         let pp = generator();
         ensure_parent_dir(&path)?;
-        write_envelope(&path, &pp, expected_arity, expected_constraint_count, "PublicParams")?;
+        write_envelope(
+            &path,
+            &pp,
+            expected_arity,
+            expected_constraint_count,
+            "PublicParams",
+        )?;
         log::info!("[nova-v1] Persisted PublicParams to {}", path.display());
         Ok(pp)
     }
@@ -198,8 +209,18 @@ impl NovaKeyManager {
         let vk_path = self.snark_vk_path();
 
         if pk_path.exists() && vk_path.exists() {
-            let pk = read_envelope(&pk_path, "CompressedSNARK ProverKey", expected_arity, expected_constraint_count)?;
-            let vk = read_envelope(&vk_path, "CompressedSNARK VerifierKey", expected_arity, expected_constraint_count)?;
+            let pk = read_envelope(
+                &pk_path,
+                "CompressedSNARK ProverKey",
+                expected_arity,
+                expected_constraint_count,
+            )?;
+            let vk = read_envelope(
+                &vk_path,
+                "CompressedSNARK VerifierKey",
+                expected_arity,
+                expected_constraint_count,
+            )?;
             if let (Some(pk), Some(vk)) = (pk, vk) {
                 log::info!(
                     "[nova-v1] Loaded CompressedSNARK PK/VK from disk ({} / {})",
@@ -213,8 +234,20 @@ impl NovaKeyManager {
         log::info!("[nova-v1] Generating CompressedSNARK PK/VK (cache miss)");
         let (pk, vk) = generator();
         ensure_parent_dir(&pk_path)?;
-        write_envelope(&pk_path, &pk, expected_arity, expected_constraint_count, "CompressedSNARK ProverKey")?;
-        write_envelope(&vk_path, &vk, expected_arity, expected_constraint_count, "CompressedSNARK VerifierKey")?;
+        write_envelope(
+            &pk_path,
+            &pk,
+            expected_arity,
+            expected_constraint_count,
+            "CompressedSNARK ProverKey",
+        )?;
+        write_envelope(
+            &vk_path,
+            &vk,
+            expected_arity,
+            expected_constraint_count,
+            "CompressedSNARK VerifierKey",
+        )?;
         log::info!(
             "[nova-v1] Persisted CompressedSNARK PK/VK ({} / {})",
             pk_path.display(),
@@ -396,9 +429,8 @@ fn write_envelope<T: Serialize>(
         constraint_count,
         payload,
     };
-    let bytes = bincode::serialize(&env).map_err(|e| {
-        KeyManagerError::Serialization(format!("serialize {label} envelope: {e}"))
-    })?;
+    let bytes = bincode::serialize(&env)
+        .map_err(|e| KeyManagerError::Serialization(format!("serialize {label} envelope: {e}")))?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -489,13 +521,15 @@ pub fn pregenerate_nova_keys() -> Result<(), KeyManagerError> {
     type Circuit = RollupStepCircuit<F1>;
 
     let km = NovaKeyManager::with_default_dir();
-    log::info!("[nova-v1] Pregenerating Nova keys in {}...", km.key_dir().display());
+    log::info!(
+        "[nova-v1] Pregenerating Nova keys in {}...",
+        km.key_dir().display()
+    );
 
     // The circuit's arity is the canonical fingerprint for the
     // persisted PublicParams / SNARK keys. A mismatch on load
     // triggers an automatic regenerate (see `read_envelope`).
-    let expected_arity =
-        crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
+    let expected_arity = crate::proving::nova_v1::step_circuit::nova_step_circuit::ROLLUP_ARITY;
 
     let pp = km.load_or_generate_ivc_pk::<E1, E2, Circuit>(expected_arity, 0, || {
         log::info!("[nova-v1] Generating PublicParams (this may take several minutes)...");
@@ -504,8 +538,8 @@ pub fn pregenerate_nova_keys() -> Result<(), KeyManagerError> {
             .expect("PublicParams::setup failed")
     })?;
 
-    let _snark_keys = km
-        .load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(expected_arity, 0, || {
+    let _snark_keys =
+        km.load_or_generate_snark_keys::<E1, E2, Circuit, S1, S2>(expected_arity, 0, || {
             log::info!("[nova-v1] Generating CompressedSNARK PK/VK...");
             CompressedSNARK::<E1, E2, Circuit, S1, S2>::setup(&pp)
                 .expect("CompressedSNARK::setup failed")
@@ -582,7 +616,10 @@ mod tests {
             })
             .expect("first load_or_generate_ivc_pk failed");
         assert_eq!(gen_calls, 1, "generator must run on first call");
-        assert!(km.ivc_pk_path().exists(), "ivc_pk file must exist after first call");
+        assert!(
+            km.ivc_pk_path().exists(),
+            "ivc_pk file must exist after first call"
+        );
 
         // Second call: cache hit → generator must NOT run.
         let mut gen_calls2 = 0;
@@ -597,7 +634,10 @@ mod tests {
         // Verify the two PublicParams instances serialize to identical bytes.
         let pp1_bytes = bincode::serialize(&pp1).unwrap();
         let pp2_bytes = bincode::serialize(&pp2).unwrap();
-        assert_eq!(pp1_bytes, pp2_bytes, "cached PublicParams must match generated");
+        assert_eq!(
+            pp1_bytes, pp2_bytes,
+            "cached PublicParams must match generated"
+        );
 
         // The on-disk payload is wrapped in an envelope, not the raw
         // PublicParams bytes.
@@ -613,8 +653,8 @@ mod tests {
     /// must produce a working prove/verify on a real one-step IVC proof.
     #[test]
     fn snark_keys_persisted_and_reloaded() {
-        use nova_snark::nova::RecursiveSNARK;
         use ff::Field;
+        use nova_snark::nova::RecursiveSNARK;
 
         let tmp = tempfile::tempdir().unwrap();
         let km = NovaKeyManager::new(tmp.path().to_path_buf());
@@ -647,12 +687,15 @@ mod tests {
         // z0 must have length == circuit.arity() == ROLLOUP_ARITY (5).
         let circuit = Circuit::padding();
         let z0 = vec![F1::ZERO; arity];
-        let mut rs =
-            RecursiveSNARK::<E1, E2, Circuit>::new(&pp, &circuit, &z0).unwrap();
+        let mut rs = RecursiveSNARK::<E1, E2, Circuit>::new(&pp, &circuit, &z0).unwrap();
         rs.prove_step(&pp, &circuit).unwrap();
         let snark = CompressedSNARK::<_, _, _, S1, S2>::prove(&pp, &pk1, &rs).unwrap();
-        snark.verify(&vk1, 1, &z0).expect("verify with original VK failed");
-        snark.verify(&vk2, 1, &z0).expect("verify with reloaded VK failed");
+        snark
+            .verify(&vk1, 1, &z0)
+            .expect("verify with original VK failed");
+        snark
+            .verify(&vk2, 1, &z0)
+            .expect("verify with reloaded VK failed");
     }
 
     /// DIAGNOSTIC: does a **real (non-padding)** one-step circuit
@@ -669,8 +712,7 @@ mod tests {
         use nova_snark::nova::RecursiveSNARK;
 
         let pp = build_pp();
-        let (pk, vk) =
-            CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
+        let (pk, vk) = CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
 
         let z0: Vec<F1> = compute_initial_z0();
         let depth = 32u32;
@@ -678,8 +720,7 @@ mod tests {
         // Build one real step (commitment = 42, nullifier = 7).
         let commitment = F1::from(42u64);
         let nullifier = F1::from(7u64);
-        let mut commit_tree =
-            NeptuneCommitmentTree::new(depth, InMemoryCommitmentStorage::new());
+        let mut commit_tree = NeptuneCommitmentTree::new(depth, InMemoryCommitmentStorage::new());
         let mut null_imt = NeptuneIMT::new(depth, InMemoryNullifierStorage::new());
 
         let (commit_root, commit_path) = commit_tree.append(commitment);
@@ -738,8 +779,7 @@ mod tests {
         use nova_snark::nova::RecursiveSNARK;
 
         let pp = build_pp();
-        let (pk, vk) =
-            CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
+        let (pk, vk) = CompressedSNARK::<_, _, _, S1, S2>::setup(&pp).expect("snark setup");
 
         // Real (non-zero) initial state, padding step (passes roots through).
         let z0: Vec<F1> = compute_initial_z0();
@@ -842,7 +882,10 @@ mod tests {
         let on_disk = std::fs::read(km.ivc_pk_path()).unwrap();
         let env: NovaKeyEnvelope<PublicParams<E1, E2, Circuit>> =
             bincode::deserialize(&on_disk).expect("on-disk file must deserialize as envelope");
-        assert_eq!(env.arity, arity, "regenerated envelope must record the current arity");
+        assert_eq!(
+            env.arity, arity,
+            "regenerated envelope must record the current arity"
+        );
         assert_eq!(
             env.format_version,
             NovaKeyEnvelope::<PublicParams<E1, E2, Circuit>>::FORMAT_VERSION,

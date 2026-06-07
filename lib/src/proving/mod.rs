@@ -179,15 +179,16 @@ impl<P: ProvingSystem> DynProvingSystem for DynAdapter<P> {
         deposits: Vec<DepositData>,
         client_txs: Vec<crate::shared_entities::OnChainTransaction>,
     ) -> Result<Vec<u8>, ProvingError> {
-        let engine = P::RollupEngine::setup()
-            .map_err(|e| ProvingError::ProvingFailed(e.to_string()))?;
+        let engine =
+            P::RollupEngine::setup().map_err(|e| ProvingError::ProvingFailed(e.to_string()))?;
         let proof = engine
             .prove_block(deposits, client_txs)
             .map_err(|e| ProvingError::ProvingFailed(e.to_string()))?;
         let mut bytes = Vec::new();
         let id_byte = (P::id() as u8).to_le_bytes();
         bytes.extend_from_slice(&id_byte);
-        let proof_bytes = proof.compress_proof()
+        let proof_bytes = proof
+            .compress_proof()
             .map_err(|e| ProvingError::SerializationError(e.to_string()))?;
         bytes.extend_from_slice(&proof_bytes);
         Ok(bytes)
@@ -248,21 +249,37 @@ mod tests {
         assert_eq!(ProofSystemId::from_u8(2), Some(ProofSystemId::NovaV1));
         assert_eq!(ProofSystemId::from_u8(3), Some(ProofSystemId::NovaBlsV1));
         assert_eq!(ProofSystemId::from_u8(0), Some(ProofSystemId::ReservedZero));
-        assert_eq!(ProofSystemId::from_u8(0xFF), Some(ProofSystemId::ReservedFF));
+        assert_eq!(
+            ProofSystemId::from_u8(0xFF),
+            Some(ProofSystemId::ReservedFF)
+        );
         assert_eq!(ProofSystemId::from_u8(4), None);
     }
 
     #[test]
     fn test_proof_system_id_from_str() {
-        assert_eq!(ProofSystemId::from_str("plonk-v1"), Some(ProofSystemId::PlonkV1));
-        assert_eq!(ProofSystemId::from_str("nova-v1"), Some(ProofSystemId::NovaV1));
-        assert_eq!(ProofSystemId::from_str("nova-bls-v1"), Some(ProofSystemId::NovaBlsV1));
+        assert_eq!(
+            ProofSystemId::from_str("plonk-v1"),
+            Some(ProofSystemId::PlonkV1)
+        );
+        assert_eq!(
+            ProofSystemId::from_str("nova-v1"),
+            Some(ProofSystemId::NovaV1)
+        );
+        assert_eq!(
+            ProofSystemId::from_str("nova-bls-v1"),
+            Some(ProofSystemId::NovaBlsV1)
+        );
         assert_eq!(ProofSystemId::from_str("unknown"), None);
     }
 
     #[test]
     fn test_proof_system_id_serialization_roundtrip() {
-        for id in [ProofSystemId::PlonkV1, ProofSystemId::NovaV1, ProofSystemId::NovaBlsV1] {
+        for id in [
+            ProofSystemId::PlonkV1,
+            ProofSystemId::NovaV1,
+            ProofSystemId::NovaBlsV1,
+        ] {
             let mut bytes = Vec::new();
             id.serialize_compressed(&mut bytes).unwrap();
             let decoded = ProofSystemId::deserialize_compressed(bytes.as_slice()).unwrap();

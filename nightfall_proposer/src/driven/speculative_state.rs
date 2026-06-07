@@ -154,7 +154,9 @@ pub async fn abort_prepare(client: &Client) {
     let block = q_pop_back_if_unrooted(&mut *queue().await.lock().await);
     if let Some(suffix) = block.and_then(|b| b.snapshot_suffix) {
         if let Err(e) = tree_snapshot::restore(client, &suffix).await {
-            error!("speculative_state::abort_prepare failed to restore trees (suffix {suffix}): {e}");
+            error!(
+                "speculative_state::abort_prepare failed to restore trees (suffix {suffix}): {e}"
+            );
         }
         let _ = tree_snapshot::drop_snapshot(client, &suffix).await;
     }
@@ -264,7 +266,7 @@ mod tests {
         q_push(&mut q, snap("0"));
         q_set_back_root(&mut q, root(10)); // block 0 prepared
         q_push(&mut q, snap("1")); // block 1 in progress
-        // Aborting block 1 pops it and returns its snapshot suffix.
+                                   // Aborting block 1 pops it and returns its snapshot suffix.
         assert_eq!(
             q_pop_back_if_unrooted(&mut q).and_then(|b| b.snapshot_suffix),
             snap("1")

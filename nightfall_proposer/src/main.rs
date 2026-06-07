@@ -23,7 +23,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Dropping database: {DB}");
     let _ = lib::utils::drop_database(db_url, DB).await;
 
-    let active_id = nightfall_proposer::driven::proving::map_config_to_id(&settings.nightfall_proposer.proving_system.active);
+    let active_id = nightfall_proposer::driven::proving::map_config_to_id(
+        &settings.nightfall_proposer.proving_system.active,
+    );
 
     // Validate that the requested active proving system is in fact
     // registered / available BEFORE we start any subsystem. The
@@ -40,9 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
         });
     let registered_ids = registry.registered_ids();
-    info!(
-        "Proving-system registry: active = {active_id}, registered = {registered_ids:?}"
-    );
+    info!("Proving-system registry: active = {active_id}, registered = {registered_ids:?}");
     if !registry.is_registered(active_id) {
         panic!(
             "Active proving system {active_id} is not registered (registered: {registered_ids:?}). \
@@ -118,7 +118,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ensure_running::<P, E, N>().await;
                 let routes = routes::<P, E>();
                 let task_2 = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
-                info!("Starting warp server for NovaV1 (block assembly will start after key warmup)");
+                info!(
+                    "Starting warp server for NovaV1 (block assembly will start after key warmup)"
+                );
 
                 // Warm Nova keys to completion before block assembly is allowed
                 // to start. This prevents the heavy bincode::deserialize of

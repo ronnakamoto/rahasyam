@@ -206,9 +206,7 @@ pub async fn listen_for_events<N: NightfallContract>(
                     // listener so the client can resync instead of
                     // dying and stranding the test.
                     EventHandlerError::Other(msg) => {
-                        error!(
-                            "Event processing failed (will restart listener to resync): {msg}"
-                        );
+                        error!("Event processing failed (will restart listener to resync): {msg}");
                         restart::<N>().await;
                         return Err(EventHandlerError::StreamTerminated);
                     }
