@@ -2,6 +2,8 @@
 pub mod nova_v1;
 pub mod plonk_v1;
 pub mod registry;
+#[cfg(feature = "ultra-honk-v1")]
+pub mod ultrahonk_v1;
 
 pub use registry::{ProofSystemRegistry, SharedRegistry};
 
@@ -23,6 +25,7 @@ pub enum ProofSystemId {
     NovaV1 = 2,
     /// BLS12-381 t-of-N attestor committee gate (see `NovaCommitteeVerifier.sol`).
     NovaBlsV1 = 3,
+    UltraHonkV1 = 4,
     ReservedFF = 0xFF,
 }
 
@@ -32,6 +35,7 @@ impl fmt::Display for ProofSystemId {
             ProofSystemId::PlonkV1 => write!(f, "plonk-v1"),
             ProofSystemId::NovaV1 => write!(f, "nova-v1"),
             ProofSystemId::NovaBlsV1 => write!(f, "nova-bls-v1"),
+            ProofSystemId::UltraHonkV1 => write!(f, "ultra-honk-v1"),
             ProofSystemId::ReservedZero => write!(f, "reserved-0"),
             ProofSystemId::ReservedFF => write!(f, "reserved-255"),
         }
@@ -45,6 +49,7 @@ impl ProofSystemId {
             1 => Some(ProofSystemId::PlonkV1),
             2 => Some(ProofSystemId::NovaV1),
             3 => Some(ProofSystemId::NovaBlsV1),
+            4 => Some(ProofSystemId::UltraHonkV1),
             0xFF => Some(ProofSystemId::ReservedFF),
             _ => None,
         }
@@ -56,6 +61,7 @@ impl ProofSystemId {
             "plonk-v1" => Some(ProofSystemId::PlonkV1),
             "nova-v1" => Some(ProofSystemId::NovaV1),
             "nova-bls-v1" => Some(ProofSystemId::NovaBlsV1),
+            "ultra-honk-v1" => Some(ProofSystemId::UltraHonkV1),
             _ => None,
         }
     }
@@ -93,6 +99,7 @@ impl Valid for ProofSystemId {
             | ProofSystemId::PlonkV1
             | ProofSystemId::NovaV1
             | ProofSystemId::NovaBlsV1
+            | ProofSystemId::UltraHonkV1
             | ProofSystemId::ReservedFF => Ok(()),
         }
     }
@@ -248,12 +255,13 @@ mod tests {
         assert_eq!(ProofSystemId::from_u8(1), Some(ProofSystemId::PlonkV1));
         assert_eq!(ProofSystemId::from_u8(2), Some(ProofSystemId::NovaV1));
         assert_eq!(ProofSystemId::from_u8(3), Some(ProofSystemId::NovaBlsV1));
+        assert_eq!(ProofSystemId::from_u8(4), Some(ProofSystemId::UltraHonkV1));
         assert_eq!(ProofSystemId::from_u8(0), Some(ProofSystemId::ReservedZero));
         assert_eq!(
             ProofSystemId::from_u8(0xFF),
             Some(ProofSystemId::ReservedFF)
         );
-        assert_eq!(ProofSystemId::from_u8(4), None);
+        assert_eq!(ProofSystemId::from_u8(5), None);
     }
 
     #[test]
@@ -270,6 +278,10 @@ mod tests {
             ProofSystemId::from_str("nova-bls-v1"),
             Some(ProofSystemId::NovaBlsV1)
         );
+        assert_eq!(
+            ProofSystemId::from_str("ultra-honk-v1"),
+            Some(ProofSystemId::UltraHonkV1)
+        );
         assert_eq!(ProofSystemId::from_str("unknown"), None);
     }
 
@@ -279,6 +291,7 @@ mod tests {
             ProofSystemId::PlonkV1,
             ProofSystemId::NovaV1,
             ProofSystemId::NovaBlsV1,
+            ProofSystemId::UltraHonkV1,
         ] {
             let mut bytes = Vec::new();
             id.serialize_compressed(&mut bytes).unwrap();
@@ -291,12 +304,14 @@ mod tests {
     fn test_proof_system_id_display() {
         assert_eq!(format!("{}", ProofSystemId::PlonkV1), "plonk-v1");
         assert_eq!(format!("{}", ProofSystemId::NovaV1), "nova-v1");
+        assert_eq!(format!("{}", ProofSystemId::UltraHonkV1), "ultra-honk-v1");
     }
 
     #[test]
     fn test_proof_system_id_repr() {
         assert_eq!(ProofSystemId::PlonkV1 as u8, 1);
         assert_eq!(ProofSystemId::NovaV1 as u8, 2);
+        assert_eq!(ProofSystemId::UltraHonkV1 as u8, 4);
         assert_eq!(ProofSystemId::ReservedZero as u8, 0);
         assert_eq!(ProofSystemId::ReservedFF as u8, 0xFF);
     }

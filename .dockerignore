@@ -18,3 +18,10 @@ configuration/bin/*
 !configuration/bin/keys/
 # And allow its contents
 !configuration/bin/keys/**
+# Vendored UltraHonk library source is not needed in build or runtime images
+ultrahonk
+# The sidecar's node_modules is regenerated via `npm ci` in the image; keep the
+# 155MB tree (and parity vectors) out of the Docker build context. The sidecar's
+# runtime files (*.mjs, package*.json, nightfish_honk_client_tx.json) stay in.
+ultrahonk_sidecar/node_modules
+ultrahonk_sidecar/vectors

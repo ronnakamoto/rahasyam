@@ -48,13 +48,18 @@ block_size = 64
 nova_dynamic_block_size = true
 
 [development.nightfall_proposer.proving_system]
-active = "nova-v1"
+# Per-transaction (client) proofs default to Barretenberg UltraHonk on the Nova
+# rollup path (requires the ultra-honk-v1 build feature and the ultrahonk_sidecar
+# Node prover). The rollup itself is still proved with Nova, so `nova-v1` (and
+# `nova-bls-v1` for the committee dual-gate) stay enabled for the on-chain rollup
+# verifier. To revert client proofs to Nova, set `active = "nova-v1"`.
+active = "ultra-honk-v1"
 # `nova-bls-v1` (id 3) is deployed alongside `nova-v1` (id 2) for the dual-gate.
 # The proposer only USES the committee when `nova_verifier.committee_threshold > 0`
 # (default 0 => ECDSA single-attestor path, unchanged). Activate the committee by
 # setting `NF4_NOVA_VERIFIER__COMMITTEE_THRESHOLD=2` and starting the `committee`
 # compose profile (attestor2/attestor3).
-enabled = ["nova-v1", "nova-bls-v1"]
+enabled = ["nova-v1", "nova-bls-v1", "ultra-honk-v1"]
 
 [development.verifier]
 # VK values that the UUPS provider will initialize with
@@ -412,8 +417,13 @@ block_size = 64
 nova_dynamic_block_size = true
 
 [local.nightfall_proposer.proving_system]
-active = "nova-v1"
-enabled = ["nova-v1"]
+# Per-transaction (client) proofs default to Barretenberg UltraHonk on the Nova
+# rollup path (requires the ultra-honk-v1 build feature and the ultrahonk_sidecar
+# Node prover). The rollup is still proved with Nova, so `nova-v1` stays enabled
+# for the on-chain rollup verifier. To revert client proofs to Nova, set
+# `active = "nova-v1"`.
+active = "ultra-honk-v1"
+enabled = ["nova-v1", "ultra-honk-v1"]
 
 [local.nova_verifier]
 g2_x_x0  = "0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2"

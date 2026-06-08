@@ -84,6 +84,7 @@ pub enum ProvingSystemIdConfig {
     /// `proving_system.enabled` to deploy/register the committee verifier; the
     /// proposer's `active` prover stays `NovaV1`.
     NovaBlsV1,
+    UltraHonkV1,
 }
 
 impl ProvingSystemIdConfig {
@@ -92,6 +93,7 @@ impl ProvingSystemIdConfig {
             ProvingSystemIdConfig::PlonkV1 => "plonk-v1",
             ProvingSystemIdConfig::NovaV1 => "nova-v1",
             ProvingSystemIdConfig::NovaBlsV1 => "nova-bls-v1",
+            ProvingSystemIdConfig::UltraHonkV1 => "ultra-honk-v1",
         }
     }
 
@@ -100,6 +102,9 @@ impl ProvingSystemIdConfig {
             "plonk-v1" | "plonkv1" | "PlonkV1" => Some(ProvingSystemIdConfig::PlonkV1),
             "nova-v1" | "novav1" | "NovaV1" => Some(ProvingSystemIdConfig::NovaV1),
             "nova-bls-v1" | "novablsv1" | "NovaBlsV1" => Some(ProvingSystemIdConfig::NovaBlsV1),
+            "ultra-honk-v1" | "ultrahonkv1" | "UltraHonkV1" => {
+                Some(ProvingSystemIdConfig::UltraHonkV1)
+            }
             _ => None,
         }
     }
@@ -606,6 +611,10 @@ mod tests {
         assert_eq!(
             ProvingSystemIdConfig::from_str("nova-v1"),
             Some(ProvingSystemIdConfig::NovaV1)
+        );
+        assert_eq!(
+            ProvingSystemIdConfig::from_str("ultra-honk-v1"),
+            Some(ProvingSystemIdConfig::UltraHonkV1)
         );
         assert_eq!(ProvingSystemIdConfig::from_str("unknown"), None);
     }

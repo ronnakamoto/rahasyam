@@ -64,11 +64,19 @@ use ark_bn254::{Fq as Fq254, Fr as Fr254};
 use ark_ff::{BigInteger, PrimeField};
 use ark_std::{One, Zero};
 use jf_primitives::poseidon::{FieldHasher, Poseidon};
+#[cfg(feature = "ultra-honk-v1")]
+use lib::proving::ultrahonk_v1::{UltraHonkClientEngine, UltraHonkProof};
 use lib::utils::get_block_size;
 use lib::{
     error::ConversionError,
-    nf_client_proof::{Proof, PublicInputs},
-    proving::nova_v1::proof::{NovaClientProof, NovaProof},
+    nf_client_proof::{Proof, ProvingEngine, PublicInputs},
+    proving::{
+        nova_v1::{
+            client_engine::NovaClientEngine,
+            proof::{NovaClientProof, NovaProof},
+        },
+        ProofSystemId,
+    },
     shared_entities::{DepositData, OnChainTransaction},
 };
 use log::info;
@@ -106,8 +114,33 @@ pub struct NovaPreppedInfo {
 //
 // See `temp/Nova-Code-Path-Robustness-Plan.md` for the full robustness
 // audit and the items that have been / are still to be addressed.
-impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
-    for lib::proving::nova_v1::rollup_engine::NovaRollupEngine
+pub trait NovaRollupClientProof: Proof + Sized {
+    type ClientEngine: ProvingEngine<Self>;
+
+    fn client_proof_name() -> &'static str;
+}
+
+impl NovaRollupClientProof for NovaClientProof {
+    type ClientEngine = NovaClientEngine;
+
+    fn client_proof_name() -> &'static str {
+        "Nova"
+    }
+}
+
+#[cfg(feature = "ultra-honk-v1")]
+impl NovaRollupClientProof for UltraHonkProof {
+    type ClientEngine = UltraHonkClientEngine;
+
+    fn client_proof_name() -> &'static str {
+        "UltraHonk"
+    }
+}
+
+impl<P> RecursiveProvingEngine<P> for lib::proving::nova_v1::rollup_engine::NovaRollupEngine
+where
+    P: NovaRollupClientProof + Send + Sync + 'static,
+    <P::ClientEngine as ProvingEngine<P>>::Error: std::fmt::Display,
 {
     type PreppedInfo = NovaPreppedInfo;
     type Error = RollupProofError;
@@ -148,8 +181,8 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
     /// and stores it verbatim in `Block.rollup_proof` so the on-chain
     /// `NovaRollupVerifier.parseProof` reads the correct lengths.
     async fn prove_block(
-        deposit_transactions: &[(NovaClientProof, PublicInputs)],
-        client_transactions: &[ClientTransactionWithMetaData<NovaClientProof>],
+        deposit_transactions: &[(P, PublicInputs)],
+        client_transactions: &[ClientTransactionWithMetaData<P>],
     ) -> Result<Block, Self::Error> {
         let prove_block_start = Instant::now();
 
@@ -169,7 +202,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
         let (info, [commitments_root, nullifiers_root, commitments_root_root]) = {
             let _tree_guard = crate::driven::speculative_state::tree_mutation_lock().await;
             crate::driven::speculative_state::begin(db).await;
-            match Self::prepare_state_transition(deposit_transactions, client_transactions).await {
+            match <lib::proving::nova_v1::rollup_engine::NovaRollupEngine as RecursiveProvingEngine<P>>::prepare_state_transition(deposit_transactions, client_transactions).await {
                 Ok(v) => {
                     crate::driven::speculative_state::confirm_prepare(v.1[0]).await;
                     v
@@ -196,9 +229,13 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
         // `F1` is `Copy`, so this is cheap.
         let pre_nullifiers_root = info.pre_nullifiers_root;
         let num_folded_steps = info.circuits.len();
-        let fq_vec = tokio::task::spawn_blocking(move || Self::recursive_prove(info))
-            .await
-            .map_err(|_e| Self::Error::from(ConversionError::ParseFailed))??;
+        let fq_vec = tokio::task::spawn_blocking(move || {
+            <lib::proving::nova_v1::rollup_engine::NovaRollupEngine as RecursiveProvingEngine<
+                P,
+            >>::recursive_prove(info)
+        })
+        .await
+        .map_err(|_e| Self::Error::from(ConversionError::ParseFailed))??;
         info!(
             "[nova prove_block] recursive_prove completed in {:.2}s",
             prove_start.elapsed().as_secs_f64()
@@ -303,7 +340,10 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
         // contract hashes matches what the proposer claims) but
         // carry no real value and do not affect the Nova proof's
         // state-transition attestation.
-        if !Self::requires_padding() {
+        if !<lib::proving::nova_v1::rollup_engine::NovaRollupEngine as RecursiveProvingEngine<
+            P,
+        >>::requires_padding()
+        {
             let block_size = get_block_size().unwrap_or(64);
             if transactions.len() < block_size {
                 let pad_count = block_size - transactions.len();
@@ -349,7 +389,7 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
             to_word(&nova_proof.historic_root_root)?,
             block_len_word,
         ];
-        let mut block_proof_system_id = <NovaClientProof as Proof>::system_id();
+        let mut block_proof_system_id = ProofSystemId::NovaV1;
         match crate::driven::attestor_client::obtain_attestation(
             &nova_proof,
             &rollup_proof,
@@ -423,10 +463,8 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
     }
 
     async fn prepare_state_transition(
-        deposit_transactions: &[(lib::proving::nova_v1::proof::NovaClientProof, PublicInputs)],
-        transactions: &[ClientTransactionWithMetaData<
-            lib::proving::nova_v1::proof::NovaClientProof,
-        >],
+        deposit_transactions: &[(P, PublicInputs)],
+        transactions: &[ClientTransactionWithMetaData<P>],
     ) -> Result<(Self::PreppedInfo, [Fr254; 3]), Self::Error> {
         use crate::initialisation::get_db_connection;
         use crate::ports::trees::{CommitmentTree, HistoricRootTree, NullifierTree};
@@ -882,29 +920,30 @@ impl RecursiveProvingEngine<lib::proving::nova_v1::proof::NovaClientProof>
     fn create_deposit_proof(
         deposit_data: &[DepositData; 4],
         public_inputs: &mut PublicInputs,
-    ) -> Result<lib::proving::nova_v1::proof::NovaClientProof, Self::Error> {
+    ) -> Result<P, Self::Error> {
         use lib::nf_client_proof::PrivateInputs;
-        use lib::nf_client_proof::ProvingEngine;
-        use lib::proving::nova_v1::client_engine::NovaClientEngine;
 
         let mut private_inputs = PrivateInputs::for_deposit(deposit_data);
         // Compute the actual deposit commitments / nullifiers / compressed
         // secrets from the deposit data so that downstream proposers (which
         // build Neptune trees from these public inputs) see non-zero
-        // leaves for real deposits. The Plonk delegation inside
-        // `NovaClientEngine::prove` will re-derive the same values from the
-        // deposit witnesses; setting them here is required because the
-        // Neptune append path treats zero leaves as "absent" (an inserted
-        // zero leaf at index 0 does not change the empty-tree root), which
-        // would otherwise produce an empty tree for the whole block and
-        // cause the Nova IVC verify to fail with "Relaxed R1CS is
-        // unsatisfiable".
+        // leaves for real deposits. The client proving engine may re-derive
+        // these values from the deposit witnesses; setting them here is
+        // required because the Neptune append path treats zero leaves as
+        // "absent" (an inserted zero leaf at index 0 does not change the
+        // empty-tree root), which would otherwise produce an empty tree for
+        // the whole block and cause the Nova IVC verify to fail with
+        // "Relaxed R1CS is unsatisfiable".
         *public_inputs = compute_deposit_public_inputs(deposit_data);
 
-        let result = NovaClientEngine::prove(&mut private_inputs, public_inputs).map_err(|e| {
-            RollupProofError::ParameterError(format!("Nova deposit proof error: {}", e))
+        let result = P::ClientEngine::prove(&mut private_inputs, public_inputs).map_err(|e| {
+            RollupProofError::ParameterError(format!(
+                "{} deposit proof error: {}",
+                P::client_proof_name(),
+                e
+            ))
         });
-        // Restore the computed public inputs. The Plonk delegation may
+        // Restore the computed public inputs. The client proving engine may
         // overwrite the deposit mode flag and recompute commitments from
         // the witness, but the deposit-data-derived values are the
         // canonical commitments the on-chain `DepositEscrowed` events

@@ -3,6 +3,8 @@ use lib::proving::{plonk_v1::PlonkV1System, ProofSystemId, ProofSystemRegistry, 
 
 #[cfg(feature = "nova-v1")]
 use lib::proving::nova_v1::NovaV1System;
+#[cfg(feature = "ultra-honk-v1")]
+use lib::proving::ultrahonk_v1::UltraHonkV1System;
 
 pub fn build_registry_from_config(
     settings: &Settings,
@@ -49,6 +51,17 @@ pub fn build_registry_from_config(
                     );
                 }
             }
+            ProvingSystemIdConfig::UltraHonkV1 => {
+                #[cfg(feature = "ultra-honk-v1")]
+                {
+                    registry.register::<UltraHonkV1System>()?;
+                    log::info!("Registered UltraHonkV1 proving system");
+                }
+                #[cfg(not(feature = "ultra-honk-v1"))]
+                {
+                    log::warn!("UltraHonkV1 is configured but ultra-honk-v1 feature is not enabled; skipping registration");
+                }
+            }
         }
     }
 
@@ -57,6 +70,7 @@ pub fn build_registry_from_config(
         ProvingSystemIdConfig::NovaV1 => ProofSystemId::NovaV1,
         // `active` selects the prover; the committee proves with Nova.
         ProvingSystemIdConfig::NovaBlsV1 => ProofSystemId::NovaV1,
+        ProvingSystemIdConfig::UltraHonkV1 => ProofSystemId::UltraHonkV1,
     };
 
     if registry.is_registered(active_id) {
@@ -72,5 +86,6 @@ pub fn map_config_to_id(config: &ProvingSystemIdConfig) -> ProofSystemId {
         ProvingSystemIdConfig::NovaV1 => ProofSystemId::NovaV1,
         // Applied to the active prover; the committee proves with Nova.
         ProvingSystemIdConfig::NovaBlsV1 => ProofSystemId::NovaV1,
+        ProvingSystemIdConfig::UltraHonkV1 => ProofSystemId::UltraHonkV1,
     }
 }
