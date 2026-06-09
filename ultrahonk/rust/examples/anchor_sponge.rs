@@ -26,8 +26,12 @@ fn gadget_sponge(inputs: &[Fr254]) -> Fr254 {
         .map(|x| circuit.create_variable(*x).unwrap())
         .collect();
     // Same initial all-zero width-4 state as unified_circuit.rs:289.
-    let initial_state =
-        PoseidonStateVar([circuit.zero(), circuit.zero(), circuit.zero(), circuit.zero()]);
+    let initial_state = PoseidonStateVar([
+        circuit.zero(),
+        circuit.zero(),
+        circuit.zero(),
+        circuit.zero(),
+    ]);
     let absorbed = circuit.absorb(&initial_state, &vars).unwrap();
     let out = circuit.squeeze(&absorbed, 1).unwrap()[0];
     circuit.witness(out).unwrap()

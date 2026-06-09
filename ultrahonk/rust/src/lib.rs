@@ -357,6 +357,9 @@ pub mod note {
 }
 
 pub mod statement;
+pub mod predvm;
+pub mod notev2;
+pub mod statement_v2;
 
 /// Private witness for the (single-note) client transaction statement.
 ///

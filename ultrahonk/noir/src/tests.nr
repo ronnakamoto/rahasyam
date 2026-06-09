@@ -160,7 +160,9 @@ fn merkle_rejects_wrong_root() {
 // === Full-statement parity (transfer / withdraw / swap) ===
 
 use crate::statement::prove_statement;
+use crate::statement_v2::prove_statement_v2;
 use crate::statement_vectors;
+use crate::statement_v2_vectors;
 use crate::sponge;
 
 #[test]
@@ -202,5 +204,14 @@ fn statement_deposit_matches_reference() {
     let got = prove_statement(inp);
     for i in 0..expected.len() {
         assert(got[i] == expected[i], "deposit public input mismatch");
+    }
+}
+
+#[test]
+fn statement_v2_transfer_matches_reference() {
+    let (inp, expected) = statement_v2_vectors::transfer();
+    let got = prove_statement_v2(inp);
+    for i in 0..expected.len() {
+        assert(got[i] == expected[i], "statement_v2 public input mismatch");
     }
 }

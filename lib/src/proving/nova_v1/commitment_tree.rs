@@ -837,8 +837,8 @@ pub fn compute_initial_z0() -> Vec<F1> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proving::nova_v1::hash::poseidon_constants;
-    use crate::proving::nova_v1::merkle::compute_merkle_root_native;
+    use crate::proving::nova_v1::hash::{poseidon_constants, poseidon_hash3_native};
+    use crate::proving::nova_v1::merkle::{compute_merkle_root_native, imt_leaf_hash_native};
 
     #[test]
     fn f1_hex_round_trips() {
@@ -901,6 +901,97 @@ mod tests {
         let rehydrated = NeptuneCommitmentTree::load(storage).expect("load must succeed");
         assert_eq!(rehydrated.root(), original_root);
         assert_eq!(rehydrated.leaf_count(), original_count);
+    }
+
+    #[test]
+    fn v2_poseidon_note_commitment_and_nullifier_are_opaque_field_elements() {
+        let constants = poseidon_constants::<F1>();
+        let v2_commitment = poseidon_hash3_native(
+            &constants,
+            F1::from(0x4e46325fu64),
+            F1::from(0x70726564u64),
+            F1::from(0x6173736574u64),
+        );
+        assert_ne!(v2_commitment, F1::ZERO);
+
+        let mut commitment_tree = NeptuneCommitmentTree::new(4, InMemoryCommitmentStorage::new());
+        let (commitment_root, commitment_path) = commitment_tree.append(v2_commitment);
+        let recomputed_commitment_root =
+            compute_merkle_root_native(&constants, v2_commitment, &commitment_path);
+        assert_eq!(commitment_root, recomputed_commitment_root);
+        assert_eq!(commitment_root, commitment_tree.root());
+        assert_eq!(commitment_tree.leaf_count(), 1);
+
+        let v2_nullifier = poseidon_hash3_native(
+            &constants,
+            F1::from(0x6e756c6cu64),
+            v2_commitment,
+            F1::from(0x7370656e64u64),
+        );
+        assert_ne!(v2_nullifier, F1::ZERO);
+
+        let mut nullifier_imt = NeptuneIMT::new(4, InMemoryNullifierStorage::new());
+        let old_nullifiers_root = nullifier_imt.root();
+        let (low_leaf, non_inclusion) = nullifier_imt
+            .get_non_inclusion_witness(v2_nullifier)
+            .expect("fresh v2 nullifier must non-include");
+        assert_eq!(low_leaf.value, F1::ZERO);
+        assert_eq!(non_inclusion.nullifier, v2_nullifier);
+
+        let low_leaf_hash = imt_leaf_hash_native(
+            &constants,
+            non_inclusion.low_value,
+            non_inclusion.low_next_index,
+            non_inclusion.low_next_value,
+        );
+        let recomputed_old_root =
+            compute_merkle_root_native(&constants, low_leaf_hash, &non_inclusion.path);
+        assert_eq!(old_nullifiers_root, recomputed_old_root);
+
+        let insertion = nullifier_imt
+            .insert_nullifier(v2_nullifier)
+            .expect("opaque v2 nullifier must insert like any F1");
+        assert_eq!(insertion.nullifier, v2_nullifier);
+        assert_eq!(insertion.low_leaf_index, 0);
+        assert_eq!(insertion.new_leaf_index, 1);
+
+        let new_nullifiers_root = nullifier_imt.root();
+        assert_ne!(old_nullifiers_root, new_nullifiers_root);
+
+        let (updated_low_value, updated_low_next_index, updated_low_next_value) =
+            nullifier_imt.get_leaf(insertion.low_leaf_index).unwrap();
+        assert_eq!(updated_low_value, F1::ZERO);
+        assert_eq!(updated_low_next_index, F1::from(insertion.new_leaf_index));
+        assert_eq!(updated_low_next_value, v2_nullifier);
+        let updated_low_hash = imt_leaf_hash_native(
+            &constants,
+            updated_low_value,
+            updated_low_next_index,
+            updated_low_next_value,
+        );
+        let updated_low_path = nullifier_imt.inclusion_path(insertion.low_leaf_index);
+        assert_eq!(
+            new_nullifiers_root,
+            compute_merkle_root_native(&constants, updated_low_hash, &updated_low_path)
+        );
+
+        let (new_leaf_value, new_leaf_next_index, new_leaf_next_value) = nullifier_imt
+            .get_leaf(insertion.new_leaf_index)
+            .expect("inserted nullifier leaf must exist");
+        assert_eq!(new_leaf_value, v2_nullifier);
+        assert_eq!(new_leaf_next_index, non_inclusion.low_next_index);
+        assert_eq!(new_leaf_next_value, non_inclusion.low_next_value);
+        let new_leaf_hash = imt_leaf_hash_native(
+            &constants,
+            new_leaf_value,
+            new_leaf_next_index,
+            new_leaf_next_value,
+        );
+        let new_leaf_path = nullifier_imt.inclusion_path(insertion.new_leaf_index);
+        assert_eq!(
+            new_nullifiers_root,
+            compute_merkle_root_native(&constants, new_leaf_hash, &new_leaf_path)
+        );
     }
 
     // -- Nullifier IMT -------------------------------------------------------

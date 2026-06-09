@@ -8,8 +8,8 @@
 //! `Prover.toml`. Asserting the recomputed outputs against the committed file
 //! catches any drift in the primitives or the framing layout.
 
-use nightfish_honk_ref::statement::{compute_statement, scenarios, StatementInputs};
 use nightfish_honk_ref::fr_to_dec;
+use nightfish_honk_ref::statement::{compute_statement, scenarios, StatementInputs};
 
 const FROZEN: &str = include_str!("../../vectors/statement.json");
 
@@ -38,7 +38,11 @@ fn assert_outputs_match(name: &str, inp: &StatementInputs) {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(got.len(), 27, "{name}: public-input vector must be 27 words");
+    assert_eq!(
+        got.len(),
+        27,
+        "{name}: public-input vector must be 27 words"
+    );
     assert_eq!(got, want, "{name}: framed public inputs drifted");
 
     let cmp = |label: &str, got: &str, key: &str| {
@@ -46,7 +50,11 @@ fn assert_outputs_match(name: &str, inp: &StatementInputs) {
     };
     cmp("final_root", &fr_to_dec(&t.final_root), "final_root");
     cmp("final_fee", &fr_to_dec(&t.final_fee), "final_fee");
-    cmp("final_deadline", &fr_to_dec(&t.final_deadline), "final_deadline");
+    cmp(
+        "final_deadline",
+        &fr_to_dec(&t.final_deadline),
+        "final_deadline",
+    );
     cmp("swap_link", &fr_to_dec(&t.swap_link), "swap_link");
     cmp("swap_side", &fr_to_dec(&t.swap_side), "swap_side");
 
@@ -71,7 +79,10 @@ fn assert_outputs_match(name: &str, inp: &StatementInputs) {
     );
     arr_eq(
         "compressed_secrets",
-        &t.compressed_secrets.iter().map(fr_to_dec).collect::<Vec<_>>(),
+        &t.compressed_secrets
+            .iter()
+            .map(fr_to_dec)
+            .collect::<Vec<_>>(),
         "compressed_secrets",
     );
 }
@@ -143,10 +154,26 @@ fn deposit_zeroes_nullifiers_and_emits_commitments() {
         assert_eq!(fr_to_dec(n), "0", "deposit must zero all nullifiers");
     }
     // The two real deposit slots emit non-zero commitments; dummies stay zero.
-    assert_ne!(fr_to_dec(&t.commitments[0]), "0", "real deposit commitment 0");
-    assert_ne!(fr_to_dec(&t.commitments[1]), "0", "real deposit commitment 1");
-    assert_eq!(fr_to_dec(&t.commitments[2]), "0", "dummy deposit commitment 2");
-    assert_eq!(fr_to_dec(&t.commitments[3]), "0", "dummy deposit commitment 3");
+    assert_ne!(
+        fr_to_dec(&t.commitments[0]),
+        "0",
+        "real deposit commitment 0"
+    );
+    assert_ne!(
+        fr_to_dec(&t.commitments[1]),
+        "0",
+        "real deposit commitment 1"
+    );
+    assert_eq!(
+        fr_to_dec(&t.commitments[2]),
+        "0",
+        "dummy deposit commitment 2"
+    );
+    assert_eq!(
+        fr_to_dec(&t.commitments[3]),
+        "0",
+        "dummy deposit commitment 3"
+    );
     // The fifth compressed-secret word is the pushed zero.
     assert_eq!(
         fr_to_dec(&t.compressed_secrets[4]),

@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use ark_bn254::Fr as Fr254;
 use nightfish_honk_ref::{
-    fr_to_dec, keys, merkle::PathElement, statement::compute_statement,
-    statement::scenarios, statement::StatementInputs, Point,
+    fr_to_dec, keys, merkle::PathElement, statement::compute_statement, statement::scenarios,
+    statement::StatementInputs, Point,
 };
 
 fn point_json(p: &Point) -> serde_json::Value {
@@ -119,11 +119,7 @@ fn emit_scenario_nr(name: &str, inp: &StatementInputs) -> String {
     let t = compute_statement(inp);
     let pub_inputs: Vec<String> = t.public_inputs.iter().map(fdec).collect();
     let pks: Vec<String> = inp.public_keys.iter().map(point_nr).collect();
-    let sps: Vec<String> = inp
-        .secret_preimages
-        .iter()
-        .map(|sp| arr_nr(sp))
-        .collect();
+    let sps: Vec<String> = inp.secret_preimages.iter().map(|sp| arr_nr(sp)).collect();
     format!(
         "pub fn {name}() -> (StatementInputs, [Field; NUM_PUBLIC_INPUTS]) {{
     let inp = StatementInputs {{
@@ -235,11 +231,7 @@ fn emit_prover_toml(manifest: &std::path::Path, inp: &StatementInputs) {
     };
     let pt = |p: &Point| format!("{{ x = \"{}\", y = \"{}\" }}", fdec(&p.x), fdec(&p.y));
     let pks: Vec<String> = inp.public_keys.iter().map(pt).collect();
-    let sps: Vec<String> = inp
-        .secret_preimages
-        .iter()
-        .map(|sp| arr(sp))
-        .collect();
+    let sps: Vec<String> = inp.secret_preimages.iter().map(|sp| arr(sp)).collect();
     // Zero-sibling membership paths (one inline table array per slot).
     let path_one = |path: &Vec<PathElement>| {
         let elems: Vec<String> = path
@@ -351,8 +343,11 @@ fn main() {
     });
 
     let out = manifest.join("../vectors/statement.json");
-    std::fs::write(&out, format!("{}\n", serde_json::to_string_pretty(&scenarios).unwrap()))
-        .expect("write statement.json");
+    std::fs::write(
+        &out,
+        format!("{}\n", serde_json::to_string_pretty(&scenarios).unwrap()),
+    )
+    .expect("write statement.json");
     println!("wrote {}", out.display());
 
     emit_noir(

@@ -159,8 +159,7 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
     assert_max_bits(inp.nf_address, 160, "nf_address");
 
     // --- key derivation ---
-    let (zkp_priv, zkp_priv_hash, zkp_priv_lambda) =
-        keys::zkp_private_key_witness(inp.root_key);
+    let (zkp_priv, zkp_priv_hash, zkp_priv_lambda) = keys::zkp_private_key_witness(inp.root_key);
     assert!(!zkp_priv.is_zero(), "derived zkp_private_key is zero");
     let nullifier_key = keys::nullifier_key(inp.root_key);
     let zkp_pub_key = bjj::mul_by_generator(zkp_priv);
@@ -187,7 +186,10 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
 
     // Non-swap canonicalisation: token_b / value_b must be zero.
     if !is_swap {
-        assert!(inp.nf_token_b_id.is_zero(), "non-swap: nf_token_b_id must be 0");
+        assert!(
+            inp.nf_token_b_id.is_zero(),
+            "non-swap: nf_token_b_id must be 0"
+        );
         assert!(inp.value_b.is_zero(), "non-swap: value_b must be 0");
     }
     // Non-swap, non-deposit transactions must be authored by party A.
@@ -243,16 +245,25 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
             inp.withdraw_address.is_zero(),
             "deposit: withdraw_address must be zero"
         );
-        assert!(
-            inp.swap_nonce.is_zero(),
-            "deposit: swap_nonce must be zero"
-        );
+        assert!(inp.swap_nonce.is_zero(), "deposit: swap_nonce must be zero");
     } else {
         for i in 0..4 {
-            assert!(inp.deposit_token_ids[i].is_zero(), "non-deposit: deposit token id {i} must be zero");
-            assert!(inp.deposit_slot_ids[i].is_zero(), "non-deposit: deposit slot id {i} must be zero");
-            assert!(inp.deposit_values[i].is_zero(), "non-deposit: deposit value {i} must be zero");
-            assert!(inp.deposit_secret_hashes[i].is_zero(), "non-deposit: deposit secret hash {i} must be zero");
+            assert!(
+                inp.deposit_token_ids[i].is_zero(),
+                "non-deposit: deposit token id {i} must be zero"
+            );
+            assert!(
+                inp.deposit_slot_ids[i].is_zero(),
+                "non-deposit: deposit slot id {i} must be zero"
+            );
+            assert!(
+                inp.deposit_values[i].is_zero(),
+                "non-deposit: deposit value {i} must be zero"
+            );
+            assert!(
+                inp.deposit_secret_hashes[i].is_zero(),
+                "non-deposit: deposit secret hash {i} must be zero"
+            );
         }
     }
 
@@ -270,11 +281,22 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
     bjj::assert_in_subgroup(&recipient_public_key);
     let shared_secret = bjj::scalar_mul(inp.ephemeral_key, recipient_public_key);
     let epk = bjj::mul_by_generator(inp.ephemeral_key);
-    let shared_salt =
-        poseidon::hash(&[shared_secret.x, shared_secret.y, domains::domain_shared_salt()]);
+    let shared_salt = poseidon::hash(&[
+        shared_secret.x,
+        shared_secret.y,
+        domains::domain_shared_salt(),
+    ]);
 
     // --- commitments (verify_commitments) ---
-    let commitments = verify_commitments(inp, nf_token_id, value, &recipient_public_key, &zkp_pub_key, shared_salt, withdraw_flag);
+    let commitments = verify_commitments(
+        inp,
+        nf_token_id,
+        value,
+        &recipient_public_key,
+        &zkp_pub_key,
+        shared_salt,
+        withdraw_flag,
+    );
 
     // --- nullifiers (verify_nullifiers) ---
     let nullifiers = verify_nullifiers(inp, nf_token_id, nullifier_key);
@@ -283,11 +305,15 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
     verify_duplicates(&nullifiers, &commitments);
 
     // --- encryption (verify_encryption with withdraw override) ---
-    let compressed_secrets = verify_encryption(inp, nf_token_id, value, &shared_secret, &epk, withdraw_flag);
+    let compressed_secrets =
+        verify_encryption(inp, nf_token_id, value, &shared_secret, &epk, withdraw_flag);
 
     // --- withdraw: recipient must be neutral ---
     if withdraw_flag {
-        assert!(is_neutral(&recipient_public_key), "withdraw: recipient must be neutral");
+        assert!(
+            is_neutral(&recipient_public_key),
+            "withdraw: recipient must be neutral"
+        );
     }
 
     // --- swap link + swap constraints ---
@@ -304,8 +330,14 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
         inp.swap_nonce,
     ]);
     if is_swap {
-        assert!(!is_neutral(&inp.party_a_public_key), "swap: party A neutral");
-        assert!(!is_neutral(&inp.party_b_public_key), "swap: party B neutral");
+        assert!(
+            !is_neutral(&inp.party_a_public_key),
+            "swap: party A neutral"
+        );
+        assert!(
+            !is_neutral(&inp.party_b_public_key),
+            "swap: party B neutral"
+        );
         assert!(
             !points_equal(&inp.party_a_public_key, &inp.party_b_public_key),
             "swap: parties must differ"
@@ -370,7 +402,15 @@ pub fn compute_statement(inp: &StatementInputs) -> StatementTrace {
     let out_swap_link = cs(is_deposit, final_swap_link, Fr254::zero());
     let final_deadline = cs(is_swap, Fr254::zero(), inp.deadline);
     let final_deadline = cs(is_deposit, final_deadline, Fr254::zero());
-    let final_side = cs(is_swap, Fr254::zero(), if is_party_a { Fr254::one() } else { Fr254::zero() });
+    let final_side = cs(
+        is_swap,
+        Fr254::zero(),
+        if is_party_a {
+            Fr254::one()
+        } else {
+            Fr254::zero()
+        },
+    );
     let swap_side = cs(is_deposit, final_side, Fr254::zero());
 
     let one = Fr254::one();
@@ -476,7 +516,11 @@ fn verify_commitments(
     [first, second, third, fourth]
 }
 
-fn verify_nullifiers(inp: &StatementInputs, nf_token_id: Fr254, nullifier_key: Fr254) -> [Fr254; 4] {
+fn verify_nullifiers(
+    inp: &StatementInputs,
+    nf_token_id: Fr254,
+    nullifier_key: Fr254,
+) -> [Fr254; 4] {
     let deposit_domain = domains::deposit_nullifier_domain();
     let mut out = [Fr254::zero(); 4];
     for i in 0..4 {
@@ -525,7 +569,11 @@ fn verify_nullifiers(inp: &StatementInputs, nf_token_id: Fr254, nullifier_key: F
         let secret_hash = poseidon::hash(&inp.secret_preimages[i]);
         let salt_to_enforce = cs(neutral, salt, secret_hash);
         let salt_to_enforce = cs(is_zero, salt_to_enforce, Fr254::zero());
-        assert_eq!(salt_to_enforce, salt, "nullifier slot {}: salt-from-preimage", i);
+        assert_eq!(
+            salt_to_enforce, salt,
+            "nullifier slot {}: salt-from-preimage",
+            i
+        );
     }
     out
 }
