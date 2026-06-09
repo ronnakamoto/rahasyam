@@ -1,0 +1,7 @@
+[package]
+name = "nightfish_honk_client_tx"
+type = "bin"
+authors = ["Nightfall / nightfish-honk"]
+
+[dependencies]
+nightfish_honk = { path = "../../noir" }

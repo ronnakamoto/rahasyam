@@ -1,0 +1,16 @@
+{
+  "name": "nf4-ultrahonk-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node bb.js UltraHonk sidecar for Nightfall 4 client transaction proofs.",
+  "scripts": {
+    "prove": "node prove.mjs",
+    "verify": "node verify.mjs",
+    "test": "node test_transfer.mjs"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "5.0.0-nightly.20260522",
+    "@noir-lang/noir_js": "1.0.0-beta.22"
+  }
+}

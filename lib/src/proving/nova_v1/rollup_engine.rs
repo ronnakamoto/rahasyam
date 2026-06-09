@@ -142,6 +142,24 @@ mod nova_integration {
             Self { max_steps }
         }
 
+        pub fn setup() -> Result<Self, ProvingError> {
+            <Self as RecursiveProvingEngine<NovaClientProof>>::setup()
+        }
+
+        pub fn prove_block(
+            &self,
+            deposits: Vec<DepositData>,
+            client_txs: Vec<OnChainTransaction>,
+        ) -> Result<NovaProof, ProvingError> {
+            <Self as RecursiveProvingEngine<NovaClientProof>>::prove_block(
+                self, deposits, client_txs,
+            )
+        }
+
+        pub fn verify(&self, proof: &NovaProof) -> Result<bool, ProvingError> {
+            <Self as RecursiveProvingEngine<NovaClientProof>>::verify(self, proof)
+        }
+
         #[allow(dead_code)]
         pub fn max_steps(&self) -> usize {
             self.max_steps
@@ -246,7 +264,7 @@ mod nova_integration {
             }
 
             // Ensure setup has run
-            let _ = Self::setup()?;
+            let _ = <Self as RecursiveProvingEngine<NovaClientProof>>::setup()?;
 
             // ------------------------------------------------------------------
             // 1. Get cached public parameters
@@ -341,7 +359,7 @@ mod nova_integration {
                     self.max_steps,
                 )));
             }
-            let _ = Self::setup()?;
+            let _ = <Self as RecursiveProvingEngine<NovaClientProof>>::setup()?;
             let pp = PUBLIC_PARAMS.get().expect("Public params not initialized");
             let num_steps = circuits.len();
             log::info!(
@@ -555,7 +573,7 @@ mod nova_integration {
             }
 
             // Ensure the verifying key has been loaded.
-            let _ = Self::setup()?;
+            let _ = <Self as RecursiveProvingEngine<NovaClientProof>>::setup()?;
 
             // Deserialize the compressed SNARK.
             let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
@@ -602,7 +620,7 @@ mod nova_integration {
                     "Empty snark_proof for non-empty block".into(),
                 ));
             }
-            let _ = Self::setup()?;
+            let _ = <Self as RecursiveProvingEngine<NovaClientProof>>::setup()?;
             let compressed: RollupCompressedSNARK = bincode::deserialize(&proof.snark_proof)
                 .map_err(|e| {
                     ProvingError::VerificationFailed(format!(

@@ -145,6 +145,70 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 panic!("NovaV1 proving system selected but 'nova-v1' feature is not enabled");
             }
         }
+        lib::proving::ProofSystemId::UltraHonkV1 => {
+            #[cfg(feature = "ultra-honk-v1")]
+            {
+                type P = lib::proving::ultrahonk_v1::UltraHonkProof;
+                type E = lib::proving::ultrahonk_v1::UltraHonkClientEngine;
+                type R = lib::proving::nova_v1::rollup_engine::NovaRollupEngine;
+                type N = Nightfall::NightfallCalls;
+
+                if settings.mock_prover {
+                    panic!("MockProver is not supported for UltraHonkV1");
+                }
+
+                let configured_max = settings.nightfall_proposer.nova_max_steps;
+                let default_max = <R as Default>::default().max_steps();
+                if configured_max != default_max {
+                    log::warn!(
+                        "nightfall_proposer.nova_max_steps ({configured_max}) differs from \
+                         NovaRollupEngine::DEFAULT_MAX_STEPS ({default_max}). Off-chain will \
+                         reject blocks the on-chain verifier would accept (or vice versa). \
+                         The on-chain MAX_STEPS is fixed at 10_000 in NovaRollupVerifier.sol; \
+                         update the setting or the contract so they match."
+                    );
+                }
+                info!(
+                    "Using NovaRollupEngine with ultra-honk-v1 client proofs and nova_max_steps = {configured_max} \
+                     (on-chain MAX_STEPS = {})",
+                    default_max
+                );
+
+                let key_manager = lib::proving::nova_v1::keys::NovaKeyManager::with_default_dir();
+                std::fs::create_dir_all(key_manager.key_dir())?;
+                info!(
+                    "Using Nova key cache directory: {}",
+                    key_manager.key_dir().display()
+                );
+
+                info!("Using UltraHonkClientEngine with NovaRollupEngine");
+                ensure_running::<P, E, N>().await;
+                let routes = routes::<P, E>();
+                let task_2 = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
+                info!(
+                    "Starting warp server for UltraHonkV1 (block assembly will start after Nova key warmup)"
+                );
+
+                info!("[nova startup] Loading/generating Nova keys (block assembly is gated on this)...");
+                let warm_start = std::time::Instant::now();
+                tokio::task::spawn_blocking(lib::proving::nova_v1::keys::pregenerate_nova_keys)
+                    .await
+                    .expect("Nova key warmup task panicked")
+                    .expect("Nova key warmup failed");
+                info!(
+                    "[nova startup] Nova keys ready in {:.2}s; starting block assembly",
+                    warm_start.elapsed().as_secs_f64()
+                );
+
+                let task_0 = tokio::spawn(start_block_assembly::<P, R, N>());
+                info!("Starting block assembler and event_handler threads for UltraHonkV1");
+                let (_r0, _r2) = (task_0.await??, task_2.await?);
+            }
+            #[cfg(not(feature = "ultra-honk-v1"))]
+            {
+                panic!("UltraHonkV1 selected but 'ultra-honk-v1' feature not enabled");
+            }
+        }
         _ => panic!("Unsupported proving system"),
     }
 

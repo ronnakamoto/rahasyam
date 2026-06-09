@@ -1,0 +1,9 @@
+# Rust
+/rust/target/
+# Noir
+**/target/
+# Node
+/ts/node_modules/
+/ts/dist/
+# misc
+*.log

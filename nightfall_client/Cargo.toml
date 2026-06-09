@@ -84,6 +84,10 @@ default = ["parallel"]
 std = ["ark-std/std", "ark-serialize/std", "ark-ff/std", "ark-ec/std"]
 test_apis = [] # exposing apis for testing purpose
 nova-v1 = ["lib/nova-v1"]
+# UltraHonk client proofs run on the Nova path; enable this crate's own
+# `nova-v1` cfg too so the NovaV1 runtime arm is compiled in (fail-fast parity
+# with `lib/nova-v1`), not just the lib feature.
+ultra-honk-v1 = ["nova-v1", "lib/ultra-honk-v1"]
 parallel = [
     "ark-ff/parallel",
     "ark-ec/parallel",

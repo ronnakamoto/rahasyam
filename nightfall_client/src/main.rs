@@ -70,6 +70,7 @@ async fn main() -> Result<(), JoinError> {
         ProvingSystemIdConfig::NovaV1 | ProvingSystemIdConfig::NovaBlsV1 => {
             lib::proving::ProofSystemId::NovaV1
         }
+        ProvingSystemIdConfig::UltraHonkV1 => lib::proving::ProofSystemId::UltraHonkV1,
     };
 
     match active_id {
@@ -104,6 +105,26 @@ async fn main() -> Result<(), JoinError> {
             #[cfg(not(feature = "nova-v1"))]
             {
                 panic!("NovaV1 proving system selected but 'nova-v1' feature is not enabled");
+            }
+        }
+        lib::proving::ProofSystemId::UltraHonkV1 => {
+            #[cfg(feature = "ultra-honk-v1")]
+            {
+                type P = lib::proving::ultrahonk_v1::UltraHonkProof;
+                type E = lib::proving::ultrahonk_v1::UltraHonkClientEngine;
+                type N = Nightfall::NightfallCalls;
+
+                ensure_running::<N>().await;
+                let routes = routes::<P, N>();
+                let task_warp = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], 3000)));
+                let task_queue = tokio::spawn(process_queue::<P, E, N>());
+
+                info!("Starting warp server and request queue for UltraHonkV1 (event listener managed separately)");
+                let (_r2, _r3) = (task_warp.await?, task_queue.await?);
+            }
+            #[cfg(not(feature = "ultra-honk-v1"))]
+            {
+                panic!("UltraHonkV1 selected but 'ultra-honk-v1' feature not enabled");
             }
         }
         _ => panic!("Unsupported proving system"),

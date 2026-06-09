@@ -1692,11 +1692,16 @@ where
     let withdraw_fund_salt = spend_commitments[0]
         .nullifier_hash(&keys.nullifier_key)
         .expect("Failed to compute nullifier hash");
+    // A withdrawal does not encrypt to a recipient (recipient is the neutral
+    // point); the circuit overrides the published ciphertext with the public
+    // withdraw data and only requires a non-zero ephemeral for transfers, so
+    // leave the unused scalar at zero.
+    let withdraw_ephemeral_key = BJJScalar::zero();
     match handle_client_operation::<P, E, N>(
         op,
         spend_commitments,
         new_commitments,
-        BJJScalar::zero(),
+        withdraw_ephemeral_key,
         recipient_address,
         secret_preimages,
         None,

@@ -8,6 +8,8 @@ edition = "2021"
 [features]
 default = []
 nova-v1 = ["dep:nova-snark", "dep:ff", "dep:generic-array"]
+# UltraHonk client proofs are paired with the existing Nova rollup engine.
+ultra-honk-v1 = ["nova-v1"]
 # Off-chain BLS12-381 signing for the Nova attestor committee (plan B3).
 # Pulls in `blst` (a C dependency); kept optional so builds that don't need
 # committee signing are unaffected.

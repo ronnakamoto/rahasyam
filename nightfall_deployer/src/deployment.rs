@@ -90,6 +90,15 @@ fn prepare_verifier_material(settings: &Settings) -> anyhow::Result<()> {
                 nova_keys_dir.display()
             );
         }
+        ProvingSystemIdConfig::UltraHonkV1 => {
+            // UltraHonkV1 proves per-transaction (client) proofs but still uses
+            // the Nova rollup engine, so the Nova key cache directory must exist.
+            let nova_keys_dir = ensure_nova_keys_directory()?;
+            info!(
+                "Active proving system is UltraHonkV1 (Nova rollup); skipping PLONK decider_vk wiring. Nova key cache path: {}",
+                nova_keys_dir.display()
+            );
+        }
     }
 
     Ok(())

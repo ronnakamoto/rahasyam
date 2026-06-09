@@ -60,5 +60,9 @@ serial_test = "3.2.0"
 
 [features]
 nova-v1 = ["lib/nova-v1", "ff"]
+# UltraHonk client proofs are paired with the Nova rollup, so enable this
+# crate's own `nova-v1` cfg too (registers NovaV1System / the committee
+# dual-gate and the Nova rollup runtime arm), not just `lib/nova-v1`.
+ultra-honk-v1 = ["nova-v1", "lib/ultra-honk-v1"]
 parallel = ["ark-std/parallel", "ark-ff/parallel", "ark-poly/parallel", "ark-ec/parallel"]
 

@@ -1,0 +1,31 @@
+[package]
+name = "nightfish-honk-ref"
+version = "0.1.0"
+edition = "2021"
+description = "Native reference oracle for nightfish-honk: real nf-curves + jf_primitives, used to generate and check the UltraHonk parity vectors."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ark-bn254 = "0.4.0"
+ark-ec = "0.4.2"
+ark-ff = "0.4.2"
+ark-std = "0.4.0"
+ark-crypto-primitives = { version = "0.4.0", default-features = false, features = ["sponge"] }
+ark-serialize = "0.4.2"
+nf-curves = { git = "https://github.com/EYBlockchain/nightfish_CE.git", rev = "8df6bdbaffbc9716b704a20fb615dc243a7e024c" }
+jf-primitives = { git = "https://github.com/EYBlockchain/nightfish_CE.git", rev = "8df6bdbaffbc9716b704a20fb615dc243a7e024c" }
+jf-relation = { git = "https://github.com/EYBlockchain/nightfish_CE.git", rev = "8df6bdbaffbc9716b704a20fb615dc243a7e024c" }
+sha2 = "0.10"
+num-bigint = "0.4"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# This crate is a standalone reference oracle pinned to a specific nightfish_CE
+# git rev; it is intentionally NOT part of the top-level nf4 workspace. The empty
+# `[workspace]` table makes it its own workspace root so it can be built/tested
+# directly with `cargo test --manifest-path ultrahonk/rust/Cargo.toml`.
+[workspace]
+
+[profile.release]
+opt-level = 3
