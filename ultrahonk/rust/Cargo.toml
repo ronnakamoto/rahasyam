@@ -21,5 +21,11 @@ hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# This crate is a standalone reference oracle pinned to a specific nightfish_CE
+# git rev; it is intentionally NOT part of the top-level nf4 workspace. The empty
+# `[workspace]` table makes it its own workspace root so it can be built/tested
+# directly with `cargo test --manifest-path ultrahonk/rust/Cargo.toml`.
+[workspace]
+
 [profile.release]
 opt-level = 3

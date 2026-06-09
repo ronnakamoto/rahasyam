@@ -102,13 +102,20 @@ pub fn prove_statement(inp: StatementInputs) -> [Field; NUM_PUBLIC_INPUTS] {
     let zkp_priv = keys::derive_zkp_private_key(inp.root_key, inp.zkp_priv, inp.zkp_priv_lambda);
     let nullifier_key = keys::nullifier_key(inp.root_key);
     bjj::assert_valid_scalar(inp.ephemeral_key);
-    assert(inp.ephemeral_key != 0, "statement: ephemeral scalar is zero");
     let zkp_pub_key = bjj::mul_by_generator(zkp_priv);
 
     // --- mode detection ---
     let withdraw_flag = inp.withdraw_address != 0;
     let is_swap = inp.swap_nonce != 0;
     let is_deposit = inp.nullifiers_salts[0] == 0;
+
+    // The ephemeral scalar is only consumed by the recipient encryption of a
+    // genuine transfer. Deposits/withdrawals publish ephemeral-independent data,
+    // so assert non-zero exactly when it is used, keeping the constraint tight.
+    let encrypts_to_recipient = (!is_deposit) & (!withdraw_flag);
+    if encrypts_to_recipient {
+        assert(inp.ephemeral_key != 0, "statement: transfer ephemeral scalar is zero");
+    }
 
     // --- role detection ---
     let is_party_a = points_equal(zkp_pub_key, inp.party_a_public_key);
@@ -120,6 +127,25 @@ pub fn prove_statement(inp: StatementInputs) -> [Field; NUM_PUBLIC_INPUTS] {
     }
     if (!is_swap) & (!is_deposit) {
         assert(is_party_a, "non-swap non-deposit: author must be party A");
+    }
+
+    // H2: canonical deposit/transfer mode exclusivity. The deposit-mode bit keys
+    // solely off `nullifiers_salts[0] == 0`; pin the other mode's witnesses to
+    // zero so a deposit cannot smuggle hidden spends/swap/withdraw state, and a
+    // non-deposit cannot carry deposit witnesses.
+    if is_deposit {
+        for i in 1..4 {
+            assert(inp.nullifiers_salts[i] == 0, "deposit: extra nullifier salt must be 0");
+        }
+        assert(inp.withdraw_address == 0, "deposit: withdraw_address must be 0");
+        assert(inp.swap_nonce == 0, "deposit: swap_nonce must be 0");
+    } else {
+        for i in 0..4 {
+            assert(inp.deposit_token_ids[i] == 0, "non-deposit: deposit token id must be 0");
+            assert(inp.deposit_slot_ids[i] == 0, "non-deposit: deposit slot id must be 0");
+            assert(inp.deposit_values[i] == 0, "non-deposit: deposit value must be 0");
+            assert(inp.deposit_secret_hashes[i] == 0, "non-deposit: deposit secret hash must be 0");
+        }
     }
 
     let is_party_b_swap = is_swap & is_party_b;
@@ -143,6 +169,14 @@ pub fn prove_statement(inp: StatementInputs) -> [Field; NUM_PUBLIC_INPUTS] {
     inp.fee.assert_max_bit_size::<96>();
     inp.commitments_values[0].assert_max_bit_size::<96>();
     inp.commitments_values[1].assert_max_bit_size::<96>();
+    // H1: range-check every value that can enter the balance equation or be
+    // committed, not just the outputs (dummy slots carry 0 and pass trivially).
+    for i in 0..4 {
+        inp.nullifiers_values[i].assert_max_bit_size::<96>();
+        inp.deposit_values[i].assert_max_bit_size::<96>();
+    }
+    inp.value_a.assert_max_bit_size::<96>();
+    inp.value_b.assert_max_bit_size::<96>();
 
     // --- ownership verification ---
     for i in 0..4 {
@@ -154,6 +188,8 @@ pub fn prove_statement(inp: StatementInputs) -> [Field; NUM_PUBLIC_INPUTS] {
     }
 
     // --- shared secret + commitment salt ---
+    // M3: enforce on-curve + prime-subgroup membership of the DH base.
+    bjj::assert_in_subgroup(recipient_public_key);
     let shared_secret = bjj::scalar_mul(inp.ephemeral_key, recipient_public_key);
     let epk = bjj::mul_by_generator(inp.ephemeral_key);
     bjj::assert_on_curve(shared_secret);
@@ -330,6 +366,9 @@ fn verify_nullifiers(inp: StatementInputs, nf_token_id: Field, nullifier_key: Fi
     for i in 0..4 {
         let salt = inp.nullifiers_salts[i];
         let is_zero = salt == 0;
+        // C1: a dummy slot (salt == 0) skips Merkle membership and emits a zero
+        // nullifier, so it must carry no value or it would mint into the balance.
+        assert(cs(is_zero, 0, inp.nullifiers_values[i]) == 0, "nullifier: dummy slot must carry zero value");
         let t0 = if i < 2 { nf_token_id } else { inp.fee_token_id };
         let t1 = if i < 2 { inp.nf_slot_id } else { inp.fee_token_id };
         let commitment_hash = hash::hash6(

@@ -233,6 +233,17 @@ pub mod bjj {
     pub fn mul_by_generator(scalar: BjjFr) -> Point {
         scalar_mul(scalar, generator())
     }
+
+    /// M3: assert that `p` is on the curve AND in the prime-order subgroup before
+    /// it is used as a Diffie-Hellman scalar-mul base. The neutral element passes
+    /// both checks, so the withdraw/deposit (neutral recipient) case is allowed.
+    pub fn assert_in_subgroup(p: &Point) {
+        assert!(p.is_on_curve(), "bjj: DH base not on curve");
+        assert!(
+            p.is_in_correct_subgroup_assuming_on_curve(),
+            "bjj: DH base not in prime-order subgroup"
+        );
+    }
 }
 
 /// Key derivation from the root key (`nf4 lib/src/derive_key.rs`).
@@ -266,6 +277,20 @@ pub mod keys {
         let l_big = BigUint::from_bytes_be(&<BjjFr as PrimeField>::MODULUS.to_bytes_be());
         let lambda_big = (&h_big - &scalar_big) / &l_big;
         let lambda = Fr254::from_le_bytes_mod_order(&lambda_big.to_bytes_le());
+
+        // M2: no-wrap guard (mirrors the in-circuit constraint). The reduction
+        // `scalar + lambda * l == h` must hold over the integers without wrapping
+        // the BN254 modulus `p`. Because `8 * l > p`, an alternate (wrapped)
+        // witness with `lambda == 7` is only excluded if `scalar < p - 7 * l`.
+        // The canonical witness computed here never wraps, so these assertions are
+        // documentation/parity anchors that fail closed on any bad witness.
+        let p_big = BigUint::from_bytes_be(&<Fr254 as PrimeField>::MODULUS.to_bytes_be());
+        assert!(&lambda_big < &BigUint::from(8u8), "M2: reduction quotient >= 8");
+        assert!(
+            &scalar_big + &lambda_big * &l_big < p_big,
+            "M2: BN254->BJJ reduction wraps the field modulus"
+        );
+
         (scalar, h, lambda)
     }
 }

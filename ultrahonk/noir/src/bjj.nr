@@ -101,3 +101,20 @@ pub fn assert_on_curve(p: Point) {
 pub fn assert_valid_scalar(scalar: Field) {
     assert(scalar.lt(SUBGROUP_ORDER), "bjj: scalar out of subgroup range");
 }
+
+/// M3: assert that `p` is on the curve AND in the prime-order subgroup before it
+/// is used as a Diffie-Hellman scalar-mul base (cofactor check `[l] * P == O`).
+/// Without this an attacker could supply an off-curve or small-order point and
+/// mount an invalid-curve / small-subgroup attack on the derived shared secret.
+/// The neutral element passes both checks, so the withdraw/deposit (neutral
+/// recipient) case is allowed and no explicit skip is required.
+pub fn assert_in_subgroup(p: Point) {
+    assert_on_curve(p);
+    let cofactor_cleared = scalar_mul(SUBGROUP_ORDER, p);
+    assert(is_neutral(cofactor_cleared), "bjj: DH base not in prime-order subgroup");
+}
+
+/// `true` iff `p` is the neutral element `(0, 1)`.
+pub fn is_neutral(p: Point) -> bool {
+    (p.x == 0) & (p.y == 1)
+}

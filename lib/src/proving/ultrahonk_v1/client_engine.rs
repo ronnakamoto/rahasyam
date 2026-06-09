@@ -2,9 +2,10 @@ use ark_bn254::Fr as Fr254;
 use ark_ff::{BigInteger, PrimeField};
 use num_bigint::BigUint;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
-    env, fmt, io,
+    env, fmt, fs, io,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -13,6 +14,10 @@ use std::{
 use crate::nf_client_proof::{PrivateInputs, ProvingEngine, PublicInputs};
 
 use super::{proof::UltraHonkProof, witness};
+
+const SIDECAR_CIRCUIT_FILE: &str = "nightfish_honk_client_tx.json";
+const EXPECTED_CIRCUIT_BYTECODE_SHA256: &str =
+    "aa844f9aa7115f9065098733296c48fb4c142ae534e667de2c31989d3eda0db5";
 
 #[derive(Debug)]
 pub struct UltraHonkClientEngine;
@@ -28,6 +33,15 @@ pub enum UltraHonkError {
     Hex(hex::FromHexError),
     InvalidHex(String),
     InvalidFieldElement(String),
+    InvalidSidecarCircuit {
+        path: PathBuf,
+        detail: String,
+    },
+    CircuitBytecodeHashMismatch {
+        path: PathBuf,
+        expected: String,
+        actual: String,
+    },
     SidecarFailed {
         script: &'static str,
         status: String,
@@ -53,7 +67,11 @@ impl fmt::Display for UltraHonkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UltraHonkError::MissingSidecar { path, detail } => {
-                write!(f, "UltraHonk sidecar missing at {}: {detail}", path.display())
+                write!(
+                    f,
+                    "UltraHonk sidecar missing at {}: {detail}",
+                    path.display()
+                )
             }
             UltraHonkError::Io(e) => write!(f, "UltraHonk sidecar I/O failed: {e}"),
             UltraHonkError::Json(e) => write!(f, "UltraHonk sidecar JSON failed: {e}"),
@@ -62,12 +80,33 @@ impl fmt::Display for UltraHonkError {
             UltraHonkError::InvalidFieldElement(value) => {
                 write!(f, "invalid field element from sidecar: {value}")
             }
+            UltraHonkError::InvalidSidecarCircuit { path, detail } => write!(
+                f,
+                "invalid UltraHonk sidecar circuit at {}: {detail}",
+                path.display()
+            ),
+            UltraHonkError::CircuitBytecodeHashMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "UltraHonk sidecar circuit bytecode hash mismatch at {}: expected {expected}, got {actual}",
+                path.display()
+            ),
             UltraHonkError::SidecarFailed {
                 script,
                 status,
                 stderr,
-            } => write!(f, "UltraHonk sidecar {script} failed with {status}: {stderr}"),
-            UltraHonkError::PublicInputMismatch { expected, actual, diffs } => {
+            } => write!(
+                f,
+                "UltraHonk sidecar {script} failed with {status}: {stderr}"
+            ),
+            UltraHonkError::PublicInputMismatch {
+                expected,
+                actual,
+                diffs,
+            } => {
                 write!(
                     f,
                     "UltraHonk public input mismatch: nf4 expected {expected} words, sidecar circuit returned {actual} words"
@@ -77,12 +116,19 @@ impl fmt::Display for UltraHonkError {
                 }
                 Ok(())
             }
-            UltraHonkError::CommittedInputMismatch { field, expected, actual } => write!(
+            UltraHonkError::CommittedInputMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
                 f,
                 "UltraHonk circuit changed committed public input `{field}`: client committed {expected} but circuit returned {actual}"
             ),
             UltraHonkError::MalformedPublicInputs { detail } => {
-                write!(f, "UltraHonk circuit returned malformed public inputs: {detail}")
+                write!(
+                    f,
+                    "UltraHonk circuit returned malformed public inputs: {detail}"
+                )
             }
             UltraHonkError::Witness(e) => write!(f, "UltraHonk witness generation failed: {e}"),
         }
@@ -278,6 +324,8 @@ fn sidecar_script(script: &'static str) -> Result<(PathBuf, PathBuf), UltraHonkE
         });
     }
 
+    ensure_pinned_sidecar_circuit(&sidecar_dir)?;
+
     let script_path = sidecar_dir.join(script);
     if !script_path.is_file() {
         return Err(UltraHonkError::MissingSidecar {
@@ -287,6 +335,39 @@ fn sidecar_script(script: &'static str) -> Result<(PathBuf, PathBuf), UltraHonkE
     }
 
     Ok((sidecar_dir, script_path))
+}
+
+fn ensure_pinned_sidecar_circuit(sidecar_dir: &Path) -> Result<(), UltraHonkError> {
+    let circuit_path = sidecar_dir.join(SIDECAR_CIRCUIT_FILE);
+    if !circuit_path.is_file() {
+        return Err(UltraHonkError::MissingSidecar {
+            path: circuit_path,
+            detail: "circuit file does not exist".to_string(),
+        });
+    }
+
+    let circuit: Value = serde_json::from_str(&fs::read_to_string(&circuit_path)?)?;
+    let bytecode = circuit
+        .get("bytecode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| UltraHonkError::InvalidSidecarCircuit {
+            path: circuit_path.clone(),
+            detail: "missing string field `bytecode`".to_string(),
+        })?;
+    let actual = sha256_hex(bytecode.as_bytes());
+    if actual != EXPECTED_CIRCUIT_BYTECODE_SHA256 {
+        return Err(UltraHonkError::CircuitBytecodeHashMismatch {
+            path: circuit_path,
+            expected: EXPECTED_CIRCUIT_BYTECODE_SHA256.to_string(),
+            actual,
+        });
+    }
+
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn default_sidecar_dir() -> PathBuf {
@@ -384,7 +465,9 @@ fn unframe_public_inputs_into(
     public_inputs.root = framed[4];
     public_inputs.commitments.copy_from_slice(&framed[6..10]);
     public_inputs.nullifiers.copy_from_slice(&framed[11..15]);
-    public_inputs.compressed_secrets.copy_from_slice(&framed[16..21]);
+    public_inputs
+        .compressed_secrets
+        .copy_from_slice(&framed[16..21]);
     public_inputs.swap_link = framed[22];
     public_inputs.deadline = framed[24];
     public_inputs.swap_side = framed[26];
@@ -395,6 +478,7 @@ fn unframe_public_inputs_into(
 mod tests {
     use super::*;
     use ark_std::{One, Zero};
+    use std::{fs, path::Path};
 
     #[test]
     fn parses_sidecar_field_elements() {
@@ -407,6 +491,22 @@ mod tests {
         assert_eq!(
             fr_to_hex(&Fr254::one()),
             "0x0000000000000000000000000000000000000000000000000000000000000001"
+        );
+    }
+
+    #[test]
+    fn pinned_sidecar_circuit_hash_matches_checked_in_bytecode() {
+        let sidecar_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("lib crate must be inside workspace")
+            .join("ultrahonk_sidecar");
+        let circuit_path = sidecar_dir.join(SIDECAR_CIRCUIT_FILE);
+        let circuit: Value =
+            serde_json::from_str(&fs::read_to_string(circuit_path).unwrap()).unwrap();
+        let bytecode = circuit["bytecode"].as_str().unwrap();
+        assert_eq!(
+            sha256_hex(bytecode.as_bytes()),
+            EXPECTED_CIRCUIT_BYTECODE_SHA256
         );
     }
 

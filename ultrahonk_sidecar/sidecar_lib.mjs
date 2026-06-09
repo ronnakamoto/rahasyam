@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,12 +6,32 @@ import { Noir } from '@noir-lang/noir_js';
 import { Barretenberg, BackendType, UltraHonkBackend } from '@aztec/bb.js';
 
 export const NUM_PUBLIC_INPUTS = 27;
+export const EXPECTED_CIRCUIT_BYTECODE_SHA256 =
+  'aa844f9aa7115f9065098733296c48fb4c142ae534e667de2c31989d3eda0db5';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const circuitPath = join(here, 'nightfish_honk_client_tx.json');
 
+export function circuitBytecodeHash(circuit) {
+  if (!circuit || typeof circuit.bytecode !== 'string') {
+    throw new Error('sidecar circuit is missing string bytecode');
+  }
+  return createHash('sha256').update(circuit.bytecode, 'utf8').digest('hex');
+}
+
+export function assertPinnedCircuit(circuit, path = circuitPath) {
+  const actual = circuitBytecodeHash(circuit);
+  if (actual !== EXPECTED_CIRCUIT_BYTECODE_SHA256) {
+    throw new Error(
+      `UltraHonk circuit bytecode SHA-256 mismatch at ${path}: expected ${EXPECTED_CIRCUIT_BYTECODE_SHA256}, got ${actual}`,
+    );
+  }
+}
+
 export function loadCircuit() {
-  return JSON.parse(readFileSync(circuitPath, 'utf8'));
+  const circuit = JSON.parse(readFileSync(circuitPath, 'utf8'));
+  assertPinnedCircuit(circuit);
+  return circuit;
 }
 
 export function readJsonFromArgOrStdin(argvPath = process.argv[2]) {
